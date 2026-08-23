@@ -1,6 +1,6 @@
 # Tooling configuration for the silk repository (Weave agent plugin).
-# The repo root IS the `silk` package (layout chosen so the whole repo can
-# be synced into a Weave checkout as `weave/plugins/silk` via git subtree).
+# The repo root IS the `silk` package: Weave embeds this repo directly as
+# a git submodule at weave/plugins/silk.
 # Run in place — no build system; this file only configures dev tools.
 # Install them with:  pip install ruff mypy
 #

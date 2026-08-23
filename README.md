@@ -34,22 +34,35 @@ repo to be synced into Weave as `weave/plugins/silk` via `git subtree`):
 
 ## Deployment / syncing with Weave
 
-This plugin is **run in place** inside a Weave checkout — the package must
-live at `weave/plugins/silk/` so Weave's submodule discovery can import it
-and register its nodes. The two repos are linked with `git subtree`
-(Weave-side remote name: `silk` → this repository):
+This plugin is **run in place** inside a Weave checkout. Weave links to
+this repository directly as a **git submodule**: the path
+`weave/plugins/silk/` in a Weave checkout *is* a checkout of this repo
+(pinned to a specific commit in Weave's tree, tracking branch `main`).
 
-- develop in **Weave** (`weave/plugins/silk/`), then push back here:
-  ```
-  git subtree push --prefix=weave/plugins/silk silk main
-  ```
-- develop in **this repo**, then pull into a Weave checkout:
-  ```
-  git subtree pull --prefix=weave/plugins/silk silk main
-  ```
+Clone a Weave checkout with the plugin included:
 
-Sync in only one direction at a time; if you work in both, pull first,
-then push, so the histories stay fast-forwardable.
+    git clone --recurse-submodules <weave-url>
+    # or, after a plain clone:
+    git submodule update --init
+
+### Workflow
+
+- **Develop in the Weave subfolder** (`weave/plugins/silk/`):
+  it is a normal checkout of this repo, so commit & push right there:
+
+      cd weave/plugins/silk
+      git checkout main        # first time only (submodules start detached)
+      git add -A && git commit -m "..." && git push
+      # then in the Weave root, pin the new commit:
+      git add weave/plugins/silk && git commit -m "Bump Silk" && git push
+
+- **Follow upstream** (e.g., after pushing from this standalone checkout):
+
+      git submodule update --remote weave/plugins/silk   # in the Weave root
+      git add weave/plugins/silk && git commit -m "Bump Silk" && git push
+
+Each change is two small commits: one here (the actual change), one in
+Weave (the pinned commit pointer).
 
 Once Weave ships to PyPI and gains entry-point-based plugin discovery,
 this will become installable via `pip install`.
