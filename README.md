@@ -96,4 +96,4 @@ to this codebase as well.
 
 ## License
 
-Apache-2.0 — see [LICENSE](LICENSE).
+Dual-licensed **Apache-2.0 OR MIT** — you may choose either. See [LICENSE](LICENSE) and [LICENSES/](LICENSES/).

@@ -4,7 +4,7 @@ Weave: A modular PySide6 framework for the visual synthesis
 and execution of high-concurrency simulation workflows.
 Copyright (c) 2026 opticsWolf
 
-SPDX-License-Identifier: Apache-2.0
+SPDX-License-Identifier: Apache-2.0 OR MIT
 
 Task planning & tracking tools for the silk agent.
 
