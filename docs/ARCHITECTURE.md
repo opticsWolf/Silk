@@ -542,24 +542,29 @@ The `Hooks` facade exposes ergonomic decorator registration:
 `.after_run(...)`, etc., plus `get_tools()` / `get_instructions()` /
 `emit(...)`.
 
-**The event vocabulary** (constants in `hooks.py`):
+**The event vocabulary** (19 constants in `hooks.py`; the first eight are
+emitted today, the rest are defined but not yet wired):
 
-| Event | Kind | Fires |
-|---|---|---|
-| `HOOK_BEFORE_RUN` / `HOOK_AFTER_RUN` | event | around a whole agent run |
-| `HOOK_BEFORE_MODEL_REQUEST` | event | before each model request |
-| `HOOK_AFTER_MODEL_REQUEST` / `HOOK_AFTER_MODEL_RESPONSE` | event | after a request / its response |
-| `HOOK_WRAP_MODEL_REQUEST` | middleware | wraps a model request |
-| `HOOK_ON_MODEL_REQUEST_ERROR` | event | on a model-request failure |
-| `HOOK_BEFORE_TOOL_EXECUTE` / `HOOK_AFTER_TOOL_EXECUTE` | event | around each tool call |
-| `HOOK_WRAP_TOOL_EXECUTE` | middleware | wraps tool execution (deny/redact/retry) |
-| `HOOK_WRAP_TOOL_VALIDATE` | middleware | wraps argument validation |
-| `HOOK_ON_TOOL_VALIDATE_ERROR` | event | on a validation failure |
-| `HOOK_ON_TOOL_EXECUTE_ERROR` | event | on a tool-execution failure |
-| `HOOK_TOOL_DENIED` | event | when a role denies a tool |
-| `HOOK_WRAP_OUTPUT_VALIDATE` / `HOOK_ON_OUTPUT_VALIDATE_ERROR` | middleware/event | wraps final-output schema validation |
-| `HOOK_WRAP_OUTPUT_PROCESS` / `HOOK_ON_OUTPUT_PROCESS_ERROR` | middleware/event | wraps post-processing of the final output |
-| `HOOK_WRAP_RUN_EVENT_STREAM` | middleware | wraps the run's event stream itself |
+| Event | Kind | Wired | Fires / intended |
+|---|---|---|---|
+| `HOOK_BEFORE_RUN` / `HOOK_AFTER_RUN` | event | `agent_loop` | around a whole agent run (`after` carries `final_text`, `rounds`, `elapsed_s`) |
+| `HOOK_BEFORE_MODEL_REQUEST` | event | `agent_loop` | before each model request |
+| `HOOK_AFTER_MODEL_RESPONSE` | event | `agent_loop` | after each response (carries `finish_reason`) |
+| `HOOK_BEFORE_TOOL_EXECUTE` / `HOOK_AFTER_TOOL_EXECUTE` | event | `tool_box` | around each tool call |
+| `HOOK_WRAP_TOOL_EXECUTE` | middleware | `tool_box` | wraps tool execution (deny/redact/retry) |
+| `HOOK_TOOL_DENIED` | event | `tool_box` | when a role denies a tool |
+| `HOOK_AFTER_MODEL_REQUEST` | event | — | after a request (distinct from the response) |
+| `HOOK_WRAP_MODEL_REQUEST` | middleware | — | wrap a model request |
+| `HOOK_ON_MODEL_REQUEST_ERROR` | event | — | on a model-request failure |
+| `HOOK_WRAP_TOOL_VALIDATE` | middleware | — | wrap argument validation |
+| `HOOK_ON_TOOL_VALIDATE_ERROR` | event | — | on a validation failure |
+| `HOOK_ON_TOOL_EXECUTE_ERROR` | event | — | on a tool-execution failure |
+| `HOOK_WRAP_OUTPUT_VALIDATE` / `HOOK_ON_OUTPUT_VALIDATE_ERROR` | middleware/event | — | wrap final-output schema validation |
+| `HOOK_WRAP_OUTPUT_PROCESS` / `HOOK_ON_OUTPUT_PROCESS_ERROR` | middleware/event | — | wrap post-processing of the final output |
+| `HOOK_WRAP_RUN_EVENT_STREAM` | middleware | — | wrap the run's event stream itself |
+
+Rows marked `—` are defined and subscribable but nothing emits them yet —
+see [Open Topics](OPEN_TOPICS.md).
 
 ### Hook catalog
 
