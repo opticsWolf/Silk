@@ -1,6 +1,7 @@
 # Tooling configuration for the silk repository (Weave agent plugin).
-# The plugin is run in place inside a Weave checkout (deployed as
-# `weave/plugins/silk`); this file only configures dev tools.
+# The repo root IS the `silk` package (layout chosen so the whole repo can
+# be synced into a Weave checkout as `weave/plugins/silk` via git subtree).
+# Run in place — no build system; this file only configures dev tools.
 # Install them with:  pip install ruff mypy
 #
 # - ruff: picked up automatically by `ruff check`.
@@ -20,15 +21,15 @@ select = ["F", "E9", "W", "B"]
 [tool.ruff.lint.per-file-ignores]
 # Silk capability/toolset lifecycle methods are optional hooks by design
 # (ported from silk-playground), not forgotten abstract methods.
-"silk/functions/capabilities.py" = ["B027"]
-"silk/functions/toolset.py" = ["B027"]
+"functions/capabilities.py" = ["B027"]
+"functions/toolset.py" = ["B027"]
 
 [tool.mypy]
 python_version = "3.12"
 # Scoped adoption: only the modules in `files` report; imports of the
 # not-yet-typed rest (and of the Weave framework) are followed silently.
 follow_imports = "silent"
-files = ["silk/functions"]
+files = ["functions"]
 ignore_missing_imports = true
 warn_unused_ignores = true
 no_implicit_optional = true

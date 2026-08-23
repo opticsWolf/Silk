@@ -14,35 +14,47 @@ Silk brings autonomous tool-calling agents into the Weave canvas:
 - **Chat display** — node-rendered conversation log
 
 The Qt-free runtime (ToolSet/ToolBox, capabilities, hooks, Role/RoleBinding,
-AgentLoop, GraphEngine) lives under `silk/functions/` and is importable
+AgentLoop, GraphEngine) lives under `functions/` and is importable
 without PySide6.
 
 ## Repository layout
 
-```
-silk/
-├── __init__.py        # registers all nodes with NODE_REGISTRY on import
-├── functions/         # Qt-free agent runtime (tools, hooks, orchestrator…)
-│   └── tools/         # sandboxed file/search tools
-├── nodes/             # Weave node wrappers (agent, role, toolbox, monitors…)
-└── widgets/           # Qt widgets (config dialog, tool tree, preset bar…)
-```
-
-## Deployment
-
-This plugin is **run in place** inside a Weave checkout — the `silk/` package
-must live at `weave/plugins/silk/` so Weave's submodule discovery can import
-it and register its nodes:
+The repo root **is** the `silk` package (this layout is what allows the whole
+repo to be synced into Weave as `weave/plugins/silk` via `git subtree`):
 
 ```
-<weave-checkout>/weave/plugins/silk/   ←  this repository's silk/ package
+.                        (repo root = the `silk` package)
+├── __init__.py          # registers all nodes with NODE_REGISTRY on import
+├── functions/           # Qt-free agent runtime (tools, hooks, orchestrator…)
+│   └── tools/           # sandboxed file/search tools
+├── nodes/               # Weave node wrappers (agent, role, toolbox, monitors…)
+├── widgets/             # Qt widgets (config dialog, tool tree, preset bar…)
+├── README.md, pyproject.toml, LICENSE   # dev files (harmless in the subtree)
 ```
 
-Copy (or `git subtree`/submodule) the `silk/` folder into a Weave checkout to
-deploy. Once Weave ships to PyPI and gains entry-point-based plugin discovery,
+## Deployment / syncing with Weave
+
+This plugin is **run in place** inside a Weave checkout — the package must
+live at `weave/plugins/silk/` so Weave's submodule discovery can import it
+and register its nodes. The two repos are linked with `git subtree`
+(Weave-side remote name: `silk` → this repository):
+
+- develop in **Weave** (`weave/plugins/silk/`), then push back here:
+  ```
+  git subtree push --prefix=weave/plugins/silk silk main
+  ```
+- develop in **this repo**, then pull into a Weave checkout:
+  ```
+  git subtree pull --prefix=weave/plugins/silk silk main
+  ```
+
+Sync in only one direction at a time; if you work in both, pull first,
+then push, so the histories stay fast-forwardable.
+
+Once Weave ships to PyPI and gains entry-point-based plugin discovery,
 this will become installable via `pip install`.
 
-Note: `silk/functions/tools/task_tracker.py` intentionally imports
+Note: `functions/tools/task_tracker.py` intentionally imports
 `weave.plugins.silk.functions.task_store` by absolute name — it is also
 loadable as a top-level module by the dynamic tool loader, where a relative
 import would fail.
