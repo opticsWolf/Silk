@@ -20,7 +20,7 @@ without PySide6.
 ## Repository layout
 
 The repo root **is** the `silk` package (this layout is what allows the whole
-repo to be synced into Weave as `weave/plugins/silk` via `git subtree`):
+repo to be linked into Weave as `weave/plugins/silk` via `git submodule`):
 
 ```
 .                        (repo root = the `silk` package)
@@ -29,7 +29,7 @@ repo to be synced into Weave as `weave/plugins/silk` via `git subtree`):
 │   └── tools/           # sandboxed file/search tools
 ├── nodes/               # Weave node wrappers (agent, role, toolbox, monitors…)
 ├── widgets/             # Qt widgets (config dialog, tool tree, preset bar…)
-├── README.md, pyproject.toml, LICENSE   # dev files (harmless in the subtree)
+├── README.md, pyproject.toml, LICENSE, LICENSES/   # dev files (harmless in the Weave tree)
 ```
 
 ## Deployment / syncing with Weave
@@ -56,10 +56,29 @@ Clone a Weave checkout with the plugin included:
       # then in the Weave root, pin the new commit:
       git add weave/plugins/silk && git commit -m "Bump Silk" && git push
 
-- **Follow upstream** (e.g., after pushing from this standalone checkout):
+- **Follow upstream** (e.g., after pushing from a standalone clone of this
+  repo):
 
       git submodule update --remote weave/plugins/silk   # in the Weave root
       git add weave/plugins/silk && git commit -m "Bump Silk" && git push
+
+- **Develop in both copies in parallel**: a standalone clone and the Weave
+  submodule can be used side by side — commit & `git push origin main` in
+  whichever copy you edited, then in the other copy:
+
+      git fetch origin && git merge --ff-only origin/main
+
+  Both copies also carry a local remote pointing at the other
+  (`local-weave-clone` inside the Weave submodule, `weave-submodule` inside a
+  standalone clone), so the GitHub round-trip can be skipped:
+
+      git push local-weave-clone main    # from the Weave submodule
+      git push weave-submodule main      # from the standalone clone
+      # then in the receiving copy:
+      git fetch <that remote> && git merge --ff-only <that remote>/main
+
+  Keep the work sequential — commit & push before switching copies — and
+  every sync stays a clean fast-forward.
 
 Each change is two small commits: one here (the actual change), one in
 Weave (the pinned commit pointer).
