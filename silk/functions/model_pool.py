@@ -1,0 +1,338 @@
+# -*- coding: utf-8 -*-
+"""Server-based GGUF model pool.
+
+Replaces the in-memory multiple-``Llama`` pool with a single background
+``llama_cpp.server`` process (LM Studio-like): the model weights load exactly
+once, and every agent talks to it over the local OpenAI-compatible HTTP API.
+
+The server is configured through a generated JSON **config file** (not per-CLI
+flags), so the full set of model settings — GPU layers, context, threads, seed,
+flash-attention, mmap, KV-cache quant — is forwarded robustly across
+``llama-cpp-python`` versions without guessing flag names or bool spellings.
+
+``checkout()`` hands agents an :class:`OpenAIClientMock` that mimics the
+``llama_cpp.Llama`` API (``create_chat_completion``) the GraphEngine/AgentLoop
+already speak, translating calls into HTTP + SSE.
+"""
+from __future__ import annotations
+
+import gc
+import importlib.util
+import json
+import os
+import socket
+import sys
+import subprocess
+import tempfile
+import threading
+import time
+import urllib.request
+import urllib.error
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+from weave.logger import get_logger
+
+log = get_logger("SilkModelPool")
+
+# ── Dependency guards ────────────────────────────────────────────────────────
+# The loader/tests import these to degrade gracefully. LLAMA_CPP_AVAILABLE is the
+# base library; LLAMA_SERVER_AVAILABLE is the ``[server]`` extra
+# (fastapi/uvicorn/sse-starlette) that the background process needs.
+try:
+    from llama_cpp import Llama  # noqa: F401  (re-exported for back-compat)
+    LLAMA_CPP_AVAILABLE = True
+except Exception:  # noqa: BLE001 - any import failure means "not usable"
+    Llama = None  # type: ignore[assignment,misc]
+    LLAMA_CPP_AVAILABLE = False
+
+# The ``[server]`` extra ships the module files but NOT its third-party deps, so
+# checking find_spec("llama_cpp.server") alone is not enough (the subprocess would
+# still crash importing fastapi). Verify the deps the server imports at startup.
+_SERVER_DEPS = (
+    "fastapi", "uvicorn", "sse_starlette", "starlette_context", "pydantic_settings",
+)
+
+
+def _missing_server_deps() -> list[str]:
+    if not LLAMA_CPP_AVAILABLE:
+        return ["llama-cpp-python"]
+    try:
+        if importlib.util.find_spec("llama_cpp.server") is None:
+            return ["llama_cpp.server"]
+    except Exception:  # noqa: BLE001
+        return ["llama_cpp.server"]
+    missing: list[str] = []
+    for dep in _SERVER_DEPS:
+        try:
+            if importlib.util.find_spec(dep) is None:
+                missing.append(dep)
+        except Exception:  # noqa: BLE001
+            missing.append(dep)
+    return missing
+
+
+#: Third-party modules the server needs but which are absent (empty = all present).
+LLAMA_SERVER_MISSING = _missing_server_deps()
+LLAMA_SERVER_AVAILABLE = not LLAMA_SERVER_MISSING
+
+
+def server_missing_deps_message() -> str:
+    """Actionable message naming what to install for the server to run."""
+    return (
+        "llama_cpp.server cannot run — missing: "
+        f"{', '.join(LLAMA_SERVER_MISSING)}. Install the server extra: "
+        "pip install 'llama-cpp-python[server]'"
+    )
+
+#: ModelSettings fields forwarded from the loader's llama_kwargs to the server
+#: config (verified against llama_cpp.server.settings.ModelSettings). Keys absent
+#: or None in llama_kwargs are simply omitted, so server defaults apply.
+_SERVER_MODEL_KEYS = (
+    "n_ctx", "n_gpu_layers", "n_threads", "n_threads_batch", "n_batch",
+    "seed", "use_mmap", "use_mlock", "flash_attn", "type_k", "type_v", "verbose",
+)
+
+#: How long to wait for the server to answer ``/v1/models`` before giving up.
+_READY_TIMEOUT_S = 120.0
+
+
+def find_free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+class OpenAIClientMock:
+    """Proxy that mimics the ``llama_cpp.Llama`` API used by GraphEngine, routing
+    ``create_chat_completion`` to the local server over HTTP (+ SSE for streams).
+    """
+
+    def __init__(self, base_url: str, model_alias: str = "default") -> None:
+        self.base_url = base_url
+        self.model_alias = model_alias
+
+    def create_chat_completion(
+        self, messages: List[Dict[str, Any]], stream: bool = False, **kwargs: Any,
+    ) -> Any:
+        url = f"{self.base_url}/chat/completions"
+        payload: Dict[str, Any] = {
+            "model": self.model_alias, "messages": messages, "stream": stream,
+        }
+        for key, value in kwargs.items():
+            if value is not None:
+                payload[key] = value
+
+        req = urllib.request.Request(
+            url, data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+        )
+
+        # NOTE: do NOT wrap the streaming response in `with` — returning the
+        # generator would exit the context and close the response *before* the
+        # caller iterates it (yielding zero tokens). The generator owns the
+        # response lifecycle and closes it in its finally.
+        try:
+            response = urllib.request.urlopen(req)
+        except urllib.error.URLError as exc:
+            detail = ""
+            if hasattr(exc, "read"):
+                try:
+                    detail = exc.read().decode("utf-8", "replace")
+                except Exception:  # noqa: BLE001
+                    pass
+            log.error(f"Llama server request failed: {detail or exc}")
+            raise RuntimeError(f"Failed to reach local Llama server: {exc}") from exc
+
+        if not stream:
+            try:
+                return json.loads(response.read().decode("utf-8"))
+            finally:
+                response.close()
+
+        def generator() -> Any:
+            try:
+                for raw in response:
+                    line = raw.decode("utf-8").strip()
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[len("data:"):].strip()
+                    if data == "[DONE]":
+                        break
+                    try:
+                        yield json.loads(data)
+                    except json.JSONDecodeError:
+                        pass
+            finally:
+                response.close()
+
+        return generator()
+
+    def tokenize(self, text: bytes) -> list[int]:
+        # Approximation only — GraphEngine estimates prompt tokens itself and
+        # never checks out a client just to count, so an exact server round-trip
+        # here would be wasted. ~4 chars/token is close enough for budgeting.
+        body = text.decode("utf-8", errors="replace") if isinstance(text, bytes) else str(text)
+        return [0] * max(1, len(body) // 4)
+
+    def reset(self) -> None:
+        pass
+
+
+class GGUFModelPool:
+    """Single background ``llama_cpp.server`` process, shared by all agents."""
+
+    def __init__(
+        self,
+        model_path: str,
+        n_instances: int = 4,
+        clear_on_return: bool = True,
+        **llama_kwargs: Any,
+    ) -> None:
+        if not LLAMA_SERVER_AVAILABLE:
+            raise RuntimeError(server_missing_deps_message())
+
+        self._lock = threading.RLock()
+        self._max_instances = n_instances  # display only (single shared server)
+        self._clear_on_return = clear_on_return
+        self._model_path = model_path
+        self._model_alias = "default"
+        self._host = "127.0.0.1"
+        self._port = find_free_port()
+        self._server_url = f"http://{self._host}:{self._port}/v1"
+        self._process: Optional[subprocess.Popen] = None
+        self._config_path: Optional[str] = None
+        self._log_path: Optional[str] = None
+        self._log_handle = None
+
+        # Build the server config from the requested settings (robust: JSON, so
+        # bools/ints serialize correctly and no CLI flag names are guessed).
+        model_settings: Dict[str, Any] = {
+            "model": model_path, "model_alias": self._model_alias,
+        }
+        for key in _SERVER_MODEL_KEYS:
+            value = llama_kwargs.get(key)
+            if value is not None:
+                model_settings[key] = value
+        config = {"host": self._host, "port": self._port, "models": [model_settings]}
+
+        fd, self._config_path = tempfile.mkstemp(prefix="silk-llama-", suffix=".json")
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(config, handle)
+        # Capture server stderr to a file so a failed start reports *why*.
+        self._log_path = self._config_path + ".log"
+        self._log_handle = open(self._log_path, "w", encoding="utf-8")
+
+        cmd = [sys.executable, "-m", "llama_cpp.server",
+               "--config_file", self._config_path]
+        log.info(
+            f"GGUF server starting on {self._server_url} "
+            f"(model {Path(model_path).name})"
+        )
+        self._process = subprocess.Popen(
+            cmd, stdout=subprocess.DEVNULL, stderr=self._log_handle,
+        )
+
+        self._wait_until_ready()  # raises (and cleans up) on failure
+        self._client = OpenAIClientMock(self._server_url, self._model_alias)
+        self._active_sessions = 0
+
+    # -- lifecycle --------------------------------------------------------
+
+    def _read_log_tail(self, limit: int = 2000) -> str:
+        try:
+            if self._log_handle is not None:
+                self._log_handle.flush()
+            with open(self._log_path, "r", encoding="utf-8", errors="replace") as fh:
+                return fh.read()[-limit:].strip()
+        except Exception:  # noqa: BLE001
+            return ""
+
+    def _wait_until_ready(self, timeout: float = _READY_TIMEOUT_S) -> None:
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if self._process is not None and self._process.poll() is not None:
+                tail = self._read_log_tail()
+                self.cleanup()
+                raise RuntimeError(
+                    f"llama_cpp.server exited during startup "
+                    f"(code {self._process.returncode}).\n{tail}"
+                )
+            try:
+                with urllib.request.urlopen(
+                    f"{self._server_url}/models", timeout=2.0
+                ) as response:
+                    if response.status == 200:
+                        log.info("GGUF server ready.")
+                        return
+            except Exception:  # noqa: BLE001 - not up yet; keep polling
+                time.sleep(0.5)
+        tail = self._read_log_tail()
+        self.cleanup()
+        raise RuntimeError(
+            f"llama_cpp.server did not become ready within {timeout:.0f}s.\n{tail}"
+        )
+
+    def cleanup(self) -> None:
+        log.info("GGUF server: shutting down process and freeing VRAM.")
+        with self._lock:
+            if self._process is not None and self._process.poll() is None:
+                self._process.terminate()
+                try:
+                    self._process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    self._process.kill()
+            if self._log_handle is not None:
+                try:
+                    self._log_handle.close()
+                except Exception:  # noqa: BLE001
+                    pass
+                self._log_handle = None
+            for path in (self._config_path, self._log_path):
+                if path:
+                    try:
+                        os.unlink(path)
+                    except OSError:
+                        pass
+            self._config_path = self._log_path = None
+        gc.collect()
+
+    # -- checkout API (kept for GraphEngine; a shared client, not a slot) --
+
+    def register_instance(self, instance: Any) -> None:
+        pass
+
+    def add_idle(self, instance: Any) -> None:
+        pass
+
+    def checkout(self, session_id: str = "default") -> Optional[Any]:
+        with self._lock:
+            self._active_sessions += 1
+            log.debug(f"Checkout: session {session_id[:8]}… → server client")
+            return self._client
+
+    def checkin(
+        self, instance: Any, session_id: str = "default",
+        release_session: bool = False,
+    ) -> None:
+        with self._lock:
+            if release_session and self._active_sessions > 0:
+                self._active_sessions -= 1
+                log.debug(f"Checkin: session {session_id[:8]}… → released")
+
+    def snapshot(self) -> dict:
+        with self._lock:
+            return {
+                "model_path": str(Path(self._model_path).name),
+                "full_path": self._model_path,
+                "capacity": self._max_instances,
+                "total_instances": 1,
+                "bound_sessions": self._active_sessions,
+                "idle": 0,
+                # KV usage isn't exposed by the server; reported as 0 (the loader
+                # shows the bar as informational only).
+                "kv_used_tokens": 0,
+                "kv_total_tokens": 0,
+                "kv_fill_pct": 0.0,
+                "clear_on_return": self._clear_on_return,
+            }
