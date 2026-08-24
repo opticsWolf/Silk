@@ -99,8 +99,9 @@ autonomy runs are legal today. And rounds are not tokens — engine history
 grows monotonically (`GraphEngine` appends, never prunes) — so in long runs
 the real safety invariant is the input-token gate checked pre-request each
 round, not the round ceiling. What that implies for long runs (quality
-decay → token brake → backend `n_ctx` wall, and the spill-hook
-mitigation) is tracked as OPEN_TOPICS T8.
+decay → token brake → backend `n_ctx` wall) is tracked as OPEN_TOPICS T8
+(spill first, compaction options and sequencing); the missing compaction
+mechanism itself is gap G14.
 
 ### Engine-side config
 

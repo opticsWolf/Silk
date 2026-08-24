@@ -54,12 +54,13 @@ crosses the loop boundary as an exception:
 
 **Deliberately out of scope** (relative to larger harness designs): no
 durable session log / resume / forking — the graph is the persistence
-boundary and a run's trace is its `EventRunResult`; no compaction — autonomy
-is bounded by `max_rounds` and `UsageLimits` instead; one-shot subagents
-only — no durable or continuable children (there is no durable session to
-resume them into). A fuller statement of that line — durable runtime,
-steering queues, lanes, compaction, each with the reason it was declined —
-sits in [OPEN_TOPICS, "Deliberately not
+boundary and a run's trace is its `EventRunResult`; no compaction **yet** —
+it is a required mechanism (OPEN_TOPICS G14, options and sequencing in
+T8); until it lands, autonomy is bounded by `max_rounds` and `UsageLimits`;
+one-shot subagents only — no durable or continuable children (there is no
+durable session to resume them into). A fuller statement of that line —
+durable runtime, steering queues, lanes, each with the reason it was
+declined — sits in [OPEN_TOPICS, "Deliberately not
 planned"](../OPEN_TOPICS.md#deliberately-not-planned) (from the
 pi-harness review).
 

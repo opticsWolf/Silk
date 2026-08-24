@@ -161,6 +161,53 @@ to `EventRunResult`, set at the loop's exit classes (one field, four
 assignments; it also makes a user-stopped run distinguishable from a
 finished one).
 
+### G14. Compaction is not implemented (required mechanism)
+
+The declaration here is the requirement, not the code — unlike G1–G13
+(machinery declared, implementation missing), compaction is not declared
+anywhere in the codebase; it is entirely absent. The requirement is on
+record: decision 2026-07-25 — long-running runs are a product goal, so
+compaction **will be needed as a mechanism**. Both architecture reviews
+converge on this gap independently (dsh review C.10: "the one operational
+gap worth closing"; pi review D.4: failure ladder "quality decay → token
+brake → backend `n_ctx` wall").
+
+**Verified facts.** `GraphEngine.history` is a plain append-only list
+(`graph_engine.py:52/93/134`); the `AgentEngine` protocol exposes
+`append_message`, `count_prompt_tokens`, `stream_response`
+(`protocols.py:19-56`) but **no** rewrite/drop/summarize operation; tool
+results are fed back verbatim through the transport; the only
+prompt-growth guard is the pre-request gate at `agent_loop.py:166`, which
+*fails* the run rather than shrinking it — and per G13 even that failure
+is swallowed by consumers. Nothing summarizes, prunes, or spills.
+
+**What is missing (implementation checklist):**
+
+| # | Piece | Note |
+|---|---|---|
+| (a) | Engine operation to replace the model-visible history prefix | The protocol is append-only today; the engine stays the owner of its own history (design rule: the engine is a single request) |
+| (b) | Compactor seam in the loop | The pressure point at `agent_loop.py:166` today only aborts; it must be able to *shrink and retry* |
+| (c) | Context-budget number at loop level | `GGUFMeta.context_length` exists at model load (`gguf_meta.py:42`) and `n_ctx` is passed to the server (`model_pool.py:92`), but nothing plumbs it to the engine or the loop — a pressure threshold needs a denominator |
+| (d) | Event type for compaction | "Everything observable is an event"; content-free per the observability rule (metadata + summary reference, not prompt text) |
+| (e) | Observability preconditions | G13 (outcome) so consumers can tell a compacted run from a clean one; T7 (sink) so the dropped range is debuggable — compaction is a lossy projection of the run |
+
+**Reference designs (from the reviews).** dsh §11.2 — compaction triggers
+on *pressure* (`agent/pre-step`, before request derivation) and on
+*canonical overflow* (`agent/request-error`, after a failed model
+request); a model-free `toolResultPruner` rewrites oversized tool results
+before summary selection; the replacement **shadows the original nodes in
+derived history** (the append-only log is never rewritten). pi §6.3 —
+auto-trigger at `contextTokens > contextWindow − reserveTokens`;
+append-only: find the cut point walking back past `keepRecentTokens`,
+summarize the older range (passing previous summaries forward), append a
+`CompactionEntry` whose inline `retainedTail` makes each compaction a
+self-contained checkpoint; "compaction changes provider context, **not
+storage**".
+
+**Implementation options (A: spill hook / B: agent-invoked tool / C: loop
+policy at the pressure seam) with trade-offs, Silk implementation shapes,
+and the recommended sequencing: [T8](#t8-context-budget-under-raised-autonomy-compaction-is-a-required-mechanism-g14).**
+
 ## Open topics
 
 ### T1. Design of the approval gate (closes G1)
@@ -228,7 +275,7 @@ content-free observability rule
 ([18 — Design rules](architecture/18-design-rules.md#design-rules)):
 metadata only, never prompts / completions / tool payloads.
 
-### T8. Context budget under raised autonomy (spill first, compaction conditionally)
+### T8. Context budget under raised autonomy (compaction is a required mechanism — G14)
 
 `DEFAULT_MAX_ROUNDS = 16` is only the constructor default
 (`functions/agent_loop.py:76`); `Role.max_rounds` overrides it per agent
@@ -240,27 +287,93 @@ decay (invisible — no event fires) → the `UsageLimits.input_tokens`
 controlled stop, checked pre-request every round (`agent_loop.py:166` —
 the graceful brake) → the backend `n_ctx` wall: a hard request error
 (`EventError(context="stream_response")`) or silent middle-truncation
-(the ugly brake). Mitigation ladder, cheapest first:
+(the ugly brake).
 
-1. **P2 — rises to P1 once any role or preset raises `max_rounds`:** a
-   `spill_large_results(max_chars, spill_dir)` entry in `hook_catalog`,
-   beside `redact_secrets`: above threshold, write the full tool result to
-   `<spill_dir>/<call_id>.txt` and replace the model-visible content with
-   a head/tail preview + the file path (the model has file tools).
-   Deterministic, zero extra model calls, ~60–100 lines on existing
-   middleware.
-2. **Consider, niche:** an agent-invoked compaction capability
-   (e.g. `summarize_and_drop_history(keep_recent_n)`) — only if models are
-   observed drowning in-context within the round budget before hitting
-   caps; any rewrite must preserve the active transport's round-trip
-   format.
-3. **Not rational today:** auto-compaction at the `check_input_tokens`
-   pressure seam — rational only with a long-run product target, and only
-   after the outcome field (G13) and the event sink (T7) land.
+**Decision (2026-07-25):** compaction is not just a mitigation — it is a
+**required mechanism** for long-running runs (the absence is tracked as
+[G14](#g14-compaction-is-not-implemented-required-mechanism)). Three
+options, cheapest first, drawn from both architecture reviews (dsh §11.2
++ review C.10/D.10; pi §6.3 + review D.4):
 
-Interim invariant: whenever `max_rounds` is raised, set
-`UsageLimits.input_tokens` too — for long autonomy the token cap, not the
-round cap, is the safety bound.
+**Option A — Spill hook (deterministic, model-free, tool results only).**
+A `spill_large_results(max_chars, spill_dir)` entry in `hook_catalog`,
+beside `redact_secrets` (pydantic `SpillConfig`, like the existing
+`RedactSecretsConfig`): above threshold, write the full tool result to
+`<spill_dir>/<call_id>.txt` and replace the model-visible content with a
+head/tail preview + the file path (the model has file tools and can
+re-read). Runs on the wired `HOOK_WRAP_TOOL_EXECUTE` middleware — no new
+subsystem, zero extra model calls, ~60–100 lines, no new failure mode.
+Provenance: dsh Layer 3 "spill-policy" / `toolResultPruner` (model-free,
+replayable replacements); dsh review D.10 calls it "directly portable".
+Limit: covers only the dominant growth term (verbatim tool results) —
+model text and long dialogue still grow; spill files need a cleanup policy
+(tie the directory to the run/plan root).
+
+**Option B — Compaction as an agent-invoked tool (escape hatch).**
+A tool (e.g. `compact_context(instruction)`) the model calls when it wants
+a reset; on invocation a summarization request runs and the history window
+is replaced with summary + kept tail. Shape in Silk: the tool needs engine
+access (history is the engine's) — the plumbing is a sub-decision
+(`RunContext` action vs. dedicated engine operation). Safety: a failed
+summary request leaves history untouched and the tool returns an error;
+the swap is atomic. Budget: the summarization call consumes tokens —
+metered against `UsageLimits` or explicitly excluded (decision). Pi
+review's position: demoted — "auto-compaction is loop policy (trigger on
+pressure, not model whim); make the tool an escape hatch, not the
+default." Niche; after C.
+
+**Option C — Auto-compaction as loop policy at the pressure seam (the primary mechanism).**
+At the existing `check_input_tokens` seam (`agent_loop.py:166`): when
+estimated input tokens exceed a threshold, **compact and re-check** before
+failing the run — summarize older turns, keep the recent K verbatim,
+continue. This is pi's shape ("compaction is a loop policy"; auto-trigger
+at `contextTokens > contextWindow − reserveTokens`, 16k reserve / 20k
+keep-recent defaults, settings-configurable) and dsh's pressure trigger
+(`agent/pre-step`, before request derivation). Implementation shape in
+Silk:
+
+- New optional `compactor` on `AgentLoop` (constructor argument, like the
+  existing optional `output_validator`) — the loop keeps owning the turn,
+  the engine keeps owning one request, the compactor owns the
+  summarization request (one nested provider call; pi uses one or two).
+- New `AgentEngine` operation to replace the history prefix (G14(a)) —
+  built and swapped in **after** the summary succeeds (atomic).
+- New event (e.g. `EventCompaction`: turns dropped, tokens before/after,
+  summary reference) — content-free per the observability rule (G14(d)).
+- A second trigger maps onto Silk's stream-error path: a backend `n_ctx`
+  overflow arrives today as `EventError(context="stream_response")` (the
+  G13 family) → compact once and retry (dsh's `agent/request-error`
+  trigger).
+- **Transport safety invariant:** the cut point must land on whole-round
+  boundaries — an assistant turn and all its tool results move together;
+  the native transport pairs `tool_calls` with `tool`-role results, and
+  dropping one side of a pair corrupts the next request.
+- A failed compaction degrades to no compaction (the existing
+  `EventUsageLimit`/`EventError` path still protects); it never kills the
+  run — "failures don't cross the loop boundary."
+- **What compaction does not do:** rewrite the run's record. The
+  `EventRunResult` trace + (once T7 lands) the JSONL sink keep the full
+  run; compaction rewrites only the model-visible history — dsh's "the
+  replacement shadows the original nodes in derived history," with the
+  append-only log intact.
+- Cache note (non-issue, recorded so it isn't re-derived): pi's
+  tail-growth invariant makes compaction the "single deliberate cache
+  invalidation"; Silk's pool does not depend on cross-request prompt
+  caching, so no equivalent protection is needed.
+
+**Sequencing (recommended):**
+
+1. **A** — first, whenever any role or preset raises `max_rounds`
+   (the P1 trigger already on record). No preconditions.
+2. **C** — the required mechanism. Precondition chain: (a) context-budget
+   plumbing (G14(c) — `GGUFMeta.context_length` exists at model load but
+   never reaches the loop), (b) the G13 outcome field, (c) the T7 sink
+   (recommended, for debuggability of the dropped range).
+3. **B** — only after C, if the model itself needs to ask for a reset.
+
+**Interim invariant until C lands** (A covers tool results only): whenever
+`max_rounds` is raised for a role, also set `UsageLimits.input_tokens` —
+for long autonomy the token cap, not the round cap, is the safety bound.
 
 ## Deliberately not planned
 
@@ -276,5 +389,5 @@ scratch.
 | Mid-run steering / follow-up queues | Atomic runs + the sign-off park express the same interactivity at run boundaries; no inbox mechanism needed. |
 | Multiple interception generations (callbacks → events → durable hooks) | One audience (graph authors), one surface. Revisit only if third-party Python extension packs become a real demand. |
 | Lanes / continuable subagents | Need a session substrate; one-shot delegation with depth/cycle guards and a shared budget covers the current fan-out (T3 aside). |
-| Compaction + token metering + cache management | Unnecessary at stock bounds; the spill hook (T8) covers the concrete risk. |
+| Token metering + cache management | Unnecessary at stock bounds. (Compaction was on this list until 2026-07-25 — it is now a required mechanism, tracked as [G14](#g14-compaction-is-not-implemented-required-mechanism) / T8.) |
 | Multi-package workspace machinery (sub-path exports, lockstep versions) | Organizational overhead for a monorepo Silk is not; the two-layer import rule is the same invariant at the right scale. |
