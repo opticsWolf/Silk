@@ -35,7 +35,7 @@ repo to be linked into Weave as `weave/plugins/silk` via `git submodule`):
 
 ## Docs
 
-- [Architecture](docs/ARCHITECTURE.md) — the two-layer split, model pool, tool system, agent loop, hooks, task/sign-off system
+- [Architecture](docs/architecture/README.md) — the two-layer split, model pool, tool system, agent loop, hooks, task/sign-off system
 - [Node reference](docs/NODES.md) — every node, its ports, and a worked example graph
 - [Tool reference](docs/TOOLS.md) — built-in tools, the sandbox, and how to register your own
 - [Open topics & gaps](docs/OPEN_TOPICS.md) — known gaps and open design questions, each cited to the code that establishes it

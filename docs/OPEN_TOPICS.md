@@ -44,7 +44,7 @@ returns exactly the same results as `keywords`.
 ### G3. 11 of the 19 hook events are defined but never emitted
 
 `functions/hooks.py` declares 19 event constants; only 8 are actually
-fired (see the wiring table in [ARCHITECTURE.md](ARCHITECTURE.md#hooks-and-middleware)).
+fired (see the wiring table in [the tool system section](architecture/08-tool-system.md#hooks-and-middleware)).
 Never emitted: `HOOK_AFTER_MODEL_REQUEST`, `HOOK_WRAP_MODEL_REQUEST`,
 `HOOK_ON_MODEL_REQUEST_ERROR`, `HOOK_WRAP_TOOL_VALIDATE`,
 `HOOK_ON_TOOL_VALIDATE_ERROR`, `HOOK_ON_TOOL_EXECUTE_ERROR`,
