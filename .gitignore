@@ -7,7 +7,4 @@ __pycache__/
 *.bak
 
 # personal review / reference artifacts (do not commit)
-docs/pi-architecture-review.md
-docs/Deepseek_harness_architecture-structure.md
-docs/REVIEW_architecture_vs_dsh.md
-docs/REVIEW_architecture_vs_pi.md
+docs/references/
