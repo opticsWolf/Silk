@@ -74,7 +74,10 @@ the `AgentLoop` generator contract (rounds, reflection, usage limits,
 `HOOK_AFTER_RUN` exactly-once), the ToolBox execution path (role gate,
 structured errors, timeouts, sequential-vs-parallel), `SqliteTaskStore`
 concurrency (revision conflicts → `Conflict`), and the orchestrator
-guards (depth / cycle / unknown worker).
+guards (depth / cycle / unknown worker). When it lands, encode the five
+invariants as executable fixture data (one record per invariant and
+violation class) rather than free-standing test functions, so the doc and
+the suite cannot drift apart (pi review D.5).
 
 ### G5. Runtime dependencies are declared nowhere
 
@@ -148,10 +151,15 @@ surfacing an error (`nodes/agent.py`, `functions/subagent.py`), so such a
 run reports a normal finish (status "Done." / `SubagentResult(ok=True)`)
 and the error event vanishes. Related: `recoverable` is declared and set,
 but no consumer reads it — today it is a dead field, and `agent_loop` is
-the only context whose error arrives together with a final result. A fix
-is either on the consumer side (key the guard off the error context /
-`recoverable` instead of the presence of a final result) or on the loop
-side (make `max_rounds` a true terminal exit with no `EventRunResult`).
+the only context whose error arrives together with a final result.
+Candidate fixes: on the consumer side, key the guard off the error context
+/ `recoverable` instead of the presence of a final result; on the loop
+side, make `max_rounds` a true terminal exit with no `EventRunResult`; or
+the pi-harness review's option (D.1), which fixes all three conflated
+exits at once — add `outcome: completed | stopped | usage_limited | error`
+to `EventRunResult`, set at the loop's exit classes (one field, four
+assignments; it also makes a user-stopped run distinguishable from a
+finished one).
 
 ## Open topics
 
@@ -206,3 +214,67 @@ port.
 `mordant` is missing. Decide the minimum rendering guarantee: plain text
 always, or `mordant` as a soft requirement with a visible notice when the
 styled path is unavailable.
+
+### T7. Durable event sink (JSONL per run)
+
+The event dicts already carry `event` / `ts` / `run_id` / `seq`
+([Event streams](architecture/15-event-streams.md#event-streams)).
+Writing them as JSONL per run gives debug replay at a small fraction of a
+session-substrate cost; the dsh and pi reviews each recommend it
+independently. Decision on record: build only when a real debugging need
+appears, not speculatively — retrofitting persistence *shapes* into a
+running system is the expensive direction. If it lands, it must honour the
+content-free observability rule
+([18 — Design rules](architecture/18-design-rules.md#design-rules)):
+metadata only, never prompts / completions / tool payloads.
+
+### T8. Context budget under raised autonomy (spill first, compaction conditionally)
+
+`DEFAULT_MAX_ROUNDS = 16` is only the constructor default
+(`functions/agent_loop.py:76`); `Role.max_rounds` overrides it per agent
+(`nodes/agent.py`: `role.max_rounds or DEFAULT_MAX_ROUNDS`), so
+`max_rounds=100` is legal today. `GraphEngine.history` grows monotonically
+(append-only, never pruned — `functions/graph_engine.py`), and growth is
+dominated by verbatim tool results. Failure ladder for long runs: quality
+decay (invisible — no event fires) → the `UsageLimits.input_tokens`
+controlled stop, checked pre-request every round (`agent_loop.py:166` —
+the graceful brake) → the backend `n_ctx` wall: a hard request error
+(`EventError(context="stream_response")`) or silent middle-truncation
+(the ugly brake). Mitigation ladder, cheapest first:
+
+1. **P2 — rises to P1 once any role or preset raises `max_rounds`:** a
+   `spill_large_results(max_chars, spill_dir)` entry in `hook_catalog`,
+   beside `redact_secrets`: above threshold, write the full tool result to
+   `<spill_dir>/<call_id>.txt` and replace the model-visible content with
+   a head/tail preview + the file path (the model has file tools).
+   Deterministic, zero extra model calls, ~60–100 lines on existing
+   middleware.
+2. **Consider, niche:** an agent-invoked compaction capability
+   (e.g. `summarize_and_drop_history(keep_recent_n)`) — only if models are
+   observed drowning in-context within the round budget before hitting
+   caps; any rewrite must preserve the active transport's round-trip
+   format.
+3. **Not rational today:** auto-compaction at the `check_input_tokens`
+   pressure seam — rational only with a long-run product target, and only
+   after the outcome field (G13) and the event sink (T7) land.
+
+Interim invariant: whenever `max_rounds` is raised, set
+`UsageLimits.input_tokens` too — for long autonomy the token cap, not the
+round cap, is the safety bound.
+
+## Deliberately not planned
+
+Machinery a much larger harness (pi — ~149k lines of TypeScript) needs but
+Silk (~11k lines of Python, atomic runs over a graph) declines, with the
+reason on record (pi-harness review, D.6). Revisit only if the stated
+trigger changes; the list exists so the question isn't re-derived from
+scratch.
+
+| Machinery | Why not |
+|---|---|
+| Durable session runtime (write-once entry tree, mutable registers, usage ledger, crash-position recovery) | Silk runs are atomic and graph-pulsed; a dead run is re-pulsed. The product shape excludes the problem. |
+| Mid-run steering / follow-up queues | Atomic runs + the sign-off park express the same interactivity at run boundaries; no inbox mechanism needed. |
+| Multiple interception generations (callbacks → events → durable hooks) | One audience (graph authors), one surface. Revisit only if third-party Python extension packs become a real demand. |
+| Lanes / continuable subagents | Need a session substrate; one-shot delegation with depth/cycle guards and a shared budget covers the current fan-out (T3 aside). |
+| Compaction + token metering + cache management | Unnecessary at stock bounds; the spill hook (T8) covers the concrete risk. |
+| Multi-package workspace machinery (sub-path exports, lockstep versions) | Organizational overhead for a monorepo Silk is not; the two-layer import rule is the same invariant at the right scale. |

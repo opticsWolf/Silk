@@ -10,31 +10,32 @@ document — merge the numbered files back together in manifest order.
 
 ## Manifest (merge order)
 
-| Order | File | Top-level section | Lines |
-|---|---|---|---|
-| 0 | `00-header.md` | title, intro, Contents | 37 |
-| 1 | `01-layers.md` | Layers | 19 |
-| 2 | `02-wiring.md` | Wiring at a glance | 71 |
-| 3 | `03-protocols.md` | The two protocol contracts | 32 |
-| 4 | `04-agent-loop.md` | The agent loop | 104 |
-| 5 | `05-lifecycle-and-failure-semantics.md` | Lifecycle and failure semantics | 61 |
-| 6 | `06-model-layer.md` | Model layer | 42 |
-| 7 | `07-tool-transport.md` | Tool transport | 32 |
-| 8 | `08-tool-system.md` | The tool system | 276 |
-| 9 | `09-system-prompt-assembly.md` | System prompt assembly | 28 |
-| 10 | `10-usage-reflection-validation.md` | Usage, reflection, and output validation | 26 |
-| 11 | `11-task-system-signoff.md` | Task system and sign-off | 69 |
-| 12 | `12-multi-agent.md` | Multi-agent | 67 |
-| 13 | `13-tool-discovery.md` | Tool discovery and search | 15 |
-| 14 | `14-presets.md` | Presets | 12 |
-| 15 | `15-event-streams.md` | Event streams | 32 |
-| 16 | `16-thread-model.md` | Thread model | 20 |
-| 17 | `17-invariants.md` | Invariants | 28 |
-| 18 | `18-design-rules.md` | Design rules | 21 |
-| 19 | `19-where-new-behaviour-goes.md` | Where new behaviour goes | 16 |
+| Order | File | Top-level section |
+|---|---|---|
+| 0 | `00-header.md` | title, intro, Contents |
+| 1 | `01-layers.md` | Layers |
+| 2 | `02-wiring.md` | Wiring at a glance |
+| 3 | `03-protocols.md` | The two protocol contracts |
+| 4 | `04-agent-loop.md` | The agent loop |
+| 5 | `05-lifecycle-and-failure-semantics.md` | Lifecycle and failure semantics |
+| 6 | `06-model-layer.md` | Model layer |
+| 7 | `07-tool-transport.md` | Tool transport |
+| 8 | `08-tool-system.md` | The tool system |
+| 9 | `09-system-prompt-assembly.md` | System prompt assembly |
+| 10 | `10-usage-reflection-validation.md` | Usage, reflection, and output validation |
+| 11 | `11-task-system-signoff.md` | Task system and sign-off |
+| 12 | `12-multi-agent.md` | Multi-agent |
+| 13 | `13-tool-discovery.md` | Tool discovery and search |
+| 14 | `14-presets.md` | Presets |
+| 15 | `15-event-streams.md` | Event streams |
+| 16 | `16-thread-model.md` | Thread model |
+| 17 | `17-invariants.md` | Invariants |
+| 18 | `18-design-rules.md` | Design rules |
+| 19 | `19-where-new-behaviour-goes.md` | Where new behaviour goes |
 
-The pre-split document is **1008 lines**; a correct reconstruction
-reproduces it exactly (the per-file line counts above sum to it).
+The merge contract is the order above. Per-file line counts are
+deliberately not tracked (they churn on every edit); the rebuild script
+prints the resulting line count as a sanity check.
 
 ## Rebuild (canonical — Python)
 
@@ -48,9 +49,7 @@ d = Path("docs/architecture")
 parts = sorted(p for p in d.glob("*.md") if re.match(r"\d{2}-", p.name))
 text = "".join(p.read_text(encoding="utf-8") for p in parts)
 text = re.sub(r"\]\((\d{2}-[a-z0-9-]+\.md)#([a-z0-9-]+)\)", r"](#\2)", text)
-text = (text.replace("](../NODES.md)", "](NODES.md)")
-          .replace("](../TOOLS.md)", "](TOOLS.md)")
-          .replace("](../OPEN_TOPICS.md)", "](OPEN_TOPICS.md)"))
+text = re.sub(r"\]\(\.\./([A-Za-z0-9_]+\.md)", r"](\1", text)
 Path("docs/ARCHITECTURE.md").write_text(text, encoding="utf-8", newline="")
 print("rebuilt docs/ARCHITECTURE.md:", len(text.splitlines()), "lines")
 ```
@@ -72,7 +71,7 @@ It does three things:
    | In the split files | In the single file | Why the split rewrites it |
    |---|---|---|
    | `](NN-slug.md#anchor)` | `](#anchor)` | cross-section links must cross files here, but are same-file anchors in the single document |
-   | `](../NODES.md)`, `](../TOOLS.md)`, `](../OPEN_TOPICS.md)` | `](NODES.md)`, `](TOOLS.md)`, `](OPEN_TOPICS.md)` | this folder sits one level deeper than `docs/` |
+   | `](../NAME.md)` (optionally with `#anchor`) | `](NAME.md)` (anchor preserved) | this folder sits one level deeper than `docs/` |
 3. **Writes canonical LF** (`newline=""`), byte-identical to the pre-split
    `docs/ARCHITECTURE.md` as it lives in git.
 
@@ -99,9 +98,7 @@ pre-split working-tree copy instead.)
 $parts = Get-ChildItem docs\architecture\*.md | Where-Object Name -match '^\d{2}-' | Sort-Object Name
 $text = -join ($parts | ForEach-Object { Get-Content $_.FullName -Raw })
 $text = $text -replace '\]\((\d{2}-[a-z0-9-]+\.md)#([a-z0-9-]+)\)', '](#$2)'
-$text = $text -replace '\]\(\./NODES\.md\)', '](NODES.md)'
-$text = $text -replace '\]\(\./TOOLS\.md\)', '](TOOLS.md)'
-$text = $text -replace '\]\(\./OPEN_TOPICS\.md\)', '](OPEN_TOPICS.md)'
+$text = $text -replace '\]\(\.\./([A-Za-z0-9_]+\.md)', ']($1'
 [IO.File]::WriteAllText((Join-Path (Get-Location) 'docs\ARCHITECTURE.md'), $text, (New-Object Text.UTF8Encoding($false)))
 ```
 

@@ -93,6 +93,15 @@ owns *one tool batch*.
 independent brake. `loop.stop()` requests a graceful stop, honoured at the
 next token boundary via the engine.
 
+`16` is a *default*, not a law: `Role.max_rounds` overrides the ceiling per
+agent (`nodes/agent.py`: `role.max_rounds or DEFAULT_MAX_ROUNDS`), so long
+autonomy runs are legal today. And rounds are not tokens — engine history
+grows monotonically (`GraphEngine` appends, never prunes) — so in long runs
+the real safety invariant is the input-token gate checked pre-request each
+round, not the round ceiling. What that implies for long runs (quality
+decay → token brake → backend `n_ctx` wall, and the spill-hook
+mitigation) is tracked as OPEN_TOPICS T8.
+
 ### Engine-side config
 
 Because the loop consults the engine's `usage_limits` and
