@@ -15,7 +15,7 @@ renders:
 | `EventToolResult` | `tool_name`, `result`, `call_id`, `error`, `error_message` |
 | `EventFinalResult` | `text`, `tokens`, `input_tokens`, `tps`, `finish_reason` |
 | `EventRunResult` | the final-result fields **plus** `tool_calls`, `tool_results` (the run trace) and `usage_stats` (`total_tokens`, `elapsed_s`, and the `UsageLimits` snapshot) |
-| `EventError` | `error`, `context`, `recoverable` |
+| `EventError` | `error`, `context` (`stream_response` / `usage_limits` / `agent_loop` / `output_validation`), `recoverable` (set by the loop; no consumer reads it yet — see OPEN_TOPICS G13) |
 | `EventUsageLimit` | `limit_type` (`request` — request-count or input-token cap — / `output_tokens` / `tool_calls`) |
 | `EventReflection` | `retry_count`, `max_retries`, `error_type`, `error_message` |
 

@@ -72,7 +72,9 @@ One **round** is: one model request → extract any tool calls → dispatch them
       so the model can read the outputs / retry.
 
 4. If the rounds are exhausted without a final answer →
-   `EventError(context="agent_loop", recoverable=True)`.
+   `EventError(context="agent_loop", recoverable=True)` — yielded
+   *mid-stream*; the run then still proceeds to output validation and the
+   final result (the last round's text becomes the "final" text).
 5. **Output validation**: if `output_validator` is set,
    `validate_with_reflection(full_text, max_retries=reflection_config.max_output_retries)`
    runs; a failure ends the run with an `EventError`, a pass may rewrite

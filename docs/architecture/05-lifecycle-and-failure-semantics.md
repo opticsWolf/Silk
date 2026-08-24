@@ -28,7 +28,14 @@ terminal event(s) tell you how a run ended:
 | Output validation fails (after `max_output_retries`) | `EventError(context="output_validation", recoverable=False)` — no `EventRunResult` |
 | Usage limit breach (request / input-token / output-token / tool-call) | `EventUsageLimit(limit_type=…)`, `EventError(context="usage_limits", recoverable=False)` — a controlled stop, not a fault |
 | Model stream error (exception or `stats["error"]`) | `EventError(context="stream_response", recoverable=False)` |
-| `max_rounds` exhausted with no round producing a final answer | `EventError(context="agent_loop", recoverable=True)` |
+| `max_rounds` exhausted (every round produced tool calls) | `EventError(context="agent_loop", recoverable=True)` *mid-stream* — the run then **still** ends with `EventFinalResult` + `EventRunResult` carrying the last round's text, so on the wire it looks like a normal finish |
+
+**How consumers read that.** Both consumers of the loop record the last
+`EventError` and surface it only when no `EventRunResult` arrived
+(`run_error and not final_text` — `nodes/agent.py`, `functions/subagent.py`).
+That makes the `max_rounds` row the one `EventError` that is *not* surfaced:
+it arrives together with a final result, so both consumers report a normal
+finish (OPEN_TOPICS G13).
 
 **Failure semantics.** Every failure below is model- or stream-visible; none
 crosses the loop boundary as an exception:
@@ -42,7 +49,7 @@ crosses the loop boundary as an exception:
 | Batch-level failure (the executor itself raised) | per-call error results for the whole batch | yes | same as above |
 | Usage limit | `EventUsageLimit` + `EventError` | no | the user: lower a cap, or re-run |
 | Model stream error | `EventError(context="stream_response")` | no | the user: re-run |
-| `max_rounds` exhausted | `EventError(context="agent_loop", recoverable=True)` | flagged recoverable | the run ends; more autonomy is a config change |
+| `max_rounds` exhausted | `EventError(context="agent_loop", recoverable=True)` mid-stream, then a normal-looking `EventRunResult` with the last round's text | flagged recoverable | nobody today — both consumers drop it (OPEN_TOPICS G13); more autonomy is a config change |
 | Output validation failure | `EventError(context="output_validation")` | no | the user: re-run |
 
 **Deliberately out of scope** (relative to larger harness designs): no

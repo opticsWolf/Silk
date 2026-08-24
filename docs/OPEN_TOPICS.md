@@ -5,7 +5,7 @@ Every entry cites the code that establishes it, so each item can be
 verified against the source in seconds. When an item is resolved, delete
 it — the commit history is the archive.
 
-**Last audited:** 2026-08-23.
+**Last audited:** 2026-08-24.
 
 Legend:
 
@@ -136,6 +136,22 @@ HTTP client (`functions/model_pool.py`). A rename (e.g.
 The package has no `__version__` (or equivalent), so a running graph
 cannot report which Silk commit it is running — only the submodule pin in
 the Weave checkout can. Trivial to add; useful for logs and bug reports.
+
+### G13. The `max_rounds` error is silently dropped by every consumer
+
+When the round budget is exhausted, the loop yields
+`EventError(context="agent_loop", recoverable=True)`
+(`functions/agent_loop.py`, the `for/else` on the rounds loop) **and then
+still yields `EventFinalResult` + `EventRunResult`** with the last round's
+text. Both consumers guard with `if run_error and not final_text:` before
+surfacing an error (`nodes/agent.py`, `functions/subagent.py`), so such a
+run reports a normal finish (status "Done." / `SubagentResult(ok=True)`)
+and the error event vanishes. Related: `recoverable` is declared and set,
+but no consumer reads it — today it is a dead field, and `agent_loop` is
+the only context whose error arrives together with a final result. A fix
+is either on the consumer side (key the guard off the error context /
+`recoverable` instead of the presence of a final result) or on the loop
+side (make `max_rounds` a true terminal exit with no `EventRunResult`).
 
 ## Open topics
 

@@ -16,8 +16,8 @@ document — merge the numbered files back together in manifest order.
 | 1 | `01-layers.md` | Layers | 19 |
 | 2 | `02-wiring.md` | Wiring at a glance | 71 |
 | 3 | `03-protocols.md` | The two protocol contracts | 32 |
-| 4 | `04-agent-loop.md` | The agent loop | 102 |
-| 5 | `05-lifecycle-and-failure-semantics.md` | Lifecycle and failure semantics | 54 |
+| 4 | `04-agent-loop.md` | The agent loop | 104 |
+| 5 | `05-lifecycle-and-failure-semantics.md` | Lifecycle and failure semantics | 61 |
 | 6 | `06-model-layer.md` | Model layer | 42 |
 | 7 | `07-tool-transport.md` | Tool transport | 32 |
 | 8 | `08-tool-system.md` | The tool system | 276 |
@@ -33,7 +33,7 @@ document — merge the numbered files back together in manifest order.
 | 18 | `18-design-rules.md` | Design rules | 21 |
 | 19 | `19-where-new-behaviour-goes.md` | Where new behaviour goes | 16 |
 
-The pre-split document is **999 lines**; a correct reconstruction
+The pre-split document is **1008 lines**; a correct reconstruction
 reproduces it exactly (the per-file line counts above sum to it).
 
 ## Rebuild (canonical — Python)
@@ -51,11 +51,17 @@ text = re.sub(r"\]\((\d{2}-[a-z0-9-]+\.md)#([a-z0-9-]+)\)", r"](#\2)", text)
 text = (text.replace("](../NODES.md)", "](NODES.md)")
           .replace("](../TOOLS.md)", "](TOOLS.md)")
           .replace("](../OPEN_TOPICS.md)", "](OPEN_TOPICS.md)"))
-Path("docs/ARCHITECTURE.md").write_text(text, encoding="utf-8")
+Path("docs/ARCHITECTURE.md").write_text(text, encoding="utf-8", newline="")
 print("rebuilt docs/ARCHITECTURE.md:", len(text.splitlines()), "lines")
 ```
 
-It does two things:
+`newline=""` is load-bearing: `write_text` would otherwise translate `\n` to
+the platform line ending (CRLF on Windows) and the file would no longer be
+byte-identical to the LF canonical form. `read_text` already normalises
+CRLF working-tree chunks back to `\n`, so the rebuild is LF on every
+machine.
+
+It does three things:
 
 1. **Concatenates** `00-header.md` through `19-*.md` in order. The chunks
    were cut at section boundaries with their original spacing, so plain
@@ -67,17 +73,25 @@ It does two things:
    |---|---|---|
    | `](NN-slug.md#anchor)` | `](#anchor)` | cross-section links must cross files here, but are same-file anchors in the single document |
    | `](../NODES.md)`, `](../TOOLS.md)`, `](../OPEN_TOPICS.md)` | `](NODES.md)`, `](TOOLS.md)`, `](OPEN_TOPICS.md)` | this folder sits one level deeper than `docs/` |
+3. **Writes canonical LF** (`newline=""`), byte-identical to the pre-split
+   `docs/ARCHITECTURE.md` as it lives in git.
 
-The result is byte-identical to the pre-split `docs/ARCHITECTURE.md`.
+With `core.autocrlf=true` the chunk files may show CRLF in the working tree
+— that is normal and irrelevant: `read_text` normalises it away, and git
+stores the LF form.
 
 ## Verify
 
 ```bash
-python -c "import subprocess, pathlib; a = subprocess.run(['git','show','HEAD:docs/ARCHITECTURE.md'], capture_output=True).stdout.decode('utf-8'); b = pathlib.Path('docs/ARCHITECTURE.md').read_text(encoding='utf-8'); print('IDENTICAL' if a.replace(chr(13)+chr(10), chr(10)) == b.replace(chr(13)+chr(10), chr(10)) else 'DIFFERS')"
+python -c "import subprocess, pathlib; a = subprocess.run(['git','show','6f6bfeb:docs/ARCHITECTURE.md'], capture_output=True).stdout.decode('utf-8'); b = pathlib.Path('docs/ARCHITECTURE.md').read_text(encoding='utf-8'); print('IDENTICAL' if a.replace(chr(13)+chr(10), chr(10)) == b.replace(chr(13)+chr(10), chr(10)) else 'DIFFERS')"
 ```
 
-(If the split was already committed, compare against the tagged/known-good
-commit instead of `HEAD`.)
+(`6f6bfeb` is the last commit that contained the single file — the split
+was committed as `e7d9669`. Note the single-file form post-dated that
+commit by a set of accuracy fixes that went straight into the split files,
+so a reconstruction of the *current* split files differs from `6f6bfeb`
+by exactly those edits; for a byte-exact check compare against a
+pre-split working-tree copy instead.)
 
 ## Quick rebuild (PowerShell, equivalent normalisation)
 
@@ -88,7 +102,7 @@ $text = $text -replace '\]\((\d{2}-[a-z0-9-]+\.md)#([a-z0-9-]+)\)', '](#$2)'
 $text = $text -replace '\]\(\./NODES\.md\)', '](NODES.md)'
 $text = $text -replace '\]\(\./TOOLS\.md\)', '](TOOLS.md)'
 $text = $text -replace '\]\(\./OPEN_TOPICS\.md\)', '](OPEN_TOPICS.md)'
-Set-Content -Encoding utf8 docs\ARCHITECTURE.md $text
+[IO.File]::WriteAllText((Join-Path (Get-Location) 'docs\ARCHITECTURE.md'), $text, (New-Object Text.UTF8Encoding($false)))
 ```
 
 ## Maintenance rules
@@ -102,3 +116,7 @@ Set-Content -Encoding utf8 docs\ARCHITECTURE.md $text
 - **Follow the split's link conventions** in any new section so the
   normalisation above keeps working: cross-section links as
   `](NN-slug.md#anchor)`, sibling docs as `](../NAME.md)`.
+- **Line endings:** the canonical form in git is LF (with
+  `core.autocrlf=true` the working tree shows CRLF — normal, and
+  normalised away by both rebuild recipes). Always rebuild with the
+  `newline=''` form above; never `Set-Content` (it forces CRLF).
