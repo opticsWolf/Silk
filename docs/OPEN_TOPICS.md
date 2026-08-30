@@ -482,6 +482,12 @@ the case it exists for. A correctness bug, not an ergonomics gap. See
 
 ### T4. Plan discovery policy (task store)
 
+**Note (2026-08-31):** spec §16 (D58/D60) now depends on this store: the
+Task Hub scans **all** `plan-*.db` under the graph's sandbox roots
+(`scan_all`, additive) while agents keep the newest-only discovery. Whatever
+policy T4 settles on must keep both readers coherent.
+
+
 **Resolved** by spec §11, D23: a `Task Node` carries explicit plan identity
 (plan id + store location) and feeds the ToolBox, so the Plan Viewer takes
 that identity instead of guessing. Stub kept for inbound links. Until it
@@ -554,5 +560,5 @@ scratch.
 | Token metering (per-session replay folds, revisioned measurements) | Unnecessary at stock bounds. (Compaction was on this list until 2026-07-25; it is now a required mechanism, specified in spec §12 and tracked as [G14](#g14-compaction-is-not-implemented-required-mechanism).) |
 | ~~KV-cache management~~ | **Removed 2026-08-30.** Held to be unnecessary because Silk was thought not to depend on cross-request prompt caching. It does — locally the dependency is paid in latency rather than money. Now [G15](#g15-prompt-prefix-reuse-is-unconfigured-and-unmeasured) / spec D41, D44, I11. |
 | ~~Single model backend~~ | **Removed 2026-08-30.** `GGUFModelPool` assumes one spawned local server; the pool is to hold N named backends, local or remote (litellm and similar). Now [G11](#g11-openaiclientmock-is-the-production-client) / spec D45. |
-| Approval / acknowledgement node | The answerer is the Agent node's own stream output UI (spec **D48**). A node form is impossible without an inbound mid-compute channel Weave does not have — inputs are gathered once, before `compute()`, and the Agent blocks *inside* it. Worked through and rejected in full at spec **D51**, including what the node form would have bought. Re-derived three times now (D12, D32, D51); the idea may return as a *configuration* surface — an Approval **Policy** node feeding the run-start policy snapshot (D38) — never as a runtime backchannel. |
+| Approval / acknowledgement node | The answerer is the Agent node's own stream output UI (spec **D48**). A node form is impossible without an inbound mid-compute channel Weave does not have — inputs are gathered once, before `compute()`, and the Agent blocks *inside* it. Worked through and rejected in full at spec **D51**, including what the node form would have bought. Re-derived three times now (D12, D32, D51); the idea may return as a *configuration* surface — an Approval **Policy** node feeding the run-start policy snapshot (D38) — never as a runtime backchannel. *Centralizing* the N-agent case is solved without a node: a Decision Inbox **dock** built on Weave's NodePanel mirror system, spec **D59** — and the rule that makes all of this stop recurring is now invariant **I12** (node iff turn boundary). |
 | Multi-package workspace machinery (sub-path exports, lockstep versions) | Organizational overhead for a monorepo Silk is not; the two-layer import rule is the same invariant at the right scale. |

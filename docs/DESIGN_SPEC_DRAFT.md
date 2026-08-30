@@ -166,6 +166,16 @@ later one -- except at a compaction, which is the single deliberate
 invalidation. This is pi's append-only cache invariant, and on a local
 backend it is a latency invariant, not a cost one (see D41).
 
+**I12. A human decision surface may be a node iff the decision happens at a
+turn boundary.** Mid-run decisions are node-local (D48) or *mirrors* of the
+node-local surface (D59) -- never nodes. This is the rule that reconciles the
+shipped Sign-Off node with D51's rejection of an approval node: sign-off parks
+the task, **ends the turn**, and re-triggers by pulse -- everything happens
+where the evaluation model permits it -- while the approval gate blocks inside
+`compute()`, where no graph channel can reach it. One sentence, and it is the
+decision procedure for every future "should X be a node?"
+(ARCHITECTURE_REVIEW.md, R6.)
+
 ---
 
 ## 5. Event model
@@ -1143,7 +1153,104 @@ of D41 at the worst possible moment: mid-fan-out.
 
 ---
 
-## 16. Phasing
+## 16. Observability & HITL surfaces
+
+Three distinct problems hide inside "how do I see what my agents are doing":
+**progress** (task planning and its advance, across N agents), **turn-boundary
+decisions** (sign-off), and **mid-run decisions** (the D48 gate). Three rules
+assign each its surface, and none of the three surfaces is interchangeable:
+
+1. *Truth lives in the store.* Streams are lossy hints (`emit_stream` is
+   "previews, never truth"; delivery is gated and never replayed), so any
+   progress view must be a **projection of the plan store**, with events used
+   only as refresh triggers. The Plan Viewer already works this way; nothing
+   new may work otherwise. (ARCHITECTURE_REVIEW.md, R1/P1.)
+2. *The turn-boundary rule* (I12) decides node vs. not-node.
+3. *Weave's topology*: input ports are single-source
+   (`engine/dataflow.py:393`), so N agents **cannot fan into one hub input**
+   -- a hub must pull from storage, not collect wires. Output ports fan out
+   freely (pulse dispatch walks every trace), so one hub can wake N agents.
+
+**D58. The Task Hub node -- the multi-agent progress and sign-off surface,
+and it is legal by I12.** A store-scanning projection node:
+
+- **Inputs:** `roots` (`dirpath_list`) -- wired from `ToolBox.root_paths`,
+  which is *already* the graph-wide aggregation point for sandbox roots, so
+  the whole graph's plans arrive on **one wire**; `refresh` (`exec`) -- a
+  timer pulse or any agent's `done`.
+- **Body:** scans **all** `plan-*.db` under the roots (the store's discovery
+  is newest-only today; a `scan_all()` is a small addition -- D60) and renders
+  a kanban-style projection: one lane per plan, `claimed_by` as the per-task
+  agent badge (the schema has carried it all along, unused by any view),
+  `awaiting_signoff` highlighted. The store was *designed* for this --
+  "multiple agents may share one plan", `BEGIN IMMEDIATE` + WAL -- the hub is
+  the view that finally exercises it.
+- **Sign-off actions:** because sign-off is a turn-boundary decision, the hub
+  may host Approve/Reject for every listed plan (I12). A decision writes to
+  the store with the human as actor (the revision log already records
+  actors), then pulses `signed` -- one output port, fanned out to every
+  agent's `run`. For the N-agent case this **absorbs the Sign-Off node**;
+  whether the single-agent node remains as a convenience is open
+  (§19 q6).
+- **Outputs:** `plans_json` (digest -- the port's evaluated value is honest
+  per rule 1), `pending` (count of open sign-offs *and* outstanding mid-run
+  decision requests, from the D2 stream -- countable here, answerable only at
+  the source per D59), `signed` (`exec`).
+
+The hub never talks to a model, holds no run state, and works identically
+however many agents run: it is a database viewer wearing a node costume --
+which, unlike D51's dock-in-a-costume, is exactly what a node *is*: evaluate
+inputs, produce values.
+
+**D59. Mid-run centralization is a dock, never a node.** With N agents, D48's
+answering widgets are scattered across N node bodies. Centralizing them must
+not reintroduce the rejected answerer node (D51), and does not have to --
+Weave already ships the machinery:
+
+- **Attention on the canvas.** An agent blocked on its `DecisionSeam` enters
+  a visible waiting state and uses the existing pulse-glow animation
+  (`weave/node/pulse_mixin.py` -- `heartbeat` exists, fittingly). The canvas
+  itself is the "who needs me" dashboard. Zero new architecture.
+- **A Decision Inbox dock.** Weave's NodePanel mirror system
+  (`panel/mirror_contracts.py`) clones node widgets into docks **with
+  action-signal forwarding -- mirrored buttons work**. The inbox is a dock
+  listing mirrors of each waiting agent's D48 widget; clicking Approve in the
+  dock *is* clicking it in the node -- same widget binding, same
+  `seam.resolve()`. D51 is untouched: no wires, no graph channel, no
+  rendezvous handle; a dock is main-thread UI like the log pane.
+- **A session-scoped `DecisionRegistry`** feeds the dock: run-scoped seams
+  register on `await_decision`, unregister on resolve/cancel/timeout. The
+  registry holds weak references and run ids only -- it is a directory, not
+  an owner, so seam lifetime (D49) is unchanged.
+
+*Boundary restated:* the hub node (D58) may **count** mid-run requests; only
+the asking node's UI -- or its mirror -- may **answer** one.
+
+**D60. Identity plumbing -- what the surfaces above actually require.**
+
+1. **The event envelope gains an `agent` field** (node title + node uuid).
+   Today events carry `run_id` only; N independent agents' streams are
+   indistinguishable once merged anywhere. D54's `worker` field covers
+   *nested* attribution (orchestrator→worker); `agent` covers *top-level*
+   attribution. Both, not either.
+2. **`SqliteTaskStore.scan_all(roots)`** -- enumerate every `plan-*.db`
+   under a root set, returning (path, plan) pairs; the existing discovery
+   (newest-only, `_locate_db`) stays as the agent-side behaviour.
+3. **Surface `claimed_by`** in projections (hub lanes, Plan Viewer badges).
+   Schema support exists; no store change.
+
+**D61. Orchestrator trees need no hub -- a wire suffices.** Once D54 lands
+(worker events re-emitted on the orchestrator's own `tool_events`, tagged
+`worker` + `correlation_id`), the orchestrator's event port *is* the
+aggregated stream for its whole tree: one wire to one Plan Viewer / Hook
+Monitor shows every worker. And workers sharing the orchestrator's working
+directory share its plan DB (`claimed_by` distinguishes them). Recorded so
+nobody builds a hub where a wire suffices: the Task Hub is for **independent
+top-level agents**, whose streams share no port and never will (rule 3).
+
+---
+
+## 17. Phasing
 
 **Foundations first, then surface.** Each phase leaves the tree working.
 
@@ -1180,6 +1287,9 @@ of D41 at the worst possible moment: mid-fan-out.
 10. Thread `on_event` and `should_stop` through `_run_one` (D54) — the
     parameters already exist, so this is what makes a fan-out observable and
     interruptible.
+11. The `agent` identity field on the event envelope (D60(1)) — stamped
+    where `run_id` is stamped today; lands with D54's `worker` field so the
+    vocabulary changes once, not twice.
 
 **Phase 2 — safety and context**
 1. Per-tool hook binding and the essential tier (D13, D14).
@@ -1221,6 +1331,11 @@ of D41 at the worst possible moment: mid-fan-out.
 2. Discovery: `search_tools`, per-tool deferral, auto-load (D4–D6).
 3. MCP Node + Aggregator (D19–D22).
 4. Task Node with explicit plan identity (D23).
+5. Task Hub node (D58): `scan_all` on the store (D60(2)), the kanban
+    projection with `claimed_by` lanes, sign-off actions, `signed` fan-out.
+6. Decision Inbox dock + `DecisionRegistry` + blocked-on-decision canvas
+    state (D59) — after the D48/D49 seam exists (Phase 2), since it mirrors
+    that seam's widget.
 
 **Later:** nested budgets (D26); BM25 or its removal (G2); the unwired-event
 dispositions (D15); the D47 mechanisms not selected by the measurement --
@@ -1229,7 +1344,7 @@ selects it as soon as the graph shape changes.
 
 ---
 
-## 17. Gaps this closes
+## 18. Gaps this closes
 
 | Item | Closed by |
 |---|---|
@@ -1257,7 +1372,7 @@ name), G12 (version metadata), T5 (delegation depth), T6 (HTML floor), T7
 
 ---
 
-## 18. Open questions
+## 19. Open questions
 
 1. The grant record schema and the revocation *surface* -- where a user sees
    and withdraws what they have granted (§7; location settled by D35).
@@ -1279,5 +1394,9 @@ name), G12 (version metadata), T5 (delegation depth), T6 (HTML floor), T7
 2. Disposition of the five `WRAP_*` unwired events (§8).
 3. Whether `EventStart.system_prompt` is populated or dropped (§5).
 4. Spill-file cleanup policy and its lifetime (§12).
-5. Whether the hook-node question returns once per-tool binding exists —
+5. Whether the hook-node question returns once per-tool binding exists --
    D12 is a "not yet", not a "never".
+6. Whether the single-agent Sign-Off node survives once the Task Hub (D58)
+   absorbs its role for N agents -- keep both (a small graph wants a small
+   node) or deprecate toward the hub. Low stakes; decide when the hub is
+   built.
