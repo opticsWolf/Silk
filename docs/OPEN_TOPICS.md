@@ -201,6 +201,14 @@ The name says "Mock", but `GGUFModelPool` instantiates it as its live
 HTTP client (`functions/model_pool.py`). A rename (e.g.
 `OpenAICompatClient`) would stop it being confused with a test double.
 
+It is also the whole client surface — `create_chat_completion`, `tokenize`,
+`reset` — built from a bare `base_url`, which makes it the natural adapter
+for a remote OpenAI-compatible backend (litellm, vLLM, hosted). Two things
+block that today: it sends only `Content-Type` (`model_pool.py:128`), so
+**no API key can be passed**, and `tokenize` is a `len // 4` approximation
+(`:171`) that a remote backend has no way to improve. Decided: spec **D45**;
+the key follows D22 (a credential *name*, resolved at connect time).
+
 ### G12. No version metadata
 
 The package has no `__version__` (or equivalent), so a running graph
@@ -318,9 +326,53 @@ grows only at the tail except at a deliberate compaction. Measurement is
 `"<n> prefix-match hit, remaining <m> prompt tokens to eval"`. Capture it
 across a multi-round run and a fan-out before tuning anything.
 
-**Still open:** `LlamaCache` sizing and backing (RAM vs disk), and whether it
-suffices alone or request affinity — not interleaving one conversation's
-rounds with another's — is also needed.
+**The obvious fix is not free.** Forwarding `cache` / `cache_type` /
+`cache_size` is a three-name addition to `_SERVER_MODEL_KEYS`, and
+`llama_cpp/server/model.py:334` does the rest. But every completion then ends
+with `self.cache[prompt + completion] = self.save_state()`
+(`llama.py:1700`), and `save_state` (`:2199`) memcpies the full serialized
+context blob plus a copy of the scores array. Against a default `cache_size`
+of `2 << 30` (2 GiB) and a large `n_ctx`, the LRU can evict on nearly every
+insert — paying the copy and keeping nothing. Enabling it is a measured
+trade, not a correction. Decided: spec **D44**.
+
+**Routing is also a cache strategy.** Once the pool holds more than one
+backend (spec **D45**), sending two agents to two backends gives each its own
+resident context — which is the cheapest available answer to the interleaving
+problem and needs no cache at all.
+
+**Still open:** whether `LlamaCache` is enabled at all, its size and backing
+(RAM vs disk), and whether request affinity — not interleaving one
+conversation's rounds with another's — is needed on top.
+
+### G16. The shared server truncates in-flight streams
+
+Not a performance gap: a correctness one, and it is live.
+
+`llama_cpp/server/app.py` serializes every request through
+`llama_outer_lock` / `llama_inner_lock`, so concurrency never reaches the
+model — `delegate_parallel` queues. On top of that, the streaming publisher
+checks per chunk:
+
+```python
+if interrupt_requests and llama_outer_lock.locked():
+    await inner_send_chan.send(dict(data="[DONE]"))
+    raise anyio.get_cancelled_exc_class()()
+```
+
+`ServerSettings.interrupt_requests` **defaults to `True`**
+(`llama_cpp/server/settings.py:223`), and Silk's generated config sets only
+`host`, `port` and `models` (`model_pool.py:217`) — so the default applies.
+**Agent B starting a request truncates agent A's response mid-stream.** A
+receives a well-formed `[DONE]`; `OpenAIClientMock.generator()` (`:153`)
+breaks on it exactly as it would on a natural stop, so the loop cannot tell
+a cut-off turn from a finished one and reasons on against the fragment.
+
+**Decided:** spec **D43** — forward `interrupt_requests: false`, and treat a
+stream ending without a terminal `finish_reason` as
+`EventError(context="stream_response")`, which is the classification spec D40
+already requires. **Phase 1**, ahead of the Phase 2 safety work: until it
+lands, no concurrent multi-agent graph is sound.
 
 Note this corrects a prior "non-issue" note carried in T8, which held that
 Silk's pool does not depend on cross-request prompt caching. That was
@@ -431,5 +483,6 @@ scratch.
 | Multiple interception generations (callbacks → events → durable hooks) | One audience (graph authors), one surface. Revisit only if third-party Python extension packs become a real demand. |
 | Lanes / continuable subagents | Need a session substrate; one-shot delegation with depth/cycle guards and a shared budget covers the current fan-out (T3 aside). Note the spec leaves one subagent question open: who answers an approval prompt raised inside a subagent (spec §7). |
 | Token metering (per-session replay folds, revisioned measurements) | Unnecessary at stock bounds. (Compaction was on this list until 2026-07-25; it is now a required mechanism, specified in spec §12 and tracked as [G14](#g14-compaction-is-not-implemented-required-mechanism).) |
-| ~~KV-cache management~~ | **Removed 2026-08-30.** Held to be unnecessary because Silk was thought not to depend on cross-request prompt caching. It does — locally the dependency is paid in latency rather than money. Now [G15](#g15-prompt-prefix-reuse-is-unconfigured-and-unmeasured) / spec D41, I11. |
+| ~~KV-cache management~~ | **Removed 2026-08-30.** Held to be unnecessary because Silk was thought not to depend on cross-request prompt caching. It does — locally the dependency is paid in latency rather than money. Now [G15](#g15-prompt-prefix-reuse-is-unconfigured-and-unmeasured) / spec D41, D44, I11. |
+| ~~Single model backend~~ | **Removed 2026-08-30.** `GGUFModelPool` assumes one spawned local server; the pool is to hold N named backends, local or remote (litellm and similar). Now [G11](#g11-openaiclientmock-is-the-production-client) / spec D45. |
 | Multi-package workspace machinery (sub-path exports, lockstep versions) | Organizational overhead for a monorepo Silk is not; the two-layer import rule is the same invariant at the right scale. |

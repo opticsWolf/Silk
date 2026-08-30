@@ -607,15 +607,98 @@ wall-clock in the middle of a run, at the moment the user is already waiting.
   of the above is tuned, capture that line against a real multi-round run and
   against a fan-out. The reuse rate is the number the whole design hangs on
   and nobody has looked at it.
-- **Enabling `LlamaCache` is the one cheap structural fix** (forward `cache`,
-  `cache_type`, `cache_size`), and it is what makes interleaved agents
-  viable. It trades memory for prefill; the size bound and whether RAM or
-  disk backing is right are **open**.
+- **Enabling `LlamaCache` is available but is not free** -- see D44. The
+  forwarding is a one-line change; the cost model is not, so it is gated on
+  the measurement above rather than switched on by default.
 
 Note this reaches beyond compaction: item 2 means **`delegate_parallel` is
 considerably more expensive than it looks today**, with each worker paying a
 full prefill every round. That is a live cost in shipped code, not a
 consequence of anything in this spec.
+
+**D43. The shared llama server truncates in-flight streams, and that is a
+correctness bug, not a performance one.** `llama_cpp/server/app.py`
+serializes every request through `llama_outer_lock` / `llama_inner_lock`, so
+the "parallel" in `delegate_parallel` never reaches the model -- requests
+queue. Worse, the streaming publisher checks, per chunk:
+
+```python
+if interrupt_requests and llama_outer_lock.locked():
+    await inner_send_chan.send(dict(data="[DONE]"))
+    raise anyio.get_cancelled_exc_class()()
+```
+
+`ServerSettings.interrupt_requests` **defaults to `True`**
+(`llama_cpp/server/settings.py:223`), and Silk's generated config sets only
+`host`, `port` and `models` (`functions/model_pool.py:217`), so the default
+stands. The effect: **while agent A is streaming, a request from agent B
+truncates A's response.** A gets a well-formed `[DONE]`, and
+`OpenAIClientMock.generator()` (`model_pool.py:153`) cannot distinguish that
+from a natural stop -- it simply ends the generator. The agent then reasons
+over, and may act on, a silently cut-off assistant turn.
+
+*Required:* forward `interrupt_requests: false` in the server config, and
+treat a stream that ends without a terminal `finish_reason` as
+`EventError(context="stream_response")` rather than as a completed turn --
+which is exactly the classification D40 already requires. Until then, any
+concurrent multi-agent graph is unsound, independent of cache behaviour.
+
+**D44. `LlamaCache` is forwardable, but its cost model must be measured
+before it is enabled.** `cache`, `cache_type` and `cache_size` are
+`ModelSettings` fields, so enabling them means adding three names to
+`_SERVER_MODEL_KEYS` (`model_pool.py:91`) -- the existing JSON config path
+carries them, and `llama_cpp/server/model.py:334` constructs a
+`LlamaRAMCache` or `LlamaDiskCache` and calls `set_cache`. No new machinery.
+
+What the switch actually buys and costs:
+
+- *Buys:* a prefix-keyed multi-state store. `_create_completion`
+  (`llama.py:1363`) looks up the longest-prefix entry and loads it **only if
+  its prefix beats the resident context's** -- so interleaved conversations
+  stop clobbering each other, which is the mechanism item 2 is missing.
+- *Costs:* every completion ends with
+  `self.cache[prompt + completion] = self.save_state()`
+  (`llama.py:1700`). `save_state` (`:2199`) allocates and memcpies the full
+  serialized context blob (`llama_state_get_size`, scaling with `n_ctx` and
+  KV quant) **plus** a copy of the scores array (at most
+  `n_batch x n_vocab` float32 -- tens to hundreds of MB). Default
+  `cache_size` is `2 << 30` = 2 GiB, so with a large context the LRU can
+  evict on nearly every insert: pay the copy, keep nothing.
+
+So this is a genuine trade, not an oversight to correct. Sizing, backing
+(RAM vs disk) and whether `save_state` overhead is tolerable at the project's
+context sizes are settled **by the D41 measurement**, not by argument.
+
+**D45. The model pool is multi-backend; a single local server is one case of
+it, not the shape.** `GGUFModelPool` today hardcodes one `_process`, one
+`_port` and one `_client`; `checkout(session_id)` ignores its argument and
+returns `self._client`, and `n_instances` is explicitly display-only
+(`model_pool.py:196`). The pool must instead hold **N named backends**, each
+either a spawned local `llama_cpp.server` or a remote OpenAI-compatible
+endpoint (litellm, vLLM, a hosted provider), with the Agent/Role selecting
+one.
+
+Three things this needs, all small and all currently absent:
+
+1. **`checkout()` is already the routing seam** -- it takes a `session_id`
+   and discards it. Backend selection, and the request affinity D41 leaves
+   open, both live there.
+2. **`OpenAIClientMock` is already the full client surface**
+   (`create_chat_completion`, `tokenize`, `reset`) and is constructed from a
+   bare `base_url`. A remote backend is that class with a different URL and
+   no subprocess -- but it sends only `Content-Type`
+   (`model_pool.py:128`), so **there is no way to pass an API key today**.
+   Adding an `Authorization` header is a precondition for litellm, and the
+   key must follow D22: a credential *name* resolved at connect time, never
+   persisted in the graph or a preset.
+3. **`snapshot()` returns a single flat dict** (`model_pool.py:323`) with
+   `total_instances: 1` and zeroed KV fields. It becomes per-backend, and it
+   is the natural place to surface the D41 prefix-reuse rate.
+
+Consequence for D41: prefix reuse is a *per-backend* property. Routing two
+agents to two backends is itself a cache strategy -- and, given D43, the only
+one that makes concurrent agents both correct and fast until
+`interrupt_requests` is fixed.
 
 **Option A (spill hook) ships alongside** -- and, per D41, carries the load
 first: `spill_large_results(max_chars, spill_dir)` in `hook_catalog`, beside
@@ -689,33 +772,43 @@ exercise reliably any other way.
    it is unknown today.
 7. Model-request error classifier — overflow vs retryable vs terminal (D40).
    A precondition of D24, not a follow-up.
+8. **Disable `interrupt_requests` on the spawned server** and treat a stream
+   that ends without a terminal `finish_reason` as an error (D43). Two-line
+   fix for silent response truncation whenever two agents run at once; it
+   gates every concurrent graph, so it precedes everything in Phase 2.
 
 **Phase 2 — safety and context**
-6. Per-tool hook binding and the essential tier (D13, D14).
-7. Delete the parked-state machinery (D31–D33): `awaiting_signoff`,
+1. Per-tool hook binding and the essential tier (D13, D14).
+2. Delete the parked-state machinery (D31–D33): `awaiting_signoff`,
    `pending_goal`, the `signoff_*` columns, the park/apply store methods,
    `nodes/signoff_node.py`, and the Agent node's plan-shape pause inference.
    Forward-only — no migration.
-8. Inline approval gate (D30, D11): the single decision seam with
+3. Inline approval gate (D30, D11): the single decision seam with
    correlation, cancel-before-wake ordering, timeout, and policy snapshot
    (D38); fail-closed on every missing-answer path (D36); the gate forced
    outermost as a monotonic guard (D37, I10); run-scoped grants in the gate
    closure, durable per-tool grants in `~/.weave/silk/grants.json` (D10, D34,
    D35); `PRAGMA user_version` on the plan store (D39). Driven by the
    manual-drive race catalog (D42).
-9. Spill hook (option A) — prefix-preserving, so it carries the load before
+4. Spill hook (option A) — prefix-preserving, so it carries the load before
    compaction is triggered at all (D41).
-10. `LlamaCache` enablement + prefix-stability rules (D41, I11). Compaction
-    is not worth building against an unmeasured, disabled cache.
-11. Loop compaction: engine history-replace, compactor, `EventCompaction`
+5. Multi-backend model pool (D45): N named backends behind `checkout()`,
+   an `Authorization` header on `OpenAIClientMock` so remote/litellm
+   endpoints work at all, per-backend `snapshot()`. Routing is itself a cache
+   strategy, so it lands before the cache is tuned.
+6. `LlamaCache` enablement or its rejection, plus prefix-stability rules
+   (D41, D44, I11) — decided by the Phase 1 measurement, since `save_state`
+   may cost more than the prefill it saves. Compaction is not worth building
+   against an unmeasured cache.
+7. Loop compaction: engine history-replace, compactor, `EventCompaction`
     carrying prefill cost (D24, D25, D40, D41).
 
 **Phase 3 — surface**
-11. File access as an explicit narrowing-only port; Pydantic grant model
+1. File access as an explicit narrowing-only port; Pydantic grant model
     (D16–D18).
-12. Discovery: `search_tools`, per-tool deferral, auto-load (D4–D6).
-13. MCP Node + Aggregator (D19–D22).
-14. Task Node with explicit plan identity (D23).
+2. Discovery: `search_tools`, per-tool deferral, auto-load (D4–D6).
+3. MCP Node + Aggregator (D19–D22).
+4. Task Node with explicit plan identity (D23).
 
 **Later:** nested budgets (D26); BM25 or its removal (G2); the unwired-event
 dispositions (D15); request affinity so one conversation's rounds are not
@@ -758,9 +851,12 @@ name), G12 (version metadata), T5 (delegation depth), T6 (HTML floor), T7
    and withdraws what they have granted (§7; location settled by D35).
    *(The former question 1b -- who answers when nobody is listening -- is
    closed by D36: every missing-answer path denies.)*
-1b. `LlamaCache` sizing and backing (RAM vs disk), and whether it is enough
-   on its own or request affinity is also needed (§12, D41). Blocked on the
-   Phase 1 measurement.
+1b. Whether `LlamaCache` is enabled at all, and if so its size and backing
+   (RAM vs disk) — `save_state` on every completion may cost more than the
+   prefill it saves (§12, D41, D44). Blocked on the Phase 1 measurement.
+1c. Backend routing policy for the multi-backend pool (D45): who chooses —
+   the Role, the Agent node, or a pool-side affinity rule keyed on
+   conversation — and what happens when the named backend is down.
 2. Disposition of the five `WRAP_*` unwired events (§8).
 3. Whether `EventStart.system_prompt` is populated or dropped (§5).
 4. Spill-file cleanup policy and its lifetime (§12).
