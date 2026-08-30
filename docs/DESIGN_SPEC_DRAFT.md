@@ -89,6 +89,22 @@ invariant 4, which depends on advertisement and dispatch agreeing.
 its tool results move together. The native transport pairs `tool_calls` with
 `tool`-role results; dropping one side of a pair corrupts the next request.
 
+**I10. Guard middleware is monotonic.** A hook that enforces owner policy --
+the approval gate, sandbox enforcement -- runs outermost in the
+`wrap_tool_execute` chain and no later registration may wrap it. Corollary,
+and the half that actually bites: **no middleware may produce a success
+result without delegating to `handler()`**. Denying without delegating is
+legal; fabricating a result is not. Borrowed from dsh's *monotonic guards*
+("owner policy that must not be reordered"). Note this is a different
+property from I7: essential means *cannot be dropped*; monotonic means
+*cannot be bypassed by something registered around it*.
+
+**I11. The model-visible prefix grows only at the tail.** Between two
+requests in one run, the earlier request's token sequence is a prefix of the
+later one -- except at a compaction, which is the single deliberate
+invalidation. This is pi's append-only cache invariant, and on a local
+backend it is a latency invariant, not a cost one (see D41).
+
 ---
 
 ## 5. Event model
@@ -157,6 +173,13 @@ saves a round-trip. A failed load returns a structured error in the
   the strategy from the public surface.
 - `load_capability` stays for capability-granular loading; it is no longer
   the only discovery path.
+- **Auto-load interacts with I11.** If loading a tool mid-run re-advertises
+  the schemas in the system prompt, the prompt's *head* changes and the KV
+  prefix is invalidated for every remaining round (D41). Either the newly
+  loaded tool is dispatchable without re-advertising it (the model already
+  knows the name from `search_tools`), or the re-advertisement is a
+  deliberate, counted invalidation. Silent recomposition is the one option
+  that must not happen.
 
 ---
 
@@ -290,22 +313,68 @@ tolerates a missing or unparseable file by treating it as empty.
   optimistic-concurrency habit, and the reason is that the failure is benign
   in the safe direction.
 
-**What is left to build.** The deletions above are the easy half.
+**D36. Every failure path denies.** One rule covers the four ways a decision
+can fail to arrive, and closes the no-answerer question:
 
-1. **Decision transport.** A request id correlating prompt to answer, and a
-   thread-safe wait on the worker side resolved from the UI thread.
-2. **Cancellation.** `is_compute_cancelled()` is polled by the *consumer*
-   (`nodes/agent.py:477`), which is not running while the gate blocks. Stop
-   must reach the waiter directly, or Stop will not stop a run that is
-   sitting on a prompt.
-3. **Timeout and default-deny.** A blocked gate holds the worker thread *and*
-   the exclusive `RoleBinding` on the toolset, so no other Agent node can use
-   that toolset meanwhile. "No answer" must not mean "forever".
-4. **No-answerer detection.** Nothing wired to the `events` port, or a
-   subagent -- the orchestrator runs each one under its own `asyncio.run` on
-   its own thread (`functions/orchestrator.py:360`) and its stream is not
-   necessarily surfaced anywhere. Default-deny, inherit the parent's grants,
-   or refuse to build a gated subagent toolset: **open**.
+- Nothing is wired to the `events` port, so the request reaches no one.
+- The decision transport raises.
+- The timeout expires (see D38).
+- The call is raised inside a subagent, whose stream the orchestrator runs
+  under its own `asyncio.run` on its own thread
+  (`functions/orchestrator.py:360`) and does not necessarily surface.
+
+All four resolve to **deny**, returning the same structured refusal the model
+sees for an explicit rejection. Taken from dsh, which states it flatly for
+the same seam -- *"If no approval seam → deny"* -- and from pi, whose
+`before_tool` hook fails closed when a handler throws. This composes with
+D35: an absent grant store means nothing is granted, an absent answerer means
+nothing is approved. Every degradation in the subsystem points the same way.
+
+A gated subagent is therefore not an error at build time; it simply cannot
+call gated tools unless a durable grant already covers them. That is a usable
+configuration, not a broken one.
+
+**D37. The gate is a monotonic guard (I10).** `emit_middleware` runs handlers
+in registration order with the first registered outermost
+(`functions/hooks.py`, `_chain(0)` over a stable list), and today
+`attach_catalog_hooks` registers the catalog middleware *before*
+`attach_signoff_gate` (`functions/hook_catalog.py:492` vs `:497`) -- so the
+gate is currently **inside** `tool_budget` and `redact_secrets`, not outside
+them. Since a middleware may return without calling `handler()`, anything
+registered ahead of the gate can answer a call the gate never sees. Harmless
+for the shipped hooks, which only deny; not harmless as a rule. The gate must
+be forced outermost, and I10's no-fabricated-success corollary enforced.
+
+**D38. One decision seam, not a bespoke wait.** The block is a single named
+object the gate awaits -- pi's `Effects` reasoning: *"this closed method set
+is the complete crash-site catalog."* Concentrating it means the four hard
+parts are solved once rather than per call site:
+
+- **Correlation.** A request id pairs the emitted prompt with the answer.
+- **Cancel ordering.** The cancellation reason is recorded **before** the
+  waiter is woken, so a wake is never observable without knowing why it
+  happened. Pi's rule -- *abort commits control before pulling the signal* --
+  which is what lets it separate user aborts from transport failures. Without
+  it, Stop, the timeout and a real approval race into one indistinguishable
+  wakeup. Note the consumer loop that polls `is_compute_cancelled()`
+  (`nodes/agent.py:477`) is *not running* while the gate blocks, so Stop must
+  reach the seam directly.
+- **Timeout.** A blocked gate holds the worker thread *and* the exclusive
+  `RoleBinding` on the toolset, so no other Agent node can use that toolset
+  meanwhile. Expiry denies (D36).
+- **Policy snapshot.** The resolved policy and grants are captured at run
+  start and not re-read mid-run -- pi's *inline capture over references*, so
+  editing a Role or hook config mid-run affects the next run, not the one in
+  flight.
+
+**D39. Stamp the schema version even though nothing migrates.** D33 stays
+forward-only, but the store writes `PRAGMA user_version` and checks it on
+open. Cost is one line; the benefit is that the next schema change fails with
+"this plan file is from an older Silk, delete it" instead of an
+`OperationalError` raised from inside `_load_con`'s column list. dsh does
+exactly this -- `SESSION_FORMAT_VERSION = 0`, no compatibility promise, but
+the number is *there*. A declared pre-release stance beats an undeclared
+one.
 
 ---
 
@@ -459,12 +528,101 @@ budgets do not allow.
 - Compaction rewrites only the model-visible history, never the run record.
 - `EventCompaction` is emitted, content-free (§5).
 
-**Option A (spill hook) ships alongside:** `spill_large_results(max_chars,
-spill_dir)` in `hook_catalog`, beside `redact_secrets` — above threshold,
-write the full tool result to a file and replace the model-visible content
-with a head/tail preview plus the path. Deterministic, model-free, no extra
-model calls, covers the dominant growth term. Needs a cleanup policy tied to
-the run/plan root.
+**D40. Classify the model-request error before compacting.** D24's second
+trigger reacts to `EventError(context="stream_response")`, but that context
+covers *every* stream failure, including a dead server -- and G6 records that
+the pool has no liveness check and no restart. As written, a crashed
+`llama_cpp.server` would be answered by spending a summarization request
+against it and retrying. Pi reduces transport noise to three orthogonal
+predicates before anything upstream reacts -- *retryable? / overflow? /
+recoverable-length?* -- with an explicit `isContextOverflow(message,
+contextWindow)` separating genuine overflow from provider-limit errors.
+
+Silk has the tool-side half of this already (`is_retryable_tool_error` in
+`functions/reflection.py`) and nothing equivalent for model requests. A
+model-request error classifier is therefore a **precondition of D24**, not a
+follow-up: compact only on classified overflow, never on a generic stream
+error.
+
+### Prefix reuse — the local-inference constraint
+
+**D41. Compaction is a prefill event, and prefill is the dominant local
+cost.** T8 recorded a cache note claiming Silk's pool "does not depend on
+cross-request prompt caching, so no equivalent protection is needed". That
+was inherited from the hosted-API framing, where cache misses cost money. It
+is wrong here, and the code says so.
+
+*Verified mechanics* (llama-cpp-python 0.3.34, `llama_cpp/llama.py`,
+`Llama.generate`): before evaluating a prompt the runtime scans for the
+longest common prefix between the new tokens and `self._input_ids`, then
+calls `kv_cache_seq_rm(-1, reuse_prefix, -1)` and evaluates **only the
+suffix**. Three properties follow, and all three matter:
+
+1. **There is one resident context per instance,** not one per conversation.
+   `_input_ids` holds *the last prompt evaluated*, whoever sent it.
+2. **Reuse therefore only survives consecutive requests from the same
+   conversation.** Two Agent nodes alternating, or an orchestrator fan-out
+   (`delegate_parallel`), clobber each other: A, B, A, B reuses nothing
+   beyond the shared system prompt, while A, A, B, B reuses almost
+   everything. Silk shares one server across all agents by design
+   (`functions/model_pool.py`: "a shared client, not a slot").
+3. **The multi-state cache is off.** `LlamaCache` -- the prefix-keyed store
+   that would survive interleaving -- is opt-in through the server's `cache`
+   / `cache_type` / `cache_size` settings
+   (`llama_cpp/server/settings.py:143`), and `_SERVER_MODEL_KEYS`
+   (`functions/model_pool.py:92`) does not forward them. Server defaults
+   apply, so it is disabled.
+
+*Why this collides with D24.* Compaction rewrites the **head** of the
+context. After it, the longest common prefix with the previous request
+collapses to roughly the system prompt, so the entire surviving context is
+re-prefilled -- and by construction that context is near the ceiling, i.e.
+the most expensive prefill the run will ever pay. Worse, D25 has the agent's
+own model produce the summary: that nested request has a completely different
+prompt, so it clobbers `_input_ids` on its way through. **A compaction costs
+two full prefills, not one** -- the summarization request, then the rebuilt
+context. On a hosted API this is a billing line; on a local GPU it is dead
+wall-clock in the middle of a run, at the moment the user is already waiting.
+
+**Consequences for the design:**
+
+- **Spill (option A) is prefix-preserving; summarization (option C) is
+  prefix-destroying.** The spill hook rewrites a tool result *before it is
+  appended*, so history stays append-only and I11 holds. That is a stronger
+  argument for A than "it is cheap and lands first": A is the mechanism that
+  does not fight the cache, and it should carry as much of the load as it
+  can before C is triggered at all.
+- **Compaction must be rare and decisive.** Hysteresis on the trigger and a
+  generous keep-recent, so a run compacts once rather than repeatedly --
+  every repeat is another double prefill.
+- **`EventCompaction` reports the prefill cost,** not only tokens dropped.
+  Otherwise the most expensive thing compaction does is invisible.
+- **Prefix stability becomes a rule (I11).** The system prompt must render
+  byte-identical across a run: no timestamps, no volatile context. dsh states
+  the same constraint for the same reason (§4.7: prefix-stable while
+  identity, persona, variables, section text and order render identically).
+- **Measurement comes first, and is nearly free.** `verbose` is already
+  forwarded in `_SERVER_MODEL_KEYS`, and `generate()` prints
+  `"<n> prefix-match hit, remaining <m> prompt tokens to eval"`. Before any
+  of the above is tuned, capture that line against a real multi-round run and
+  against a fan-out. The reuse rate is the number the whole design hangs on
+  and nobody has looked at it.
+- **Enabling `LlamaCache` is the one cheap structural fix** (forward `cache`,
+  `cache_type`, `cache_size`), and it is what makes interleaved agents
+  viable. It trades memory for prefill; the size bound and whether RAM or
+  disk backing is right are **open**.
+
+Note this reaches beyond compaction: item 2 means **`delegate_parallel` is
+considerably more expensive than it looks today**, with each worker paying a
+full prefill every round. That is a live cost in shipped code, not a
+consequence of anything in this spec.
+
+**Option A (spill hook) ships alongside** -- and, per D41, carries the load
+first: `spill_large_results(max_chars, spill_dir)` in `hook_catalog`, beside
+`redact_secrets` — above threshold, write the full tool result to a file and
+replace the model-visible content with a head/tail preview plus the path.
+Deterministic, model-free, no extra model calls, append-only, covers the
+dominant growth term. Needs a cleanup policy tied to the run/plan root.
 
 ---
 
@@ -493,6 +651,21 @@ the ToolBox execution path (role gate, structured errors, timeouts,
 sequential vs parallel), `SqliteTaskStore` concurrency, and the orchestrator
 guards.
 
+**D42. A manual-drive gate for the approval seam.** D30 gives Silk its first
+real concurrency surface: a parked worker thread, a Qt thread resolving the
+decision, and Stop and the timeout racing that resolution. Invariant fixtures
+do not test races. Pi's answer is a test-mode gate that parks before each
+effect and exposes step/peek/run-to-completion, with the enforced property
+**zero writes and zero effects while parked** — which is what turns a race
+catalog into deterministic tests rather than a flaky suite. Both reviews name
+it the single most transferable idea in pi, and D30 is exactly the situation
+it was built for.
+
+Minimum catalog to drive in both orders: approve-vs-Stop, approve-vs-timeout,
+deny-vs-Stop, decision-arrives-after-timeout, and a second decision for an id
+already resolved. Five races, ten orderings — small, and impossible to
+exercise reliably any other way.
+
 ---
 
 ## 15. Phasing
@@ -510,6 +683,12 @@ guards.
 3. `outcome` on `EventRunResult` (G13).
 4. Context-budget plumbing: `context_length` → loop (G14(c)).
 5. Hook error-family emission + registration validation (D15).
+6. **Measure prompt-prefix reuse** (D41): `verbose` is already forwarded, so
+   capture `generate()`'s prefix-match line across a multi-round run and an
+   orchestrator fan-out. Everything in D41 is tuned against this number, and
+   it is unknown today.
+7. Model-request error classifier — overflow vs retryable vs terminal (D40).
+   A precondition of D24, not a follow-up.
 
 **Phase 2 — safety and context**
 6. Per-tool hook binding and the essential tier (D13, D14).
@@ -517,13 +696,19 @@ guards.
    `pending_goal`, the `signoff_*` columns, the park/apply store methods,
    `nodes/signoff_node.py`, and the Agent node's plan-shape pause inference.
    Forward-only — no migration.
-8. Inline approval gate (D30, D11): decision transport, cancellation reaching
-   the blocked waiter, timeout + default-deny, no-answerer policy;
-   run-scoped grants in the gate closure, durable per-tool grants in
-   `~/.weave/silk/grants.json` (D10, D34, D35).
-9. Spill hook (option A).
-10. Loop compaction: engine history-replace, compactor, `EventCompaction`
-    (D24, D25).
+8. Inline approval gate (D30, D11): the single decision seam with
+   correlation, cancel-before-wake ordering, timeout, and policy snapshot
+   (D38); fail-closed on every missing-answer path (D36); the gate forced
+   outermost as a monotonic guard (D37, I10); run-scoped grants in the gate
+   closure, durable per-tool grants in `~/.weave/silk/grants.json` (D10, D34,
+   D35); `PRAGMA user_version` on the plan store (D39). Driven by the
+   manual-drive race catalog (D42).
+9. Spill hook (option A) — prefix-preserving, so it carries the load before
+   compaction is triggered at all (D41).
+10. `LlamaCache` enablement + prefix-stability rules (D41, I11). Compaction
+    is not worth building against an unmeasured, disabled cache.
+11. Loop compaction: engine history-replace, compactor, `EventCompaction`
+    carrying prefill cost (D24, D25, D40, D41).
 
 **Phase 3 — surface**
 11. File access as an explicit narrowing-only port; Pydantic grant model
@@ -533,7 +718,9 @@ guards.
 14. Task Node with explicit plan identity (D23).
 
 **Later:** nested budgets (D26); BM25 or its removal (G2); the unwired-event
-dispositions (D15).
+dispositions (D15); request affinity so one conversation's rounds are not
+interleaved with another's (D41, if measurement says `LlamaCache` is not
+enough).
 
 ---
 
@@ -546,12 +733,18 @@ dispositions (D15).
 | G4 — no test suite | §14 |
 | G13 — `max_rounds` error silently dropped | §5 (`outcome`) |
 | G14 / T8 — compaction absent | §12 |
+| G15 — prompt-prefix reuse unconfigured/unmeasured | §12 (D41; measurement is Phase 1) |
 | T1 — approval state design, reuse vs parallel | §7 (D30–D31: one inline gate hook, no state to design; only durable grants persist) |
 | T3 — multi-agent budgeting | §13 (specified, not built) |
 | T4 — plan discovery policy | §11 |
 | G2 — BM25 is a keyword alias | §6 (forced into scope by discovery) |
 
-Untouched by this spec: G5 (dependency declaration), G6 (pool recovery), G7
+G6 is no longer fully untouched: D40 makes a model-request error classifier a
+precondition of D24, and that classifier is what would let a future supervisor
+tell "the server died" from "the context overflowed". The restart itself stays
+out of scope.
+
+Untouched by this spec: G5 (dependency declaration), G7
 (`EventUsageLimit` granularity), G8 (mid-batch stops), G9 (type coverage),
 G10 (`EventStart.system_prompt` — noted in §5), G11 (`OpenAIClientMock`
 name), G12 (version metadata), T5 (delegation depth), T6 (HTML floor), T7
@@ -563,8 +756,11 @@ name), G12 (version metadata), T5 (delegation depth), T6 (HTML floor), T7
 
 1. The grant record schema and the revocation *surface* -- where a user sees
    and withdraws what they have granted (§7; location settled by D35).
-1b. Who answers an approval when no consumer is wired, and what a gated
-   *subagent* does (§7, D30 item 4).
+   *(The former question 1b -- who answers when nobody is listening -- is
+   closed by D36: every missing-answer path denies.)*
+1b. `LlamaCache` sizing and backing (RAM vs disk), and whether it is enough
+   on its own or request affinity is also needed (§12, D41). Blocked on the
+   Phase 1 measurement.
 2. Disposition of the five `WRAP_*` unwired events (§8).
 3. Whether `EventStart.system_prompt` is populated or dropped (§5).
 4. Spill-file cleanup policy and its lifetime (§12).
