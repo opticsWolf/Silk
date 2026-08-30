@@ -1191,7 +1191,7 @@ and it is legal by I12.** A store-scanning projection node:
   actors), then pulses `signed` -- one output port, fanned out to every
   agent's `run`. For the N-agent case this **absorbs the Sign-Off node**;
   whether the single-agent node remains as a convenience is open
-  (§19 q6).
+  (§20 q6).
 - **Outputs:** `plans_json` (digest -- the port's evaluated value is honest
   per rule 1), `pending` (count of open sign-offs *and* outstanding mid-run
   decision requests, from the D2 stream -- countable here, answerable only at
@@ -1250,7 +1250,177 @@ top-level agents**, whose streams share no port and never will (rule 3).
 
 ---
 
-## 17. Phasing
+## 17. Persistence -- the Macrame ledger
+
+Adopted for **task management** and **agent history**: `macrame-db`
+(github.com/opticsWolf/Macrame) -- an embedded, single-file bitemporal graph
+ledger on libSQL. Concepts (id/title/content) linked by typed, weighted
+edges; two independent clocks per row (*valid time* -- when a fact held;
+*transaction time* -- when the ledger learned it), addressable separately
+(`as_of_valid`, `as_of_recorded`, `reconstruct`); branching with **merge
+refused by doctrine**; DiskANN vector search + FTS5 + hybrid RRF; one Write
+Actor serialising all writes; typed error taxonomy. The Python surface is
+**synchronous with the GIL released** -- which is exactly what Silk needs,
+since agents run on `ThreadedNode` workers with no event loop -- and writes
+are sub-millisecond (assert_edge ~220 us, concept upsert ~193 us), so an
+agent run writing a few hundred rows is noise.
+
+The verdict is asymmetric: for history the fit is structural; for tasks the
+ledger subsumes the existing store's semantics but forces one architectural
+renegotiation (the sole-writer rule, D62).
+
+### Why history fits structurally
+
+- **I11 and Macrame's Doctrine III are the same invariant.** Silk: the
+  model-visible prefix grows only at the tail; compaction is the single
+  deliberate invalidation. Macrame: assertions are never rewritten, only
+  *superseded*. So compaction (§12, D24/D25) stops being destructive: the
+  engine's history-replace becomes a **supersession event in the ledger**,
+  and the pre-compaction conversation stays addressable --
+  `as_of_recorded(t)` answers *"what did the model actually see at round
+  7"*, which is what the D41 measurement and the D42 tests want and cannot
+  have while history lives in `self._history` on the node and dies with it.
+- **History becomes memory, not storage.** `hybrid_search` (FTS5 + vectors,
+  RRF) over past turns/runs is a `recall` tool on the ToolBox -- long-term
+  agent memory across sessions, graph-linked: turn -> run -> task -> files
+  touched -> agent. FTS5 works day one with no embedding model; vectors
+  arrive when something produces embeddings (the GGUF pool can --
+  llama.cpp serves embeddings). Side effect: G2's fake-BM25 gains a real
+  ranked search to delegate to or be measured against.
+- **Identity maps 1:1 onto D46/D60.** `agent:<uuid>`, `session:<id>`,
+  `run:<run_id>`, `turn:<id>` as concepts; `IN_RUN`, `DELEGATED_TO`
+  (run -> run, carrying D54's correlation), `CLAIMED_BY`, `TOUCHED`
+  (run -> file) as edges. The identity plumbing D60 mandates for
+  observability is the same plumbing the ledger wants as keys.
+
+*Boundary:* the raw `tool_events` firehose does **not** go into the ledger
+-- events are a log, not belief. T7's JSONL sink remains their home. The
+ledger gets the distilled layer: turns, runs, task transitions, sign-offs,
+compaction events.
+
+### Why tasks fit -- and what it collides with
+
+`SqliteTaskStore`'s semantics are a hand-rolled subset of what the ledger
+gives natively: the revision log -> transaction time; `claimed_by` -> an
+edge; parent pointers -> `SUBTASK_OF` / `DEPENDS_ON` as a real graph;
+sign-off -> an assertion with the human as actor; status transitions ->
+superseded `HAS_STATUS` edges, so *"what did the plan look like at 14:00"*
+(`as_of_valid`) and *"what did we believe then"* (`as_of_recorded`) are one
+call each. And branching maps onto fan-out exactly (D63).
+
+The collision: the old store's sharing model is *"any process finds
+`plan-*.db` by newest-file; SQLite file locking arbitrates"* -- explicitly
+cross-process. Macrame is **one Write Actor, one process**; two processes
+opening one ledger is outside its contract. For Silk today this is fine --
+all agents are threads in one Weave process -- but it changes how D58's hub
+reads (D62), and it resurfaces if Weave's multiprocess nodes ever host
+agents. Stated once, here: **the ledger is a per-process resource.**
+
+*Constraint sharpened (ruling):* the limit is **not** one agent per turn.
+The Write Actor serialises writes *within* the process -- N agent threads
+call write methods on the shared handle concurrently and the actor queues
+them, sub-millisecond each. Concurrent agents writing is already safe;
+what the architecture must manage is not write *access* but write
+*discipline*: who asserts what, on which lineage, and how read-modify-write
+races settle. That is D62-D66.
+
+**D62. `LedgerRegistry` -- one handle per file, process-wide.** Qt-free, in
+`functions/ledger.py`: a process-singleton mapping path -> open `Database`
+handle, refcounted. Opening goes **only** through the registry -- nodes,
+tools, the hub, the compactor never call `Database.open` themselves --
+so double-open of a live ledger is impossible by construction: the
+sole-writer rule enforced at the only place it can be. Filesystem
+discovery (T4, D58) still *finds* ledger files; the registry answers "is
+this one already open here" and hands back the shared handle. The registry
+owns `close()` ordering (Macrame: close has exactly one owner): plugin
+unload / graph close closes; no node or run ever does. A dead handle
+surfaces as a typed `MacrameError` on the next call -- the same failure
+surface as G6.
+
+*Amendment to D58/D60(2):* with the ledger backend active, the Task Hub's
+"scan" is **discovery of files + registry lookup of handles**, never a
+second open of a live ledger. `scan_all()` as specified remains the
+mechanism for the SQLite fallback backend (D66).
+
+**D63. Lineage discipline -- main is durable belief; workers get branches.**
+
+| Writer | Writes | Lineage |
+|---|---|---|
+| Top-level agent (own run) | its turns, run/session concepts, status transitions on tasks it claimed | main |
+| Orchestrator | delegation edges; fork/abandon of worker branches | main + branch admin |
+| Fan-out worker | everything it does | **its own branch** (`worker/<correlation_id>`, via `on_branch`) |
+| Human (Task Hub / Sign-Off / decision UI) | sign-off assertions, goal revisions | main, high priority |
+| Compactor | supersession events | main |
+| Nobody | deletion -- archive path only (Macrame Doctrine V) | -- |
+
+A worker forks its branch, works entirely on it, and its *result* returns
+as an `AgentMessage` -- exactly as §15 already rules. What survives is
+**promoted by re-assertion on main** (by the orchestrator, or by the human
+via sign-off), never merged. This is not a workaround: Macrame *refuses*
+merge by doctrine, and Silk independently decided worker results come back
+as messages, never as merged state. The branch discipline wires two
+independently-made identical calls together. An abandoned branch is one
+transaction, full audit retained.
+
+**D64. Read-modify-write: a lock for prevention, the ledger for
+adjudication.** Both cheap because single-process is guaranteed by D62.
+
+- *Prevention:* compound operations that must be atomic **as a decision**
+  -- claim a task, park for sign-off, advance a status with a precondition
+  -- go through the `TaskLedger` adapter, which holds a plain
+  `threading.Lock` around read-check-assert. One process means one lock is
+  *complete* correctness -- it replaces what `BEGIN IMMEDIATE` did
+  cross-process for the old store. Multi-row writes use
+  `write_bulk_atomic`.
+- *Adjudication:* if a race slips past (or two claims arrive by design),
+  do not prevent -- **record both and let the ledger arbitrate**: winner =
+  earliest `recorded_at`; the loser's claim stays in history as an audited
+  near-miss. Under Doctrine III a conflict is evidence, not corruption.
+
+**D65. Turn-shaped writes.** Per run: assert the `run` concept at start;
+stream single asserts for genuinely discrete facts (status transition,
+claim, sign-off request -- the things `plan_changed_event` fires on); batch
+the turn's bookkeeping (turn concept, `IN_RUN` / `TOUCHED` / `USED` edges)
+into **one `write_bulk_atomic` at turn end**, from the same hook that emits
+`run_finished`. Keeps the hot loop at ~2-3 ledger calls per turn; keeps a
+turn atomic in transaction time (a turn either happened or did not -- which
+is what makes `as_of_recorded` round-replay clean); keeps the event
+firehose out (T7).
+
+**D66. Seam and fallback.** Nodes and tools never import `macrame` -- only
+`functions/ledger.py` does. `TaskLedger` implements the **existing
+task-store protocol** (`Plan` / `Task` / ops, `plan_to_json`,
+`plan_changed_event`), so the Plan Viewer, Sign-Off flow and the D58 hub do
+not change; `HistoryLedger` adds turns/runs and the `recall` search used by
+the memory tool. `macrame-db` is a **declared optional extra** -- Silk's
+first declared binary dependency, which forces the G5 fix as a
+precondition rather than a lingering gap. Absent, `SqliteTaskStore` remains
+the backend and history stays in-node: the graph degrades to today's
+behaviour, loudly (one log line), never silently.
+
+```
+agents / orchestrator / hub / human UI
+        |  (task-store protocol . recall API)
+   TaskLedger . HistoryLedger        <- RMW lock, turn batching, identity stamps
+        |
+   LedgerRegistry (1 handle/file)    <- sole-writer rule lives here
+        |
+   macrame Write Actor               <- Macrame's own serialisation, priority queues
+```
+
+Net: Silk adds **no locking for write throughput** (Macrame's actor is the
+serialiser), one small lock for *decisions*, one registry for *ownership*
+-- and gets branch-isolated workers, bitemporal plan audit, promoted-by-
+assertion sign-off, and cross-session searchable memory in exchange.
+
+*Placement (default, revisable):* one **task ledger per sandbox root**
+(working dir), preserving T4/D58 discovery. Whether *history* shares that
+file or lives in a per-user memory ledger (`~/.weave/silk/memory.db`) for
+cross-project recall is open (§20 q7).
+
+---
+
+## 18. Phasing
 
 **Foundations first, then surface.** Each phase leaves the tree working.
 
@@ -1336,15 +1506,21 @@ top-level agents**, whose streams share no port and never will (rule 3).
 6. Decision Inbox dock + `DecisionRegistry` + blocked-on-decision canvas
     state (D59) — after the D48/D49 seam exists (Phase 2), since it mirrors
     that seam's widget.
+7. `functions/ledger.py` (§17, D62–D66): `LedgerRegistry`, `TaskLedger`
+    behind the existing task-store protocol, `HistoryLedger` + `recall`
+    tool (FTS5 first). Preceded by declaring dependencies (G5) — the
+    ledger is Silk's first declared binary dependency.
 
-**Later:** nested budgets (D26); BM25 or its removal (G2); the unwired-event
+**Later:** embeddings for `recall` (vector half of §17 — needs an
+embedding producer; the GGUF pool can serve one); nested budgets (D26);
+BM25 or its removal (G2); the unwired-event
 dispositions (D15); the D47 mechanisms not selected by the measurement --
 kept described rather than deleted, since the rule that skips one today
 selects it as soon as the graph shape changes.
 
 ---
 
-## 18. Gaps this closes
+## 19. Gaps this closes
 
 | Item | Closed by |
 |---|---|
@@ -1372,7 +1548,7 @@ name), G12 (version metadata), T5 (delegation depth), T6 (HTML floor), T7
 
 ---
 
-## 19. Open questions
+## 20. Open questions
 
 1. The grant record schema and the revocation *surface* -- where a user sees
    and withdraws what they have granted (§7; location settled by D35).
@@ -1400,3 +1576,8 @@ name), G12 (version metadata), T5 (delegation depth), T6 (HTML floor), T7
    absorbs its role for N agents -- keep both (a small graph wants a small
    node) or deprecate toward the hub. Low stakes; decide when the hub is
    built.
+7. Ledger placement for *history* (§17): share the per-root task ledger, or
+   a per-user memory ledger (`~/.weave/silk/memory.db`) so `recall` spans
+   projects. Task ledgers are per sandbox root either way. Related: which
+   embedding model stamps turn vectors, and whether embedding versioning
+   (Macrame stores per-model tables) tracks the pool's loaded model.

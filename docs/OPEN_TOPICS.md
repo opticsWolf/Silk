@@ -77,6 +77,11 @@ is binary and still open: implement BM25, or drop the strategy from the
 public surface. The spec parks it under "Later", which is only tenable if
 discovery ships with `keywords` and the `bm25` option is hidden until real.
 
+**New option (2026-08-31):** spec §17 brings `macrame-db` in reach, whose
+`keyword_search` (FTS5) and `hybrid_search` (FTS5 + DiskANN, RRF) are real
+ranked search. The binary choice gains a third arm: delegate tool search to
+the ledger where present, keeping `keywords` as the no-ledger fallback.
+
 ### G3. 11 of the 19 hook events are defined but never emitted
 
 `functions/hooks.py` declares 19 event constants; only 8 are actually
@@ -134,6 +139,11 @@ there is no declared floor for the `llama_cpp` server API the pool's HTTP
 client depends on. (There is a runtime probe:
 `server_missing_deps_message()` tells you what to install if the server
 extra is missing.)
+
+**Now forced (2026-08-31):** spec §17 adopts `macrame-db` as an optional
+extra — Silk's first declared *binary* dependency (abi3 wheels on PyPI).
+D66 makes declaring dependencies a precondition of the ledger work, so G5
+stops being deferrable the moment that lands.
 
 ### G6. The model pool has no recovery when the server dies
 
@@ -487,6 +497,12 @@ Task Hub scans **all** `plan-*.db` under the graph's sandbox roots
 (`scan_all`, additive) while agents keep the newest-only discovery. Whatever
 policy T4 settles on must keep both readers coherent.
 
+**Second note (2026-08-31):** spec §17 puts a `MacrameTaskStore`
+(`TaskLedger`) behind the same protocol. Under that backend, discovery
+*finds files* but reading goes through the process-local `LedgerRegistry`
+(D62) — never a second open of a live ledger (sole Write Actor per
+process). `scan_all` stays as specified for the SQLite fallback.
+
 
 **Resolved** by spec §11, D23: a `Task Node` carries explicit plan identity
 (plan id + store location) and feeds the ToolBox, so the Plan Viewer takes
@@ -532,6 +548,13 @@ the unified event vocabulary (D2) means a sink writes one typed stream
 rather than three ad-hoc ones, which is the cheap moment to add it; and D30
 puts a human decision inside the run, which is exactly the kind of thing an
 audit trail should retain.
+
+**Boundary set by spec §17 (2026-08-31):** the Macrame ledger takes the
+*distilled* layer (turns, runs, task transitions, sign-offs, compaction
+events); the raw `tool_events` firehose stays JSONL — events are a log,
+not belief. T7's open call (build it, and when) is unchanged, but its role
+is now defined rather than speculative, and D65 keeps the firehose out of
+the ledger by construction.
 
 ### T8. Context budget under raised autonomy (compaction — G14)
 
