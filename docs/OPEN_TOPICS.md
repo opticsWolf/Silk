@@ -360,6 +360,37 @@ three pays for itself, and the correct response is to stop.
 size and backing if B is selected; who chooses the backend, and the
 down-backend path, if C is.
 
+### G18. `delegate_parallel` is unsound with more than one assignment
+
+The orchestrator's shape is right — delegation is a normal tool, so it
+inherits hooks, role enforcement and `tool_events` for free — but the
+fan-out path has four independent defects, and every one of them is silent.
+Full treatment in spec §15 (**D52**); in brief:
+
+1. **Same-worker fan-out fails.** `_run_one` writes depth and chain onto
+   `spec.toolset` (`functions/orchestrator.py:231-234`), a shared live graph
+   object; two assignments naming one worker race, then `RoleBinding.activate`
+   refuses the second (`subagent.py:165`). *Run `researcher` on A and on B* is
+   a reasonable request that returns `ok=False`.
+2. **Depth and chain leak** — set on the child toolset, never cleared, no
+   `finally`. Run-scoped state on a graph-scoped object.
+3. **The assignment list is truncated silently.**
+   `items = [...][:_MAX_PARALLEL]` with `_MAX_PARALLEL = 8`
+   (`orchestrator.py:78`, `:356`): twelve assignments become eight and the
+   reply says `ok=True`, "8/8 delegations succeeded".
+4. **The shared budget races** — see the T3 correction.
+
+And it is the worst case for **G16**: N workers interleaving against one
+server that truncates in-flight streams, each with a fresh `session_id`
+(`subagent.py:177`) so prefix reuse is zero (**G15**). Spec **D53** rules
+that the fan-out runs sequentially until G16 is fixed — which costs nothing,
+because `llama_outer_lock` was serializing the requests anyway.
+
+Separately, `_run_one` discards the `on_event` and `should_stop` parameters
+`run_subagent` already accepts (`subagent.py:125-126`), so a fan-out is both
+invisible while it runs and **uninterruptible** — G8's most severe instance.
+Spec **D54**.
+
 ### G17. `Clear Context` silently fails to release the pool session
 
 `nodes/agent.py:258` reads `pool._session_instances`, an attribute of the
@@ -440,6 +471,15 @@ per-worker sub-budgets, stated now so the compaction and approval work do
 not have to guess, implemented after the core surface. The gap is that
 nothing is built; the design question is closed.
 
+**Correction (2026-08-30):** this entry assumed the *shared* half already
+worked. It does not. `UsageLimits` (`functions/usage_limits.py`) is a plain
+dataclass with `+=` counters and separate `check_*` / `record_*` calls, and
+imports no lock; `delegate_parallel` threads one instance into N concurrent
+workers. Check-then-record is a TOCTOU race, so several workers pass the same
+check and collectively overrun the cap — the one global cap fails in exactly
+the case it exists for. A correctness bug, not an ergonomics gap. See
+**G18** and spec **D52(4)**.
+
 ### T4. Plan discovery policy (task store)
 
 **Resolved** by spec §11, D23: a `Task Node` carries explicit plan identity
@@ -452,10 +492,10 @@ Viewer is the only remaining plan consumer.)
 
 ### T5. Default delegation depth
 
-The orchestrator runtime treats `max_depth=None` as `1`, while the
-`Silk Orchestrator` node ships `DELEGATION_MAX_DEPTH = 2`. Two defaults
-for the same concept — pick one, or make the node's value an editable
-port. Untouched by the spec.
+**Resolved** by spec §15, D55: the node's value wins, becomes an editable
+port so the graph shows it, and the runtime default follows it rather than
+diverging. Recorded chiefly so the divergence stops being re-discovered.
+Stub kept for inbound links.
 
 ### T6. HTML rendering floor
 

@@ -1018,7 +1018,132 @@ exercise reliably any other way.
 
 ---
 
-## 15. Phasing
+## 15. Orchestration
+
+The orchestrator is **already built and the design is right.** An orchestrator
+*is* a Silk Agent (`nodes/orchestrator.py`) with one extra `workers` input;
+delegation is registered as an ordinary tool on the agent's own toolset
+(`functions/orchestrator.py`), which is why it inherits hooks, role
+enforcement, `tool_events` observability and gate-ability for free rather than
+needing a parallel plumbing stack. `run_subagent` reuses the whole
+loop/toolset/role/reflection stack for the child run. Depth caps and a
+delegation-chain cycle guard are in place.
+
+Nothing below changes that shape. What follows is the gap between the design
+and what `delegate_parallel` actually does once N > 1 -- which is where
+"direct numerous subagents" lives.
+
+**D52. `delegate_parallel` is unsound with N > 1 today: four independent
+defects, all silent.**
+
+1. **A same-worker fan-out fails.** `_run_one` writes the depth and chain onto
+   `spec.toolset` (`functions/orchestrator.py:231-234`) -- a **shared, live**
+   object owned by the graph. Two assignments naming the same worker race on
+   those attributes, and then `RoleBinding.activate` refuses the second
+   (`functions/subagent.py:165`) with "toolset already bound". The model gets
+   `ok=False` for an entirely reasonable request -- *run `researcher` on topic
+   A and on topic B*. The module docstring's "workers with distinct toolsets
+   don't clash" is a precondition that nothing checks and the model cannot
+   see.
+2. **The depth and chain leak.** Those attributes are set on the child toolset
+   and never cleared -- there is no `finally`. A worker's toolset keeps
+   `_delegation_depth = 1` after the run, so its next use starts pre-charged,
+   and a worker later run as a top-level orchestrator can refuse to delegate
+   at all. Run-scoped state on a graph-scoped object, which is the same
+   lifetime error D49 avoids for the decision seam.
+3. **The assignment list is silently truncated.** `items = [...][:_MAX_PARALLEL]`
+   with `_MAX_PARALLEL = 8` (`:78`, `:356`). Twelve assignments become eight;
+   the reply is `ok=True` with "8/8 delegations succeeded". The model is told
+   everything ran. This is D43's failure shape exactly -- a cap that discards
+   instead of reporting -- and the fix is the same: refuse or report, never
+   drop.
+4. **The shared budget is not thread-safe.** `UsageLimits`
+   (`functions/usage_limits.py`) is a plain dataclass with `+=` counters and
+   *separate* `check_*` and `record_*` calls; it imports no lock. One instance
+   is threaded into N concurrent workers, so check-then-record is a TOCTOU
+   race: several workers pass the same check and collectively overrun the cap.
+   The "one global cap for a fan-out" the docstring promises fails in the only
+   case it exists for. Note T3 assumed this part worked and asked only for
+   *sub*-budgets; it is a correctness gap, not an ergonomics one.
+
+**D53. Sequence `delegate_parallel` behind D43; until then it is a sequential
+loop.** A fan-out is the worst case for the stream-truncation bug: N workers
+issue N interleaved requests against one shared server, where
+`interrupt_requests=True` means each new worker's request truncates the
+previous worker's in-flight stream, and the truncation reports as a clean stop
+(D43). Every worker also gets a fresh `session_id`
+(`functions/subagent.py:177`), so contention is 100% and prefix reuse is zero
+(D47).
+
+The irony is the point: **the tool that most needs concurrency is the one
+place Silk has none.** `llama_outer_lock` serializes the requests anyway
+(D43), so running the assignments in a `ThreadPoolExecutor` buys no model
+throughput -- it buys only the interleaving that corrupts them.
+
+*Ruling:* until D43 lands, `delegate_parallel` runs its assignments
+**sequentially**. Identical results, no truncation, no measurable cost,
+because the server was serializing them regardless. It becomes genuinely
+concurrent when there is more than one backend to be concurrent *across*
+(D45, D47 mechanism C) -- at which point the fan-out width should be bounded
+by backend count, not by a constant.
+
+**D54. The orchestrator throws away the two hooks `run_subagent` already
+offers.** `run_subagent` accepts `on_event` and `should_stop`
+(`functions/subagent.py:125-126`, polled at `:199-202`). `_run_one` passes
+neither (`:236`). Two consequences:
+
+- **No live observability.** Worker events are dropped on the floor. During a
+  long fan-out the orchestrator's `tool_events` shows one `delegate` call and
+  then nothing, for minutes; the trace is reconstructed only at the end from
+  `tools_used`. For *numerous* subagents this is the difference between a
+  progress view and a hang.
+- **Stop does not propagate.** Stop sets the *orchestrator's* engine flag; the
+  workers keep running to completion inside `pool.map`. This is **G8's most
+  severe instance** -- a fan-out of eight long workers is uninterruptible, and
+  no timeout bounds it.
+
+*Required:* pass `on_event`, re-emitting worker events onto the orchestrator's
+`_stream_event` path tagged with the worker name and the delegation's
+`correlation_id` (which `DelegateResult` already carries); and pass
+`should_stop` bound to the orchestrator's cancel check. Both parameters exist
+and are already honoured by the runner -- this is wiring, not design. The
+typed vocabulary (D2) gains a `worker` field so a nested event is
+attributable.
+
+**D55. One delegation-depth default (closes T5).** The runtime defaults
+`max_depth=1` (`attach_orchestrator_tools`) while the node ships
+`DELEGATION_MAX_DEPTH = 2` -- two defaults for one concept. The node's value
+wins, becomes an **editable port** so the graph shows it, and the runtime
+default follows it. Low-stakes and reversible; it is recorded only so the
+divergence stops being re-discovered.
+
+**D56. The approval seam already lands in the right place for delegation --
+by construction.** `delegate` is `risk="medium"` and passes through
+`wrap_tool_execute` like any other tool, on the **orchestrator's** toolbox. So
+the gate fires on the orchestrator's own node UI, *before* the fan-out starts,
+and asks the question a human can actually answer: approve this delegation,
+not each of a worker's internal calls. Meanwhile a worker's own gated tools
+deny (D36, D48: a subagent has no node UI), reachable only through a durable
+grant.
+
+This is a property of "delegation is a tool", not something to build -- worth
+recording because the obvious alternative, plumbing approval down into
+workers, would be strictly worse and looks superficially more thorough.
+
+**D57. Fan-out results are the dominant context-growth term in an orchestrator
+run, so the spill hook must cover them first.** `delegate_parallel` returns
+every worker's full answer inline into the orchestrator's context: eight
+workers times a long answer is the single largest tool result Silk can
+produce, and it arrives in one round. Per D41 that makes it the highest-value
+target for the spill hook (option A) -- write the full answers to files,
+leave a per-worker head/tail preview plus paths in the model-visible result --
+and it is prefix-preserving, so it defers compaction rather than triggering
+it. An orchestrator that compacts is an orchestrator paying the double prefill
+of D41 at the worst possible moment: mid-fan-out.
+
+---
+
+## 16. Phasing
 
 **Foundations first, then surface.** Each phase leaves the tree working.
 
@@ -1046,6 +1171,15 @@ exercise reliably any other way.
    that ends without a terminal `finish_reason` as an error (D43). Two-line
    fix for silent response truncation whenever two agents run at once; it
    gates every concurrent graph, so it precedes everything in Phase 2.
+9. **Make `delegate_parallel` honest** (D52, D53): run assignments
+   sequentially until D43 lands, refuse-or-report instead of truncating the
+   assignment list, clear the depth/chain attributes in a `finally`, reject a
+   same-worker fan-out with an error the model can act on, and put a lock
+   around `UsageLimits`. Four small fixes to shipped code that is currently
+   silently wrong; none of them waits on anything else.
+10. Thread `on_event` and `should_stop` through `_run_one` (D54) — the
+    parameters already exist, so this is what makes a fan-out observable and
+    interruptible.
 
 **Phase 2 — safety and context**
 1. Per-tool hook binding and the essential tier (D13, D14).
@@ -1064,7 +1198,8 @@ exercise reliably any other way.
    (D10, D34, D35); `PRAGMA user_version` on the plan store (D39). Driven by
    the manual-drive race catalog (D42).
 4. Spill hook (option A) — prefix-preserving, so it carries the load before
-   compaction is triggered at all (D41).
+   compaction is triggered at all (D41); covering `delegate_parallel` results
+   first, since they are the largest single result Silk produces (D57).
 5. **Whichever of D47's mechanisms the Phase 1 numbers select**, plus the
    prefix-stability rules (I11) which are unconditional:
    - *A — session affinity* (D46, D47): honour the session id at
@@ -1080,6 +1215,7 @@ exercise reliably any other way.
     carrying prefill cost (D24, D25, D40, D41).
 
 **Phase 3 — surface**
+0. Delegation depth as an editable port, one default (D55, closes T5).
 1. File access as an explicit narrowing-only port; Pydantic grant model
     (D16–D18).
 2. Discovery: `search_tools`, per-tool deferral, auto-load (D4–D6).
@@ -1093,7 +1229,7 @@ selects it as soon as the graph shape changes.
 
 ---
 
-## 16. Gaps this closes
+## 17. Gaps this closes
 
 | Item | Closed by |
 |---|---|
@@ -1121,7 +1257,7 @@ name), G12 (version metadata), T5 (delegation depth), T6 (HTML floor), T7
 
 ---
 
-## 17. Open questions
+## 18. Open questions
 
 1. The grant record schema and the revocation *surface* -- where a user sees
    and withdraws what they have granted (§7; location settled by D35).
