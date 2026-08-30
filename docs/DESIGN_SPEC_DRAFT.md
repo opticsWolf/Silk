@@ -595,6 +595,76 @@ Pydantic model, validated at the port boundary.
 choice; a derived ToolSet or Role can never turn it back on. Consistent with
 I6.
 
+**D67. Concurrent file writes are serialised by a two-tier lock in the
+sandbox. The first tier exists; the second closes the subprocess hole.**
+
+*Tier 1 -- per-path locks (already shipped, now a spec-level guarantee).*
+`functions/tools/file_locks.py`: a **process-wide** registry of
+`threading.Lock`s keyed by resolved path, deliberately module-global so the
+guarantee spans FileToolSandbox instances -- **and therefore spans agents**:
+two agents writing the same file through the file tools are already
+serialised today. Every mutating file tool holds it (`write_file`,
+`append_file`, `create_directory`, `edit_file`, `insert_text`, `copy_file`,
+`move_file`, `delete_file`); two-path operations acquire in sorted canonical
+order, so they cannot deadlock. Combined with `_atomic_write`'s
+`os.replace`, a lost update between file tools is impossible in one
+process, for any number of agents. Also on record: `edit_file` /
+`insert_text` verify their anchor text before writing, which is **optimistic
+concurrency at the semantic level** -- an agent editing against a stale read
+fails cleanly with a mismatch instead of clobbering the other agent's
+change. `write_file` alone is a blind overwrite (see D68).
+
+*The hole (G19).* Toolchain subprocesses that rewrite files -- `ruff
+format`, `cargo fmt`, `run_python` (which can write anything) -- never
+touch `lock_paths`, and their `sequential=True` flag orders execution only
+**within one agent's batch** (`tool_box.py:669`). Across agents nothing
+serialises them: agent A's formatter can interleave with agent B's
+`edit_file` on the same tree, and neither is told.
+
+*Tier 2 -- a per-root readers-writer gate (new).* Same registry pattern as
+tier 1, keyed by resolved sandbox root, process-global. Rules:
+
+- **File tools**: shared(root containing the target) + exclusive(path) --
+  their behaviour among themselves is unchanged.
+- **Subprocess tools that may write** -- a `writes_files` flag on
+  `CommandSpec` (`ruff_format`, `cargo fmt`, every `run_*`): exclusive(root)
+  for the subprocess's duration, because nothing can know which files a
+  subprocess will touch. Coarse on purpose: correctness first, and a
+  formatter run is short.
+- **Read-only subprocesses** (checks, `--no-fix` lints, mypy, radon): no
+  gate.
+
+Ordering rule, extending tier 1's: **root gates before path locks, both in
+sorted canonical order.** Where registered roots from different ToolBoxes
+nest, a writer takes the gates of every registered root in an
+ancestor/descendant relation with its own -- the registry is small, so this
+is cheap. An exclusive gate held by a long subprocess is a *visible* wait:
+the blocked tool call emits its usual `tool_call` event and the agent's
+status line says what it is waiting on, so a gated fan-out reads as queued,
+not hung (same legibility rule as D53/1c).
+
+**D68. Scope ruling: the lock is advisory and per-process; *ownership* is
+the ledger's job, not the lock's.**
+
+- *Advisory, per-process* -- the same boundary as D62, stated once: all
+  agents are threads in one Weave process, and a lock protects cooperating
+  tools. It cannot bind an external editor, another Weave instance, or an
+  MCP server with its own file access. OS-level advisory file locks are
+  deliberately not built: they cannot bind non-cooperating writers either,
+  and the multiprocess caveat is already on record.
+- *Duration* -- locks are held per operation (milliseconds, up to one
+  subprocess run), **never per turn**. "This file is mine for the task" is
+  *ownership*, and ownership is a **claim in the task ledger** (D63/D64):
+  claim `file:<path>`, adjudicated by earliest `recorded_at`, visible and
+  auditable -- exactly the shape task claims already have. A sandbox hook
+  that consults claims as *dynamic* write policy (deny a write to a path
+  claimed by another agent, alongside the static `file_permissions`
+  narrowing) is recorded as an option, not built (§20 q8).
+- *Lost updates at the reasoning level* -- `edit_file`'s anchors already
+  catch the common case. If blind `write_file` overwrites ever bite in
+  practice, the remedy is a CAS precondition (optional expected-digest
+  argument), not longer lock holds.
+
 ---
 
 ## 10. MCP nodes
@@ -1460,6 +1530,9 @@ cross-project recall is open (§20 q7).
 11. The `agent` identity field on the event envelope (D60(1)) — stamped
     where `run_id` is stamped today; lands with D54's `worker` field so the
     vocabulary changes once, not twice.
+12. The per-root write gate + `writes_files` flag on `CommandSpec` (D67
+    tier 2, closes G19): small, and it is the only thing standing between
+    two concurrent agents and an unserialised formatter-vs-edit race.
 
 **Phase 2 — safety and context**
 1. Per-tool hook binding and the essential tier (D13, D14).
@@ -1581,3 +1654,7 @@ name), G12 (version metadata), T5 (delegation depth), T6 (HTML floor), T7
    projects. Task ledgers are per sandbox root either way. Related: which
    embedding model stamps turn vectors, and whether embedding versioning
    (Macrame stores per-model tables) tracks the pool's loaded model.
+8. Whether the sandbox consults ledger claims as *dynamic* write policy
+   (D68) -- deny writes to paths another agent has claimed -- and whether a
+   claim then needs a release path and a timeout, which is approval-gate
+   territory (D38) rather than lock territory.

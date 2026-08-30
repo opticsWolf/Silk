@@ -370,6 +370,24 @@ three pays for itself, and the correct response is to stop.
 size and backing if B is selected; who chooses the backend, and the
 down-backend path, if C is.
 
+### G19. Toolchain subprocess writes bypass the file locks across agents
+
+The per-path write locks (`functions/tools/file_locks.py`) are process-wide
+and deliberately module-global, so every mutating *file tool* is already
+serialised across agents -- that part is solved and now spec-level (D67
+tier 1). But subprocess tools that rewrite files (`ruff format`,
+`cargo fmt`, every `run_*`) never acquire `lock_paths`, and their
+`sequential=True` flag only orders execution within one agent's batch
+(`functions/tool_box.py:669`). Two agents sharing a tree can interleave a
+formatter with an `edit_file` and neither is told. Silent, and concurrent
+tool execution across agents is real today (tool batches run on independent
+`ThreadedNode` workers even while model calls serialise).
+
+Fix specified at spec **D67 tier 2**: a per-root readers-writer gate, a
+`writes_files` flag on `CommandSpec`, root-gates-before-path-locks ordering.
+Scope ruling at **D68** (advisory, per-process; long-term ownership via
+ledger claims, not locks). Phase 1 item 12.
+
 ### G18. `delegate_parallel` is unsound with more than one assignment
 
 The orchestrator's shape is right — delegation is a normal tool, so it
