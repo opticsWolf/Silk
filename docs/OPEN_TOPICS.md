@@ -2,16 +2,27 @@
 
 A living inventory of known gaps and undecided design questions in Silk.
 Every entry cites the code that establishes it, so each item can be
-verified against the source in seconds. When an item is resolved, delete
-it — the commit history is the archive.
+verified against the source in seconds.
 
-**Last audited:** 2026-08-24.
+**Relationship to the design spec.** Design *decisions* now live in
+[DESIGN_SPEC_DRAFT.md](DESIGN_SPEC_DRAFT.md). This file tracks what is not
+yet **built** and what is still **undecided**. An entry whose design question
+the spec has answered carries a **Decided** line citing its D-number and
+stays only until the code lands.
+
+**Last audited:** 2026-08-30 — reworked against the design spec.
 
 Legend:
 
 - **GAP** — the machinery exists (or is declared) but the implementation
   is missing or partial.
 - **TOPIC** — works as-is, but a design decision is pending.
+- **Decided** — the design question is settled in the spec; only the
+  implementation is outstanding.
+
+The standing rule is *delete an item when it is resolved; the commit history
+is the archive*. Three resolved topics (T1, T4, T8) are kept as one-line
+stubs instead, because the spec and other entries link to their anchors.
 
 ## Identified gaps
 
@@ -27,12 +38,26 @@ if meta.get("requires_approval"):
     pass
 ```
 
-(`functions/tool_box.py`.) Everything *around* the gate is built — the
+(`functions/tool_box.py:697`.) Everything *around* the gate is built — the
 `ToolMeta.requires_approval` field, the `approval_required(...)` ToolSet
 operation, the registration `meta` key — but a tool registered with
-`requires_approval=True` executes unchecked. There is no approval-state
-store, no grant surface, and no structured denial result. See **T1** for
-the open design question.
+`requires_approval=True` executes unchecked.
+
+**Decided:** spec §7 (D30–D35), closing **T1**. The in-code TODO's premise
+("stored in session or context") is rejected: there is **no** approval-state
+store. The gate emits a request on the run's stream, blocks the call, and
+resolves it inside the same live run (D30). Sign-off and tool approval become
+one hook (D31); the parked-state machinery is deleted, not migrated (D31–D33).
+The only persistence is durable per-tool grants at `~/.weave/silk/grants.json`,
+keyed by resolved project root, allow-only (D34, D35).
+
+**Remaining (implementation, spec Phase 2):** the decision transport
+(request id + thread-safe wait resolved from the UI thread); cancellation
+reaching a blocked waiter (see **G8**); timeout and default-deny, since a
+blocked gate holds both the worker thread and the exclusive `RoleBinding`;
+the no-answerer case (nothing wired to the events port, or a subagent) —
+still open. Also still open: the grant record schema and the revocation
+surface.
 
 ### G2. The BM25 tool-search strategy is a keyword alias
 
@@ -40,6 +65,13 @@ the open design question.
 delegates to `_keyword_search` (`functions/tool_search.py`,
 `# TODO: Implement BM25 search`). Selecting the `bm25` strategy today
 returns exactly the same results as `keywords`.
+
+**Re-scoped by spec §6.** This was cosmetic while nothing model-facing
+called the search index. Under D4 (`search_tools`) discovery becomes the
+primary path into context, so ranking quality is load-bearing. The decision
+is binary and still open: implement BM25, or drop the strategy from the
+public surface. The spec parks it under "Later", which is only tenable if
+discovery ships with `keywords` and the `bm25` option is hidden until real.
 
 ### G3. 11 of the 19 hook events are defined but never emitted
 
@@ -65,6 +97,11 @@ directly (no `HOOK_WRAP_OUTPUT_VALIDATE` in between) and `_parse_args`
 calls `model_validate_json` directly (no `HOOK_WRAP_TOOL_VALIDATE`), so
 middleware currently cannot observe or intervene in either phase.
 
+**Decided (partly):** spec §8 (D15) — wire the five `*_ERROR` events plus
+`HOOK_AFTER_MODEL_REQUEST`, and make registration on a still-unwired event
+fail loudly instead of registering silently. The five `WRAP_*` events are
+explicitly **not** pruned pending review; their disposition is **T2**.
+
 ### G4. No test suite
 
 There are no tests in the repository (no `tests/`, no `test_*.py` files).
@@ -74,10 +111,14 @@ the `AgentLoop` generator contract (rounds, reflection, usage limits,
 `HOOK_AFTER_RUN` exactly-once), the ToolBox execution path (role gate,
 structured errors, timeouts, sequential-vs-parallel), `SqliteTaskStore`
 concurrency (revision conflicts → `Conflict`), and the orchestrator
-guards (depth / cycle / unknown worker). When it lands, encode the five
-invariants as executable fixture data (one record per invariant and
-violation class) rather than free-standing test functions, so the doc and
-the suite cannot drift apart (pi review D.5).
+guards (depth / cycle / unknown worker).
+
+**Decided:** spec §14 (D27) and Phase 1 item 1 — encode the five existing
+invariants plus the spec's I6–I9 as executable fixture data, one record per
+invariant and violation class, **before** the implementation lands. This is
+the main risk control for a change of the spec's size. Note the spec does
+*not* ask for characterization fixtures on the sign-off park path: that path
+is deleted (D31), not refactored, so pinning it would be wasted work.
 
 ### G5. Runtime dependencies are declared nowhere
 
@@ -114,6 +155,14 @@ there is no per-call cancellation (the `asyncio.wait_for` wrappers are
 timeout-only). For long-running tools, the registration `timeout` is the
 only bound.
 
+**Sharpened by D30.** The inline approval gate introduces a *deliberate*
+block inside a tool batch, of unbounded duration, waiting on a human. The
+consumer loop that polls `is_compute_cancelled()` (`nodes/agent.py:477`) is
+inside a single `next()` call while that happens and cannot run — so Stop
+must reach the blocked waiter directly, or Stop will not stop a run sitting
+on an approval prompt. What was a latency annoyance becomes a correctness
+requirement of the gate.
+
 ### G9. Type coverage is scoped to `functions/`
 
 mypy is configured with `files = ["functions"]` — deliberate staged
@@ -126,7 +175,8 @@ intentional gap doesn't become an accidental one.
 The field exists on `EventStart`, but the loop constructs the event with
 only `settings` and `input_tokens` — it is always `None`. Either populate
 it (useful for a viewer that shows the model its instructions) or drop
-the field.
+the field. Still open; the spec carries it as an implementation-time call
+(§5, open question 3), since it is a one-line change either way.
 
 ### G11. `OpenAIClientMock` is the production client
 
@@ -150,16 +200,14 @@ text. Both consumers guard with `if run_error and not final_text:` before
 surfacing an error (`nodes/agent.py`, `functions/subagent.py`), so such a
 run reports a normal finish (status "Done." / `SubagentResult(ok=True)`)
 and the error event vanishes. Related: `recoverable` is declared and set,
-but no consumer reads it — today it is a dead field, and `agent_loop` is
-the only context whose error arrives together with a final result.
-Candidate fixes: on the consumer side, key the guard off the error context
-/ `recoverable` instead of the presence of a final result; on the loop
-side, make `max_rounds` a true terminal exit with no `EventRunResult`; or
-the pi-harness review's option (D.1), which fixes all three conflated
-exits at once — add `outcome: completed | stopped | usage_limited | error`
-to `EventRunResult`, set at the loop's exit classes (one field, four
-assignments; it also makes a user-stopped run distinguishable from a
-finished one).
+but no consumer reads it — today it is a dead field.
+
+**Decided:** spec §5 (D2) and Phase 1 item 3 — add
+`outcome: completed | stopped | usage_limited | error` to `EventRunResult`,
+set at the loop's exit classes, and have consumers key off `outcome` rather
+than off the presence of a final text. One field, four assignments; it also
+makes a user-stopped run distinguishable from a finished one, and it is a
+precondition for telling a compacted run from a clean one (G14(e)).
 
 ### G14. Compaction is not implemented (required mechanism)
 
@@ -167,10 +215,7 @@ The declaration here is the requirement, not the code — unlike G1–G13
 (machinery declared, implementation missing), compaction is not declared
 anywhere in the codebase; it is entirely absent. The requirement is on
 record: decision 2026-07-25 — long-running runs are a product goal, so
-compaction **will be needed as a mechanism**. Both architecture reviews
-converge on this gap independently (dsh review C.10: "the one operational
-gap worth closing"; pi review D.4: failure ladder "quality decay → token
-brake → backend `n_ctx` wall").
+compaction **will be needed as a mechanism**.
 
 **Verified facts.** `GraphEngine.history` is a plain append-only list
 (`graph_engine.py:52/93/134`); the `AgentEngine` protocol exposes
@@ -181,86 +226,85 @@ prompt-growth guard is the pre-request gate at `agent_loop.py:166`, which
 *fails* the run rather than shrinking it — and per G13 even that failure
 is swallowed by consumers. Nothing summarizes, prunes, or spills.
 
+**Decided:** spec §12 (D24, D25) — **T8 option C in full, with option A
+alongside**. Pressure trigger at the `agent_loop.py:166` seam against a
+`GGUFMeta.context_length` denominator, plus a compact-once-and-retry on a
+backend `n_ctx` overflow arriving as `EventError(context="stream_response")`;
+the agent's own model and pool session does the summarizing (no second
+resident model). Cuts land on whole-round boundaries (spec I9). A failed
+compaction degrades to no compaction and never kills a run.
+
 **What is missing (implementation checklist):**
 
-| # | Piece | Note |
+| # | Piece | Status |
 |---|---|---|
-| (a) | Engine operation to replace the model-visible history prefix | The protocol is append-only today; the engine stays the owner of its own history (design rule: the engine is a single request) |
-| (b) | Compactor seam in the loop | The pressure point at `agent_loop.py:166` today only aborts; it must be able to *shrink and retry* |
-| (c) | Context-budget number at loop level | `GGUFMeta.context_length` exists at model load (`gguf_meta.py:42`) and `n_ctx` is passed to the server (`model_pool.py:92`), but nothing plumbs it to the engine or the loop — a pressure threshold needs a denominator |
-| (d) | Event type for compaction | "Everything observable is an event"; content-free per the observability rule (metadata + summary reference, not prompt text) |
-| (e) | Observability preconditions | G13 (outcome) so consumers can tell a compacted run from a clean one; T7 (sink) so the dropped range is debuggable — compaction is a lossy projection of the run |
+| (a) | Engine operation to replace the model-visible history prefix | spec §12; built and swapped in only after the summary succeeds (atomic) |
+| (b) | Compactor seam in the loop | optional `compactor` on `AgentLoop`, like the existing optional `output_validator` |
+| (c) | Context-budget number at loop level | spec Phase 1 item 4 — plumb `GGUFMeta.context_length` (`gguf_meta.py:42`) to the loop |
+| (d) | Event type for compaction | `EventCompaction`, content-free per the observability rule (spec §5) |
+| (e) | Observability preconditions | G13 lands in Phase 1. **T7 (durable sink) is still undecided** — the spec recommends it for debugging the dropped range but does not schedule it |
 
-**Reference designs (from the reviews).** dsh §11.2 — compaction triggers
-on *pressure* (`agent/pre-step`, before request derivation) and on
-*canonical overflow* (`agent/request-error`, after a failed model
-request); a model-free `toolResultPruner` rewrites oversized tool results
-before summary selection; the replacement **shadows the original nodes in
-derived history** (the append-only log is never rewritten). pi §6.3 —
-auto-trigger at `contextTokens > contextWindow − reserveTokens`;
-append-only: find the cut point walking back past `keepRecentTokens`,
-summarize the older range (passing previous summaries forward), append a
-`CompactionEntry` whose inline `retainedTail` makes each compaction a
-self-contained checkpoint; "compaction changes provider context, **not
-storage**".
-
-**Implementation options (A: spill hook / B: agent-invoked tool / C: loop
-policy at the pressure seam) with trade-offs, Silk implementation shapes,
-and the recommended sequencing: [T8](#t8-context-budget-under-raised-autonomy-compaction-is-a-required-mechanism-g14).**
+**Interim invariant until compaction lands.** Whenever `max_rounds` is
+raised for a role, also set `UsageLimits.input_tokens`: for long autonomy the
+token cap, not the round cap, is the safety bound. The spill hook (option A)
+covers only the dominant growth term — verbatim tool results — and needs a
+cleanup policy tied to the run/plan root, which is also still open.
 
 ## Open topics
 
 ### T1. Design of the approval gate (closes G1)
 
-Where should approval state live — per-run `RunContext` (simple, but
-approvals don't survive a re-run) or a session store (durable, but needs a
-home and a lifecycle)? And what is the grant surface: a
-`HOOK_WRAP_TOOL_EXECUTE` middleware that parks the call until a UI
-responds, a pre-execution check, or an extension of sign-off? Note that
-**sign-off is already a working approval mechanism for task changes**
-(park → human approves → held-and-applied action). The question is whether
-generic tool approval should reuse that plumbing instead of a parallel
-one. The in-code TODO suggests "session or context", which is the
-unresolved part.
+**Resolved** by spec §7, D30–D35: one inline blocking gate hook, no
+approval-state store, durable grants only. Stub kept for inbound links; the
+implementation gap is **G1**.
 
 ### T2. Hook vocabulary: wire it up or prune it (closes G3)
 
-Either implement emission for the 11 reserved events — starting with the
-`*_ERROR` family and `HOOK_AFTER_MODEL_REQUEST`, which are cheap and
-useful for logging/metrics — or delete the unused constants so the
-vocabulary matches reality. Pruning is safe as long as no hook map
-references a constant (the bundled catalog hooks only use wired events).
+Narrowed by D15. The six event-family members are decided (**wire**). What
+remains open is the disposition of the five middleware events —
+`HOOK_WRAP_MODEL_REQUEST`, `HOOK_WRAP_TOOL_VALIDATE`,
+`HOOK_WRAP_OUTPUT_VALIDATE`, `HOOK_WRAP_OUTPUT_PROCESS`,
+`HOOK_WRAP_RUN_EVENT_STREAM` — one decision per event, against the review
+table in spec §8. Pruning is safe as long as no hook map references the
+constant (the bundled catalog hooks only use wired events). Note that
+`HOOK_WRAP_TOOL_EXECUTE`, the one middleware event that *is* wired, is what
+both the sign-off gate and the future approval gate hang off — so the class
+is proven useful, and "prune the rest" is not the obvious default.
 
 ### T3. Multi-agent budgeting
 
 A fan-out can share one `UsageLimits`, but there is no per-worker
 sub-budget: one greedy worker can exhaust the shared budget and every
-other worker in the fan-out starts getting `USAGE_LIMIT` events. Decide
-whether global-only is the intended semantics, or add nested budgets.
+other worker in the fan-out starts getting `USAGE_LIMIT` events.
+
+**Decided (semantics only):** spec §13 (D26) — a global cap plus optional
+per-worker sub-budgets, stated now so the compaction and approval work do
+not have to guess, implemented after the core surface. The gap is that
+nothing is built; the design question is closed.
 
 ### T4. Plan discovery policy (task store)
 
-The store picks the *newest* `plan-*.db` by mtime across `root` and
-`root/.silk/plan`, and both plan nodes (`Plan Viewer`, `Sign-Off`) take a
-plain `root` path — there is no plan-id input. One plan per root works
-fine; multiple concurrent plans in one root can be cross-discovered.
-Options: a plan-id node input, or a directory-per-plan convention. (The
-schema already keys rows on `(plan_id, …)`, so the ambiguity is in
-discovery, not storage.)
+**Resolved** by spec §11, D23: a `Task Node` carries explicit plan identity
+(plan id + store location) and feeds the ToolBox, so the Plan Viewer takes
+that identity instead of guessing. Stub kept for inbound links. Until it
+ships, the store still picks the *newest* `plan-*.db` by mtime across `root`
+and `root/.silk/plan`, so concurrent plans in one root can cross-discover.
+(The `Sign-Off` node named in the original entry is deleted by D32; the Plan
+Viewer is the only remaining plan consumer.)
 
 ### T5. Default delegation depth
 
 The orchestrator runtime treats `max_depth=None` as `1`, while the
 `Silk Orchestrator` node ships `DELEGATION_MAX_DEPTH = 2`. Two defaults
 for the same concept — pick one, or make the node's value an editable
-port.
+port. Untouched by the spec.
 
 ### T6. HTML rendering floor
 
 `plan_render` degrades to `None` (→ plain text in the Plan Viewer) when
 `mordant` is missing. Decide the minimum rendering guarantee: plain text
 always, or `mordant` as a soft requirement with a visible notice when the
-styled path is unavailable.
+styled path is unavailable. Untouched by the spec.
 
 ### T7. Durable event sink (JSONL per run)
 
@@ -275,105 +319,24 @@ content-free observability rule
 ([18 — Design rules](architecture/18-design-rules.md#design-rules)):
 metadata only, never prompts / completions / tool payloads.
 
-### T8. Context budget under raised autonomy (compaction is a required mechanism — G14)
+**Still open, and now load-bearing.** The spec schedules compaction in full
+(§12) and lists T7 under G14(e) as a recommended precondition, because
+compaction is a lossy projection of the run and the dropped range is
+otherwise unrecoverable. The call — in or out of the spec's Phase 2 — has
+not been made. Two arguments that did not exist when this entry was written:
+the unified event vocabulary (D2) means a sink writes one typed stream
+rather than three ad-hoc ones, which is the cheap moment to add it; and D30
+puts a human decision inside the run, which is exactly the kind of thing an
+audit trail should retain.
 
-`DEFAULT_MAX_ROUNDS = 16` is only the constructor default
-(`functions/agent_loop.py:76`); `Role.max_rounds` overrides it per agent
-(`nodes/agent.py`: `role.max_rounds or DEFAULT_MAX_ROUNDS`), so
-`max_rounds=100` is legal today. `GraphEngine.history` grows monotonically
-(append-only, never pruned — `functions/graph_engine.py`), and growth is
-dominated by verbatim tool results. Failure ladder for long runs: quality
-decay (invisible — no event fires) → the `UsageLimits.input_tokens`
-controlled stop, checked pre-request every round (`agent_loop.py:166` —
-the graceful brake) → the backend `n_ctx` wall: a hard request error
-(`EventError(context="stream_response")`) or silent middle-truncation
-(the ugly brake).
+### T8. Context budget under raised autonomy (compaction — G14)
 
-**Decision (2026-07-25):** compaction is not just a mitigation — it is a
-**required mechanism** for long-running runs (the absence is tracked as
-[G14](#g14-compaction-is-not-implemented-required-mechanism)). Three
-options, cheapest first, drawn from both architecture reviews (dsh §11.2
-+ review C.10/D.10; pi §6.3 + review D.4):
-
-**Option A — Spill hook (deterministic, model-free, tool results only).**
-A `spill_large_results(max_chars, spill_dir)` entry in `hook_catalog`,
-beside `redact_secrets` (pydantic `SpillConfig`, like the existing
-`RedactSecretsConfig`): above threshold, write the full tool result to
-`<spill_dir>/<call_id>.txt` and replace the model-visible content with a
-head/tail preview + the file path (the model has file tools and can
-re-read). Runs on the wired `HOOK_WRAP_TOOL_EXECUTE` middleware — no new
-subsystem, zero extra model calls, ~60–100 lines, no new failure mode.
-Provenance: dsh Layer 3 "spill-policy" / `toolResultPruner` (model-free,
-replayable replacements); dsh review D.10 calls it "directly portable".
-Limit: covers only the dominant growth term (verbatim tool results) —
-model text and long dialogue still grow; spill files need a cleanup policy
-(tie the directory to the run/plan root).
-
-**Option B — Compaction as an agent-invoked tool (escape hatch).**
-A tool (e.g. `compact_context(instruction)`) the model calls when it wants
-a reset; on invocation a summarization request runs and the history window
-is replaced with summary + kept tail. Shape in Silk: the tool needs engine
-access (history is the engine's) — the plumbing is a sub-decision
-(`RunContext` action vs. dedicated engine operation). Safety: a failed
-summary request leaves history untouched and the tool returns an error;
-the swap is atomic. Budget: the summarization call consumes tokens —
-metered against `UsageLimits` or explicitly excluded (decision). Pi
-review's position: demoted — "auto-compaction is loop policy (trigger on
-pressure, not model whim); make the tool an escape hatch, not the
-default." Niche; after C.
-
-**Option C — Auto-compaction as loop policy at the pressure seam (the primary mechanism).**
-At the existing `check_input_tokens` seam (`agent_loop.py:166`): when
-estimated input tokens exceed a threshold, **compact and re-check** before
-failing the run — summarize older turns, keep the recent K verbatim,
-continue. This is pi's shape ("compaction is a loop policy"; auto-trigger
-at `contextTokens > contextWindow − reserveTokens`, 16k reserve / 20k
-keep-recent defaults, settings-configurable) and dsh's pressure trigger
-(`agent/pre-step`, before request derivation). Implementation shape in
-Silk:
-
-- New optional `compactor` on `AgentLoop` (constructor argument, like the
-  existing optional `output_validator`) — the loop keeps owning the turn,
-  the engine keeps owning one request, the compactor owns the
-  summarization request (one nested provider call; pi uses one or two).
-- New `AgentEngine` operation to replace the history prefix (G14(a)) —
-  built and swapped in **after** the summary succeeds (atomic).
-- New event (e.g. `EventCompaction`: turns dropped, tokens before/after,
-  summary reference) — content-free per the observability rule (G14(d)).
-- A second trigger maps onto Silk's stream-error path: a backend `n_ctx`
-  overflow arrives today as `EventError(context="stream_response")` (the
-  G13 family) → compact once and retry (dsh's `agent/request-error`
-  trigger).
-- **Transport safety invariant:** the cut point must land on whole-round
-  boundaries — an assistant turn and all its tool results move together;
-  the native transport pairs `tool_calls` with `tool`-role results, and
-  dropping one side of a pair corrupts the next request.
-- A failed compaction degrades to no compaction (the existing
-  `EventUsageLimit`/`EventError` path still protects); it never kills the
-  run — "failures don't cross the loop boundary."
-- **What compaction does not do:** rewrite the run's record. The
-  `EventRunResult` trace + (once T7 lands) the JSONL sink keep the full
-  run; compaction rewrites only the model-visible history — dsh's "the
-  replacement shadows the original nodes in derived history," with the
-  append-only log intact.
-- Cache note (non-issue, recorded so it isn't re-derived): pi's
-  tail-growth invariant makes compaction the "single deliberate cache
-  invalidation"; Silk's pool does not depend on cross-request prompt
-  caching, so no equivalent protection is needed.
-
-**Sequencing (recommended):**
-
-1. **A** — first, whenever any role or preset raises `max_rounds`
-   (the P1 trigger already on record). No preconditions.
-2. **C** — the required mechanism. Precondition chain: (a) context-budget
-   plumbing (G14(c) — `GGUFMeta.context_length` exists at model load but
-   never reaches the loop), (b) the G13 outcome field, (c) the T7 sink
-   (recommended, for debuggability of the dropped range).
-3. **B** — only after C, if the model itself needs to ask for a reset.
-
-**Interim invariant until C lands** (A covers tool results only): whenever
-`max_rounds` is raised for a role, also set `UsageLimits.input_tokens` —
-for long autonomy the token cap, not the round cap, is the safety bound.
+**Resolved** by spec §12: option C (loop-policy auto-compaction) in full,
+with option A (the spill hook) alongside; option B (an agent-invoked
+`compact_context` tool) stays deferred as an escape hatch, only if the model
+itself needs to ask for a reset. Stub kept for inbound links; the
+implementation checklist and the interim `UsageLimits.input_tokens`
+invariant live in **G14**.
 
 ## Deliberately not planned
 
@@ -385,9 +348,9 @@ scratch.
 
 | Machinery | Why not |
 |---|---|
-| Durable session runtime (write-once entry tree, mutable registers, usage ledger, crash-position recovery) | Silk runs are atomic and graph-pulsed; a dead run is re-pulsed. The product shape excludes the problem. |
-| Mid-run steering / follow-up queues | Atomic runs + the sign-off park express the same interactivity at run boundaries; no inbox mechanism needed. |
+| Durable session runtime (write-once entry tree, mutable registers, usage ledger, crash-position recovery) | Silk runs are atomic and graph-pulsed; a dead run is re-pulsed. The product shape excludes the problem. D30 makes a run *block* on a human without making it resumable: a run that dies while waiting loses the prompt and is re-pulsed like any other. |
+| Mid-run steering / follow-up queues | Runs stay atomic. D30 does put a human decision inside a run, but an approval gate is not a steering channel: it answers one yes/no about one specific call and accepts no new instructions. Revisit only if users need to redirect a run in flight. |
 | Multiple interception generations (callbacks → events → durable hooks) | One audience (graph authors), one surface. Revisit only if third-party Python extension packs become a real demand. |
-| Lanes / continuable subagents | Need a session substrate; one-shot delegation with depth/cycle guards and a shared budget covers the current fan-out (T3 aside). |
-| Token metering + cache management | Unnecessary at stock bounds. (Compaction was on this list until 2026-07-25 — it is now a required mechanism, tracked as [G14](#g14-compaction-is-not-implemented-required-mechanism) / T8.) |
+| Lanes / continuable subagents | Need a session substrate; one-shot delegation with depth/cycle guards and a shared budget covers the current fan-out (T3 aside). Note the spec leaves one subagent question open: who answers an approval prompt raised inside a subagent (spec §7). |
+| Token metering + cache management | Unnecessary at stock bounds. (Compaction was on this list until 2026-07-25; it is now a required mechanism, specified in spec §12 and tracked as [G14](#g14-compaction-is-not-implemented-required-mechanism).) |
 | Multi-package workspace machinery (sub-path exports, lockstep versions) | Organizational overhead for a monorepo Silk is not; the two-layer import rule is the same invariant at the right scale. |
