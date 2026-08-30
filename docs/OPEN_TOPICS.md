@@ -336,14 +336,39 @@ of `2 << 30` (2 GiB) and a large `n_ctx`, the LRU can evict on nearly every
 insert — paying the copy and keeping nothing. Enabling it is a measured
 trade, not a correction. Decided: spec **D44**.
 
-**Routing is also a cache strategy.** Once the pool holds more than one
-backend (spec **D45**), sending two agents to two backends gives each its own
-resident context — which is the cheapest available answer to the interleaving
-problem and needs no cache at all.
+**The identity needed to fix this already exists.** Each Agent node carries
+a persistent `session_id` (`nodes/agent.py:105`), sub-agents get fresh ones
+(`subagent.py:177`), and GraphEngine passes it on every request
+(`graph_engine.py:260`). `GGUFModelPool.checkout()` increments a counter and
+throws it away (`model_pool.py:308`). Three mechanisms hang off that one
+seam — affinity (group the queue by session), `LlamaCache` (keep more than
+one resident state), multiple backends (one resident context each) — and
+they address only the *interleaving* half of the problem; the *rewriting*
+half is I11 and the spill hook.
 
-**Still open:** whether `LlamaCache` is enabled at all, its size and backing
-(RAM vs disk), and whether request affinity — not interleaving one
-conversation's rounds with another's — is needed on top.
+**Decided:** spec **D46** (honour the session id) and **D47**, which sets out
+how the three compose and gives a measurement-driven rule for choosing
+between them. **"Do nothing" is an explicitly reachable outcome** of that
+rule — if prefill turns out to be a small share of request time, none of the
+three pays for itself, and the correct response is to stop.
+
+**Still open:** the sub-questions the rule does not settle — `LlamaCache`
+size and backing if B is selected; who chooses the backend, and the
+down-backend path, if C is.
+
+### G17. `Clear Context` silently fails to release the pool session
+
+`nodes/agent.py:258` reads `pool._session_instances`, an attribute of the
+**old multi-`Llama` pool**; `GGUFModelPool` has no such attribute. The access
+is wrapped in `except Exception: log.debug(...)`, so the failure is invisible
+and the session is never checked in — `_active_sessions` only ever grows, and
+`snapshot()["bound_sessions"]` (the loader's display) drifts upward for the
+life of the process.
+
+Low severity on its own — nothing downstream gates on the count today — but
+it becomes load-bearing the moment `checkout()` starts using the session id
+for affinity or backend routing (**G15**, spec D46/D47), because then a stale
+session is a stale route. Fix it with that work.
 
 ### G16. The shared server truncates in-flight streams
 

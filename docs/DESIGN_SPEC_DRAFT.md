@@ -637,11 +637,20 @@ truncates A's response.** A gets a well-formed `[DONE]`, and
 from a natural stop -- it simply ends the generator. The agent then reasons
 over, and may act on, a silently cut-off assistant turn.
 
-*Required:* forward `interrupt_requests: false` in the server config, and
-treat a stream that ends without a terminal `finish_reason` as
-`EventError(context="stream_response")` rather than as a completed turn --
-which is exactly the classification D40 already requires. Until then, any
-concurrent multi-agent graph is unsound, independent of cache behaviour.
+And the detection is currently defeated by a default. `stream_response`
+initialises `finish_reason = "stop"` (`functions/graph_engine.py:202`) and
+only overwrites it when a chunk carries one (`:222`). A truncated stream
+carries none -- so `last_stats` reports `finish_reason: "stop"`, the same
+value a clean completion produces. The one signal that would expose the
+truncation is pre-set to the answer that hides it.
+
+*Required, three parts:* forward `interrupt_requests: false` in the server
+config; initialise `finish_reason` to `None` and treat a stream that ends
+with it unset as `EventError(context="stream_response")` rather than a
+completed turn -- exactly the classification D40 already requires; and keep
+that check even after the setting is forwarded, since a remote backend
+(D45) can truncate for its own reasons. Until this lands, any concurrent
+multi-agent graph is unsound, independent of cache behaviour.
 
 **D44. `LlamaCache` is forwardable, but its cost model must be measured
 before it is enabled.** `cache`, `cache_type` and `cache_size` are
@@ -707,6 +716,123 @@ replace the model-visible content with a head/tail preview plus the path.
 Deterministic, model-free, no extra model calls, append-only, covers the
 dominant growth term. Needs a cleanup policy tied to the run/plan root.
 
+### Session identity, and the three ways to restore prefix reuse
+
+**D46. Per-agent session identity already exists end to end; the pool is the
+only thing that discards it.** Nothing needs inventing here:
+
+| Where | What | Line |
+|---|---|---|
+| Agent node | `self._session_id = str(uuid.uuid4())` -- one per node, persisted with node state | `nodes/agent.py:105` |
+| Sub-agent | `session_id or str(uuid.uuid4())` -- a fresh key per sub-agent run | `functions/subagent.py:177` |
+| GraphEngine | carries it and passes it on every request | `functions/graph_engine.py:57`, `:260` |
+| Pool | **ignores it** -- `checkout()` increments a counter and returns the one shared client | `functions/model_pool.py:308` |
+
+So the answer to "shouldn't each agent have its own session id" is that each
+already does; the identity survives three layers and is dropped at the
+fourth. Every mechanism below is a policy applied at that one seam, which is
+why none of them requires new plumbing above the pool.
+
+Two corrections fall out of the same reading:
+
+- `Clear Context` reaches into `pool._session_instances`
+  (`nodes/agent.py:258`), an attribute of the **old multi-`Llama` pool** that
+  `GGUFModelPool` does not have. The access sits inside
+  `except Exception: log.debug(...)`, so it fails silently: the session is
+  never released and `_active_sessions` only ever grows. Fix with the pool
+  work, not separately.
+- `snapshot()` reports `bound_sessions` from that same counter, so the loader
+  display is wrong for the same reason.
+
+**D47. Three mechanisms restore prefix reuse; they attack different terms,
+and the choice between them is a measurement, not a preference.**
+
+First the shape of the problem. Reuse is lost two ways, independently:
+
+- **(i) Contention** -- another conversation's prompt is resident, so the
+  match collapses to the shared system prompt. Caused by interleaving.
+- **(ii) Rewriting** -- compaction changes the *head* of the context, so the
+  match collapses even with no other agent present (D41).
+
+I11 and the spill hook address (ii). All three mechanisms below address
+**(i) only** -- they are not alternatives to prefix stability, and none of
+them makes compaction cheap.
+
+**Mechanism A -- affinity: group the queue by session.** Do not interleave
+one conversation's rounds with another's; run A's round to completion, then
+B's. The session id from D46 is the grouping key.
+
+*Cost: close to zero, and this is the non-obvious part.* Per D43 the server
+already serializes every request through `llama_outer_lock` --
+`delegate_parallel` never had model-level concurrency to lose. A therefore
+does not trade throughput for reuse; it only changes the order of a queue
+that already exists, from arrival order to session-grouped order. What it
+does cost is *fairness*: a long agent turn delays the others, and that
+becomes visible latency in an orchestrator fan-out.
+
+*Where it lives:* the pool, at `checkout()`. Not the Agent node -- a node
+cannot see the other conversations.
+
+**Mechanism B -- `LlamaCache`: keep more than one resident state.** D44. Buys
+correctness under interleaving without changing scheduling. Pays
+`save_state()` on every completion whether or not the entry is ever read, and
+can thrash against `cache_size` (D44).
+
+**Mechanism C -- multiple backends: give each conversation its own resident
+context.** D45. The only mechanism that removes the contention rather than
+managing it, and the only one that also restores *real* concurrency, since
+one `llama_cpp.server` gives none (D43). Costs a full weight load per local
+backend -- so in practice it means either enough VRAM for N models, or remote
+backends (litellm and similar), which is why D45 and this are the same work.
+
+**How they compose.**
+
+- **A and C compose and are the natural pair:** route sessions to backends,
+  and group by session within each backend. C handles as many concurrent
+  conversations as there are backends; A handles the overflow.
+- **A largely subsumes B.** If scheduling can be grouped, the multi-state
+  cache has little left to do -- B exists for the case where rounds
+  *genuinely must* interleave and waiting is unacceptable.
+- **B and C compose** but rarely need to: B's per-completion copy cost is
+  paid per backend.
+- **None of them substitutes for I11.** A prefix that is not byte-stable
+  across a run defeats all three.
+
+**How to decide -- the measurement, then the rule.** Phase 1 captures
+`generate()`'s `"<n> prefix-match hit, remaining <m> prompt tokens to eval"`
+line (D41). Tag each request with its session id at the pool seam and three
+numbers fall out:
+
+| Metric | Definition | What it decides |
+|---|---|---|
+| **Reuse rate** | matched tokens / prompt tokens, per request | whether reuse is being lost at all |
+| **Contention rate** | fraction of requests whose immediate predecessor came from a *different* session | whether the loss is (i) or (ii) |
+| **Prefill share** | prefill time / total request wall-clock | whether any of this is worth building |
+
+Applied in order, and the first rule that matches wins:
+
+1. **Prefill share is small (say under ~15%).** Do nothing. None of A, B or C
+   pays for itself, and this is the outcome that must stay reachable -- the
+   original T8 note assumed it without measuring, and the correct response to
+   confirming it is to stop, not to build anyway.
+2. **Contention rate is near zero** (single-agent graphs dominate). The loss
+   is (ii). Ship I11 and the spill hook; skip A, B and C entirely.
+3. **Contention is high, one local backend, VRAM-bound.** **A.** It is free
+   in throughput terms, needs no new setting, and is a change to one function.
+4. **Contention is high and A's latency penalty is unacceptable** -- an
+   orchestrator whose workers must genuinely progress in lockstep. **B**, and
+   only if the inequality holds: measured `save_state` copy cost per
+   completion < measured prefill saved per hit, at this project's `n_ctx`.
+   D44 exists because that is not obviously true.
+5. **VRAM or a remote provider is available.** **C**, and prefer it -- it is
+   the only option that also fixes the concurrency loss in D43, and the only
+   one whose benefit does not degrade as the number of concurrent agents
+   grows.
+
+Rules 3 and 5 are not exclusive: implementing C does not retire A, because
+the moment concurrent conversations outnumber backends, contention returns
+and A is what handles it.
+
 ---
 
 ## 13. Budgets
@@ -766,10 +892,13 @@ exercise reliably any other way.
 3. `outcome` on `EventRunResult` (G13).
 4. Context-budget plumbing: `context_length` → loop (G14(c)).
 5. Hook error-family emission + registration validation (D15).
-6. **Measure prompt-prefix reuse** (D41): `verbose` is already forwarded, so
-   capture `generate()`'s prefix-match line across a multi-round run and an
-   orchestrator fan-out. Everything in D41 is tuned against this number, and
-   it is unknown today.
+6. **Measure prompt-prefix reuse** (D41, D47): `verbose` is already
+   forwarded, so capture `generate()`'s prefix-match line across a
+   multi-round run and an orchestrator fan-out, tagging each request with the
+   session id the pool already receives (D46). Report reuse rate, contention
+   rate and prefill share -- the three numbers D47's rule consumes. Nothing
+   in mechanisms A/B/C is built before this exists, and "do nothing" is one
+   of its permitted outcomes.
 7. Model-request error classifier — overflow vs retryable vs terminal (D40).
    A precondition of D24, not a follow-up.
 8. **Disable `interrupt_requests` on the spawned server** and treat a stream
@@ -792,15 +921,18 @@ exercise reliably any other way.
    manual-drive race catalog (D42).
 4. Spill hook (option A) — prefix-preserving, so it carries the load before
    compaction is triggered at all (D41).
-5. Multi-backend model pool (D45): N named backends behind `checkout()`,
-   an `Authorization` header on `OpenAIClientMock` so remote/litellm
-   endpoints work at all, per-backend `snapshot()`. Routing is itself a cache
-   strategy, so it lands before the cache is tuned.
-6. `LlamaCache` enablement or its rejection, plus prefix-stability rules
-   (D41, D44, I11) — decided by the Phase 1 measurement, since `save_state`
-   may cost more than the prefill it saves. Compaction is not worth building
-   against an unmeasured cache.
-7. Loop compaction: engine history-replace, compactor, `EventCompaction`
+5. **Whichever of D47's mechanisms the Phase 1 numbers select**, plus the
+   prefix-stability rules (I11) which are unconditional:
+   - *A — session affinity* (D46, D47): honour the session id at
+     `checkout()`, group the queue by conversation, and fix the two things
+     that reading exposed — the dead `pool._session_instances` access in
+     `Clear Context` and the `bound_sessions` count it corrupts.
+   - *C — multi-backend pool* (D45): N named backends behind `checkout()`,
+     an `Authorization` header on `OpenAIClientMock` so remote/litellm
+     endpoints work at all, per-backend `snapshot()`.
+   - *B — `LlamaCache`* (D44) only if rule 4 fires and the copy-vs-prefill
+     inequality holds.
+6. Loop compaction: engine history-replace, compactor, `EventCompaction`
     carrying prefill cost (D24, D25, D40, D41).
 
 **Phase 3 — surface**
@@ -811,9 +943,9 @@ exercise reliably any other way.
 4. Task Node with explicit plan identity (D23).
 
 **Later:** nested budgets (D26); BM25 or its removal (G2); the unwired-event
-dispositions (D15); request affinity so one conversation's rounds are not
-interleaved with another's (D41, if measurement says `LlamaCache` is not
-enough).
+dispositions (D15); the D47 mechanisms not selected by the measurement --
+kept described rather than deleted, since the rule that skips one today
+selects it as soon as the graph shape changes.
 
 ---
 
@@ -851,12 +983,16 @@ name), G12 (version metadata), T5 (delegation depth), T6 (HTML floor), T7
    and withdraws what they have granted (§7; location settled by D35).
    *(The former question 1b -- who answers when nobody is listening -- is
    closed by D36: every missing-answer path denies.)*
-1b. Whether `LlamaCache` is enabled at all, and if so its size and backing
-   (RAM vs disk) — `save_state` on every completion may cost more than the
-   prefill it saves (§12, D41, D44). Blocked on the Phase 1 measurement.
-1c. Backend routing policy for the multi-backend pool (D45): who chooses —
-   the Role, the Agent node, or a pool-side affinity rule keyed on
-   conversation — and what happens when the named backend is down.
+1b. Which of D47's three mechanisms to build — decided by the rule in §12,
+   not by argument, and blocked only on the Phase 1 measurement. What the
+   rule does *not* settle: if B is selected, `LlamaCache` size and backing
+   (RAM vs disk); if C, whether the backend is chosen by the Role, by the
+   Agent node, or by a pool-side rule keyed on session, and what happens
+   when a named backend is down.
+1c. Whether session affinity (mechanism A) is the pool's business alone or
+   needs a visible surface — an orchestrator fan-out that silently serializes
+   is correct but looks hung, and D43 means it already does this today with
+   no indication.
 2. Disposition of the five `WRAP_*` unwired events (§8).
 3. Whether `EventStart.system_prompt` is populated or dropped (§5).
 4. Spill-file cleanup policy and its lifetime (§12).
