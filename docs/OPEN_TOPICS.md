@@ -178,7 +178,11 @@ on an approval prompt. What was a latency annoyance becomes a correctness
 requirement of the gate. D38 adds the ordering rule that makes it decidable:
 the cancellation reason is recorded *before* the waiter is woken, so Stop,
 the timeout and a real approval never arrive as one indistinguishable
-wakeup.
+wakeup. D49 names the object that owns this (`DecisionSeam`, run-scoped) and
+generalises the ordering to all four wake causes: write the outcome under the
+lock, then set the event. Stop calls `cancel()` on it **directly** — routing
+Stop through the consumer loop cannot work, because that loop is not running
+while the gate blocks.
 
 ### G9. Type coverage is scoped to `functions/`
 

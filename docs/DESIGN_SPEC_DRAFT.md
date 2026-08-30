@@ -132,9 +132,13 @@ anyway; doing it once is cheaper than three times.
   so a `max_rounds` abort stops reporting as a clean finish.
 - `EventCompaction` — turns dropped, tokens before/after, summary reference.
   Content-free, per the observability rule.
-- `EventApprovalRequest` / `EventApprovalDecision` — see §7. Both are
-  emitted from hook callbacks rather than yielded by the loop generator,
-  so the vocabulary must span both emission paths (D30).
+- `EventDecisionRequest` / `EventDecisionResponse` — see §7. One pair, not
+  one pair per question: the request carries a `kind`
+  (`approval | acknowledge | release`), so tool approval, "acknowledge before
+  I compact" and "release this paused step" reuse a single seam rather than
+  growing one each (D48). Both are emitted from hook callbacks rather than
+  yielded by the loop generator, so the vocabulary must span both emission
+  paths (D30).
 - Hook and task events as typed members rather than dicts.
 
 **Open:** whether `EventStart.system_prompt` (G10, always `None`) is
@@ -316,12 +320,20 @@ tolerates a missing or unparseable file by treating it as empty.
 **D36. Every failure path denies.** One rule covers the four ways a decision
 can fail to arrive, and closes the no-answerer question:
 
-- Nothing is wired to the `events` port, so the request reaches no one.
+- The run has no answering UI at all — a headless or batch evaluation of the
+  graph, where the node's widget never renders.
+- The widget is destroyed mid-run: the graph is closed, or the node deleted,
+  while a request is outstanding.
 - The decision transport raises.
 - The timeout expires (see D38).
-- The call is raised inside a subagent, whose stream the orchestrator runs
-  under its own `asyncio.run` on its own thread
-  (`functions/orchestrator.py:360`) and does not necessarily surface.
+- The call is raised inside a subagent, which has no node UI of its own and
+  whose stream the orchestrator runs under its own `asyncio.run` on its own
+  thread (`functions/orchestrator.py:360`).
+
+*(An earlier draft of this list opened with "nothing is wired to the `events`
+port". D48 withdraws it: the answerer is the Agent node's own UI, not a
+downstream graph node, so an unwired `events` port costs observability and
+nothing else. The failure modes above replace it.)*
 
 All four resolve to **deny**, returning the same structured refusal the model
 sees for an explicit rejection. Taken from dsh, which states it flatly for
@@ -366,6 +378,72 @@ parts are solved once rather than per call site:
   start and not re-read mid-run -- pi's *inline capture over references*, so
   editing a Role or hook config mid-run affects the next run, not the one in
   flight.
+
+**D48. The seam is node-local: the Agent node's own stream output UI asks
+and answers.** No answerer node, no inbound graph port. The request is
+rendered inline in the same widget that shows the streaming response, and the
+human replies there.
+
+*Why node-local is the only coherent option.* `events` is an **output** port.
+In a dataflow graph a downstream consumer has no return path to the upstream
+node that is blocked, so "the decision comes back on the same channel" could
+never have meant a graph round trip. It means the same *conversation view* --
+the node that asked is the node that is answered.
+
+*The two directions are not symmetric, and only one of them is new.*
+
+- **Out (worker -> UI):** already built and already used. `emit_stream`
+  (`nodes/agent.py:359`, `:484`) is a Qt queued signal emitted from the
+  `ThreadedNode` worker while the generator sits mid-`next()`; `_stream_event`
+  uses it with `throttle_ms=0`. The request goes out this way, and the UI
+  renders it with `push_display` on the main thread like every other display
+  write (WV401).
+- **In (UI -> worker):** new, and **not** a Qt signal. The worker is blocked
+  inside `next()` with no event loop, so there is nothing to deliver a queued
+  signal *into*. It must be a plain threading primitive the blocked thread is
+  already waiting on.
+
+**D49. One run-scoped `DecisionSeam` object, and the ordering rule that makes
+it testable.** Created at run start, held by the node, closed over by the
+gate. Its whole surface:
+
+| Called by | Method | Thread |
+|---|---|---|
+| gate (blocked) | `await_decision(request_id, timeout)` | worker |
+| UI widget | `resolve(request_id, response)` | main |
+| Stop handler | `cancel(reason)` | main |
+
+Implementation shape: a `threading.Lock` guarding
+`{request_id, response, reason}` plus a `threading.Event` the worker waits
+on. The rule, generalising D38's cancel-before-wake to all four wake causes:
+
+> **Write the outcome under the lock, then set the event; the waiter re-reads
+> under the lock before acting.**
+
+That is what makes approve, deny, Stop and timeout four *distinguishable*
+wakeups rather than one ambiguous one, and it is what turns D42's ten
+orderings into deterministic tests instead of a flaky suite. `resolve()` is
+idempotent per request id -- a second decision for a resolved id is a no-op
+reporting "already resolved", which is D42's fifth race.
+
+Stop must call `cancel()` **directly**, not rely on the consumer loop: that
+loop is not running while the gate blocks (D38, G8).
+
+**D50. One seam serves acknowledge and release too.** The request carries a
+`kind` (D2). `approval` is approve/deny on a held tool call; `acknowledge` is
+a continue/abort checkpoint the agent must pass (a compaction about to fire,
+per D24, is the obvious first user); `release` resumes a step the human
+paused. All three are the same block, the same correlation id, the same
+timeout, the same fail-closed rule -- only the response payload differs. This
+is the point of D38: the second human-in-the-loop question must not build a
+second waiter.
+
+*Consequence to accept deliberately.* Because the answerer is the node's UI,
+**a graph that works interactively degrades to deny when run headless** --
+batch evaluation, CI, a subagent. That is the correct default under D36, but
+it is a real behavioural difference between the two ways of running the same
+graph, and the way to make a headless run useful is a durable grant (D34,
+D35) that covers the gated tools in advance, not a weakening of the gate.
 
 **D39. Stamp the schema version even though nothing migrates.** D33 stays
 forward-only, but the store writes `PRAGMA user_version` and checks it on
@@ -912,13 +990,16 @@ exercise reliably any other way.
    `pending_goal`, the `signoff_*` columns, the park/apply store methods,
    `nodes/signoff_node.py`, and the Agent node's plan-shape pause inference.
    Forward-only — no migration.
-3. Inline approval gate (D30, D11): the single decision seam with
-   correlation, cancel-before-wake ordering, timeout, and policy snapshot
-   (D38); fail-closed on every missing-answer path (D36); the gate forced
-   outermost as a monotonic guard (D37, I10); run-scoped grants in the gate
-   closure, durable per-tool grants in `~/.weave/silk/grants.json` (D10, D34,
-   D35); `PRAGMA user_version` on the plan store (D39). Driven by the
-   manual-drive race catalog (D42).
+3. Inline approval gate (D30, D11): the run-scoped `DecisionSeam` with
+   correlation, write-under-lock-then-wake ordering, timeout and policy
+   snapshot (D38, D49); the request/response UI built into the Agent node's
+   stream output widget, with `emit_stream` outbound and a threading
+   primitive inbound (D48); one `kind` field so acknowledge and release reuse
+   the same seam (D50); fail-closed on every missing-answer path (D36); the
+   gate forced outermost as a monotonic guard (D37, I10); run-scoped grants
+   in the gate closure, durable per-tool grants in `~/.weave/silk/grants.json`
+   (D10, D34, D35); `PRAGMA user_version` on the plan store (D39). Driven by
+   the manual-drive race catalog (D42).
 4. Spill hook (option A) — prefix-preserving, so it carries the load before
    compaction is triggered at all (D41).
 5. **Whichever of D47's mechanisms the Phase 1 numbers select**, plus the
@@ -993,6 +1074,9 @@ name), G12 (version metadata), T5 (delegation depth), T6 (HTML floor), T7
    needs a visible surface — an orchestrator fan-out that silently serializes
    is correct but looks hung, and D43 means it already does this today with
    no indication.
+1d. Whether a *headless* run should fail loudly rather than deny quietly
+   (D48): denying is correct, but a batch evaluation whose every gated tool
+   is refused should probably say so once, not once per call.
 2. Disposition of the five `WRAP_*` unwired events (§8).
 3. Whether `EventStart.system_prompt` is populated or dropped (§5).
 4. Spill-file cleanup policy and its lifetime (§12).
