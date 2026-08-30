@@ -62,6 +62,67 @@ convenience of wiring a box straight to an agent is not worth hiding that
 rule inside a node; users insert a `Silk ToolSet` node, and the constraint
 stays visible in the graph.
 
+**D51. A node cannot be the answerer for a human decision.** Recorded here
+because the question has now been re-derived three times -- D12 (no Hooks
+node), D32 (no Sign-Off node), and again while specifying the decision
+backchannel. D48 settles *where* the seam lives; this records *why the node
+form is not an option*, so the next pass does not start over.
+
+*The blocking objection is the evaluation model, not a preference.* Weave
+gathers a node's inputs **once, before `compute()` runs**. The Agent node
+blocks *inside* `compute()`, on a worker thread, mid-generator. A value
+arriving on an input port has nowhere to land. Two ways around that, both
+rejected:
+
+- **A graph cycle** (`Agent.request -> Approval.in`,
+  `Approval.out -> Agent.decision`). Even granting the cycle, the second edge
+  is read at the start of the Agent's *next* compute -- i.e. the next run.
+  That is park-and-resume, which D30 removed.
+- **Pass the seam object downstream** and let the node call `resolve()` on it
+  directly. This works, and is roughly where the deleted sign-off design was
+  heading, but the port then carries a **mutable handle rather than data**.
+  The wire transports nothing; it exists only to introduce two nodes to each
+  other. Values on wires stop being inspectable, serializable or replayable,
+  and the real communication is out-of-band.
+
+*And the hard part does not move.* Under either variant the answering widget
+is still on the main thread and the blocked gate is still on the Agent's
+worker thread, so `DecisionSeam` (D49) is required unchanged -- lock-guarded
+slot, `threading.Event`, write-under-lock-then-wake, idempotent `resolve`,
+direct `cancel`. **The node form is D49 plus a node.** It removes nothing.
+
+*What it would additionally cost:*
+
+| | Node answerer | D48 (node-local) |
+|---|---|---|
+| Safety depends on | graph topology -- a forgotten wire denies every gated call with no visible cause | nothing; the asker owns the UI |
+| Lifetime | node is graph-scoped, the seam is run-scoped -- needs demultiplexing by `run_id` + correlation id | matched by construction |
+| Two agents / subagents | one node renders N concurrent requests from N runs | each answers for itself; no multiplexing |
+| D36's first bullet | returns as a real failure mode | withdrawn |
+
+The topology point is the same argument that settled D34: a gate that only
+works when something else happens to be wired up is not a gate.
+
+There is also a structural oddity that gives the game away: such a node would
+**never evaluate**. It must be live and interactive *while an upstream node
+is mid-compute*, which is outside evaluation order entirely, and its output
+would flow nowhere. It is a dock panel wearing a node costume.
+
+*What the node form would genuinely buy* -- stated so the trade is on record
+rather than dismissed: a central review point across several agents; approval
+policy that is composable in the graph (auto-approve, log-then-approve,
+route-elsewhere) and **visible in the saved file** rather than implicit; and
+a headless story that does not depend on durable grants (the consequence D48
+accepts, and open question 1d).
+
+*Where the idea goes instead.* None of those benefits requires an inbound
+mid-compute channel. The gate already takes a **policy snapshot at run
+start** (D38), so a future *Approval Policy* node can feed a policy in as an
+ordinary input -- data, read before compute, at the normal time. That yields
+composability and file-visibility with none of the above. Same shape as D12:
+the node returns as a **configuration** surface, never as a runtime
+backchannel.
+
 ---
 
 ## 4. Invariants
@@ -388,7 +449,9 @@ human replies there.
 In a dataflow graph a downstream consumer has no return path to the upstream
 node that is blocked, so "the decision comes back on the same channel" could
 never have meant a graph round trip. It means the same *conversation view* --
-the node that asked is the node that is answered.
+the node that asked is the node that is answered. The node-shaped alternative
+is worked through and rejected in full at **D51** (§3), including what it
+would have bought and where that idea should go instead.
 
 *The two directions are not symmetric, and only one of them is new.*
 
