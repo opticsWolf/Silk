@@ -370,6 +370,29 @@ three pays for itself, and the correct response is to stop.
 size and backing if B is selected; who chooses the backend, and the
 down-backend path, if C is.
 
+### G21. Write authority over an importable directory is process authority
+
+Every file tool is sandboxed; `import` is not. Module-level code in a file the
+agent wrote runs with the **full authority of the Weave process** -- network,
+whole filesystem, the user's keys -- however narrow the sandbox was when the
+file was written. So a sandbox root that is on the import path is a
+*deferred* grant of process authority, redeemable with one `load_suite` call.
+
+Spec **D77** is the mitigation, not a fix: always-approve with a floor no
+preset can lower, the diff shown at approval time, and validation moved into
+a subprocess *after* approval. Two residues stay open:
+
+- A user who registers a sandbox root that happens to be importable (inside
+  the venv, inside `weave/`, anywhere on `sys.path`) has granted more than the
+  file-permissions UI suggests. Cheap check, worth doing: **warn at ToolBox
+  evaluation when a writable root is importable** -- the same place a
+  whitelisted-but-unregistered node class is reported (D71).
+- MCP servers with their own file access (§10) sit outside D77's gate
+  entirely: they can write wherever their process can, and Silk neither
+  sandboxes nor sees it. Already true today; §19 makes it consequential,
+  because now something in the process is willing to import what appears on
+  disk.
+
 ### G19. Toolchain subprocess writes bypass the file locks across agents
 
 The per-path write locks (`functions/tools/file_locks.py`) are process-wide
@@ -484,6 +507,12 @@ Python dependencies, one layer up. And Silk's own nodes carry no version, so
 a Silk graph saved today has no defined behaviour when a node's ports change
 (a real prospect: D55 makes delegation depth a port, D16 makes file access a
 port, §18 adds a whitelist to the ToolBox node).
+
+That plan has since grown the two pieces §19 depends on: a **programmatic**
+load API returning a report rather than writing a log line (§3.10), and
+**relaunch** -- Weave restarting itself with the session preserved (§3.11),
+which is the only correct answer to a core or port-type change and therefore
+the escape hatch that makes reload's permanent limits acceptable.
 
 `docs/HOT_RELOAD_PLAN.md` (Weave) specifies the mechanism that closes the
 second half — `node_version` / `node_state_api` / `migrate_state`, and a
@@ -605,7 +634,7 @@ ToolBox node, every mutation an undoable command, destructive calls scoped to
 what the run created, and a refusal to touch the agent's own execution path.
 What is deliberately unsettled:
 
-- **Widget configuration** (§21 q9) — without it the agent builds skeletons.
+- **Widget configuration** (§22 q9) — without it the agent builds skeletons.
 - **Whether an agent may edit the user's pre-existing graph** rather than only
   its own additions. v1 says no. The approval story for "yes" is much
   larger than one gate: the human would need to see a *diff* of the proposed
@@ -618,6 +647,29 @@ What is deliberately unsettled:
   worker thread. It is not chosen for v1 because incremental placement is
   what makes the tool usable interactively — but if D73's guard rails start
   accumulating exceptions, that is the signal to switch.
+
+### T10. Self-modification: how far does the agent's build authority go?
+
+Distinct from **T9**, which is about the *graph*; this is about *code*. Spec
+§19 settles v1: the agent writes plugins into its own root (D76), loading is
+always human-approved with the diff in view (D77), the linter gates version
+discipline (D78), and a restart is a queued request at a turn boundary (D79).
+What is deliberately unsettled:
+
+- **Editing Silk itself**, or Weave core. Currently refused by D76 for the
+  same reason D73 refuses graph edits to the agent's own execution path -- and
+  with an extra problem the graph case does not have: the code that would
+  review the change is the code being changed. If it is ever allowed, the
+  shape is almost certainly *propose a patch, relaunch to apply*, never
+  in-session reload.
+- **Auto-load and auto-retry** (§22 q10, q11). These two together are what
+  turn a supervised loop into an unattended one; they should be decided
+  together, not separately, and probably not affirmatively.
+- **Whether an agent may approve another agent's load.** No, under D77 --
+  approval is a human act. Worth recording because an orchestrator with a
+  reviewer sub-agent makes the question look reasonable, and it is not: the
+  reviewer is the same class of thing as the author, running with the same
+  authority the load is about to grant.
 
 ### T8. Context budget under raised autonomy (compaction — G14)
 

@@ -659,7 +659,7 @@ the ledger's job, not the lock's.**
   auditable -- exactly the shape task claims already have. A sandbox hook
   that consults claims as *dynamic* write policy (deny a write to a path
   claimed by another agent, alongside the static `file_permissions`
-  narrowing) is recorded as an option, not built (§21 q8).
+  narrowing) is recorded as an option, not built (§22 q8).
 - *Lost updates at the reasoning level* -- `edit_file`'s anchors already
   catch the common case. If blind `write_file` overwrites ever bite in
   practice, the remedy is a CAS precondition (optional expected-digest
@@ -1261,7 +1261,7 @@ and it is legal by I12.** A store-scanning projection node:
   actors), then pulses `signed` -- one output port, fanned out to every
   agent's `run`. For the N-agent case this **absorbs the Sign-Off node**;
   whether the single-agent node remains as a convenience is open
-  (§21 q6).
+  (§22 q6).
 - **Outputs:** `plans_json` (digest -- the port's evaluated value is honest
   per rule 1), `pending` (count of open sign-offs *and* outstanding mid-run
   decision requests, from the D2 stream -- countable here, answerable only at
@@ -1486,7 +1486,7 @@ assertion sign-off, and cross-session searchable memory in exchange.
 *Placement (default, revisable):* one **task ledger per sandbox root**
 (working dir), preserving T4/D58 discovery. Whether *history* shares that
 file or lives in a per-user memory ledger (`~/.weave/silk/memory.db`) for
-cross-project recall is open (§21 q7).
+cross-project recall is open (§22 q7).
 
 ---
 
@@ -1622,7 +1622,126 @@ become placeable without rebuilding the graph.
 
 ---
 
-## 19. Phasing
+## 19. Self-modification -- the agent extends Weave
+
+§18 let the agent *use* Weave's parts. This section is the agent *making*
+new ones: writing node and widget code, verifying it, loading it into the
+running session -- and, when the change is one no reload can absorb, asking
+for Weave to be restarted. It is a small addition to the tool surface and a
+large addition to the risk surface, which is why the two are specified
+together. Weave's half is `docs/HOT_RELOAD_PLAN.md` §3.10-§3.11; this is
+Silk's.
+
+**D75. The loop already exists except for one verb.** *Write* is the file
+tools under the sandbox (D14-D18). *Verify* is the toolchain runner -- ruff,
+mypy, pytest -- already there and already sequenced. *Observe* is `§18`'s
+`describe_graph`. The only missing step is **load**: `list_suites`,
+`load_suite`, `reload_suite`, registered as ordinary `ToolBox` tools so they
+inherit hooks, `tool_events`, role enforcement and the approval gate for free
+(the D56 property). Do not build a "self-improvement subsystem"; build the
+missing verb and let composition do the rest. The composition *is* the
+feature: an agent that writes a node can then place it and wire it (§18)
+without a single new mechanism between the two.
+
+**D76. The agent writes plugins into its own root, and never into the code
+that is running it.** A dedicated user plugin directory
+(`~/.weave/plugins/<name>/`, Weave's open question 5) is registered as a
+sandbox root and is the *only* place `load_suite` will look for
+agent-authored code. `weave/` core, `weave/plugins/silk/` and the virtualenv
+are not writable, enforced by the existing static `file_permissions`
+narrowing rather than by a new mechanism.
+
+This is **D73's self-modification guard moved from the graph to the
+filesystem**: the same rule -- the agent does not edit its own execution path
+-- for the same reason, one layer down. The consequence is worth stating
+plainly rather than discovering later: **Silk improving Silk is out of scope
+in v1.** That needs review-then-relaunch and has a bootstrapping problem the
+graph case does not (the code that would review the change is the code being
+changed). Recorded as T10.
+
+**D77. `import` is an execution boundary the sandbox does not cross -- so
+loading is always high-risk, always approved, and never narrowable away.**
+
+The blunt version: every file tool Silk has is sandboxed; **`import` is not
+sandboxable**. Module-level code in an agent-authored file runs with the full
+authority of the Weave process -- the network, the entire filesystem, the
+user's keys -- no matter how narrow the sandbox was while that file was being
+written. Write authority over a directory on the import path *is* process
+authority, deferred by exactly one tool call. Everything else in this section
+follows from that sentence.
+
+- `load_suite` / `reload_suite` are `risk="high"` and
+  `requires_approval=True` **always**, and no Role, preset or grant may
+  pre-authorise them. Note this is not I6: I6 makes narrowing monotone, a
+  ceiling nobody may raise. This is a **floor** nobody may lower. An
+  "always approve" that a preset can switch off is not a control.
+- **The request shows the code, not the name.** The approval renders the file
+  list with sizes and mtimes, plus the diff for every file this run touched.
+  A human approving "load `my_nodes`" has approved nothing; a human approving
+  a 40-line diff has approved something.
+- **Validation is execution too.** Weave's dry-run import (§3.6 there) runs
+  top-level code, so for machine-authored code it happens *after* approval and
+  in a **subprocess** (Weave §3.10) -- a segfault, a hang or a stray thread in
+  generated code then costs one tool call instead of the session.
+- Denial is cheap and normal: a refused load returns `denied`, the files stay
+  on disk, and the agent can report what it built. Fail-closed (D36) applies
+  unchanged -- no UI, no load.
+
+**D78. Version discipline belongs in the verify step, and the linter is what
+enforces it.** An agent editing an existing node class changes the shape of
+state held in *users' saved graphs*. Weave's WV520 / WV521 / WV522 and the
+committed state manifest (`HOT_RELOAD_PLAN.md` §5) are precisely that check,
+so `weave_lint` joins ruff and mypy as a `CommandSpec` in the default
+toolchain, and a WV521 finding is a **hard stop before load**: the agent
+either bumps `node_state_api` and writes `migrate_state`, or leaves the class
+alone and ships a new one with `node_supersedes`. This is where those rules
+earn their keep -- a human author gets code review; an agent author gets the
+linter, and nothing else.
+
+**D79. Relaunch is a request at a turn boundary, never an action mid-run
+(I12).** `request_relaunch(reason)` returns `queued` immediately; the run
+finishes normally -- final message, ledger flush, task-store write -- and only
+then is the human asked, with the reason and the pending changes in view. Two
+consequences:
+
+- **The agent cannot observe the far side.** The new process is a new session,
+  a new run, empty memory. Anything the agent wants to survive the restart
+  must already be in the ledger or the task store *before* it asks (§17).
+  "Continue after the restart" is a task record with a claim, not a promise
+  the runtime keeps -- and this is the sharpest argument yet for the ledger
+  being durable belief (D63) rather than a cache.
+- **A relaunch requested while other agents run is a queue, not a kill.**
+  Orchestrated workers finish; the request waits for the last turn boundary in
+  the graph, or it is refused with the list of what is still running. Either
+  way the wait is visible (D53's legibility rule) -- a restart that silently
+  waits looks like a restart that silently failed.
+
+**D80. Silk's share of the release protocol** (Weave §3.11 step 5): what must
+be let go **before** the child process spawns, and why overlap is not
+survivable.
+
+| Resource | Why it cannot overlap |
+|---|---|
+| `GGUFModelPool` | it is a `python -m llama_cpp.server` **child process** holding model weights and a port (`functions/model_pool.py`); two live pools mean double VRAM and an orphan that outlives its parent. `cleanup()` already exists and is the release hook. |
+| Macrame ledger handles (D62) | one write actor per process is the entire concurrency model; two processes on one file breaks D64's earliest-`recorded_at` adjudication and Doctrine III's supersession order. Close the `LedgerRegistry` handles explicitly -- never rely on GC during interpreter teardown. |
+| MCP server subprocesses (§10) | started per connect and re-resolving credentials at connect (D22), so the child reconnects cleanly -- provided the parent's servers are actually stopped. |
+| File write locks (D67) | advisory and per-process, so they simply do not span the handoff. That is not a defect: it is the same reason durable ownership is a **ledger claim** and not a lock (D68). |
+
+Distinct from **G6**: that is restarting a *dead model server* mid-run, and it
+stays out of scope. This is releasing a healthy one on the way out.
+
+**D81. The failure mode is a boot loop, and the guard needs a second half.**
+Auto-load plus agent-authored code is an application that can fail to start.
+Weave's loop guard (§3.11) covers the first half: start clean, quarantine the
+suspect suite, name it in a visible report. Silk owes the other half -- **the
+quarantine outcome is written to the task store as a fact**, so the next run's
+agent is told *"your plugin `x` was quarantined after crashing on load, here
+is the traceback"* instead of silently discovering that its work evaporated. A
+self-improving loop with no feedback on failure does not improve; it repeats.
+
+---
+
+## 20. Phasing
 
 **Foundations first, then surface.** Each phase leaves the tree working.
 
@@ -1719,6 +1838,14 @@ become placeable without rebuilding the graph.
     from D49, the whitelist widget on the ToolBox node, the six tools, the
     self-modification guard. Strictly after the Phase 2 seam — it is the
     seam's second user, not its first.
+9. Self-modification (§19, D75–D81): the three load verbs, the user plugin
+    root, the always-approve floor with its diff-carrying request,
+    `weave_lint` in the toolchain, `request_relaunch` + the release
+    participants, the quarantine fact. Gated on Weave shipping
+    `HOT_RELOAD_PLAN.md` Phases 1-2 and 5 -- until a load is lossless and
+    reportable there is nothing safe to call. Everything except the load verb
+    exists already (D75), so the Silk-side cost is mostly the approval
+    surface, not the plumbing.
 
 **Later:** embeddings for `recall` (vector half of §17 — needs an
 embedding producer; the GGUF pool can serve one); nested budgets (D26);
@@ -1729,7 +1856,7 @@ selects it as soon as the graph shape changes.
 
 ---
 
-## 20. Gaps this closes
+## 21. Gaps this closes
 
 | Item | Closed by |
 |---|---|
@@ -1752,12 +1879,16 @@ out of scope.
 Untouched by this spec: G5 (dependency declaration), G7
 (`EventUsageLimit` granularity), G8 (mid-batch stops), G9 (type coverage),
 G10 (`EventStart.system_prompt` — noted in §5), G11 (`OpenAIClientMock`
-name), G12 (version metadata), T5 (delegation depth), T6 (HTML floor), T7
-(durable event sink).
+name), T5 (delegation depth), T6 (HTML floor), T7 (durable event sink).
+
+**G12 (version metadata) gains a second reason and stays cheap.** §19 makes
+suite identity operational rather than cosmetic: a reload report, a
+quarantine record and a "which build wrote this ledger assertion" question all
+need a `__version__` to name. Still trivial; now load-bearing.
 
 ---
 
-## 21. Open questions
+## 22. Open questions
 
 1. The grant record schema and the revocation *surface* -- where a user sees
    and withdraws what they have granted (§7; location settled by D35).
@@ -1800,3 +1931,16 @@ name), G12 (version metadata), T5 (delegation depth), T6 (HTML floor), T7
    decision rather than an extension of D69; the likely shape is a narrow
    typed setter over `WidgetCore` bindings, whitelisted per node class the
    way the classes themselves are.
+10. Whether a suite the agent wrote should **auto-load at the next start**
+   once a human has approved it once, or require approval every session. Once
+   is the usable answer and the one that makes D81's quarantine necessary;
+   every-session is the safe answer and makes the loop tedious enough that
+   nobody will use it. The middle -- approve once, pin the file digests, and
+   re-ask when they change -- is probably right and needs a place to store the
+   pins that is not a preset (D35's reasoning applies: this is authority, not
+   configuration).
+11. Whether an agent may read the **quarantine traceback** (D81) and attempt a
+   fix unprompted, or whether a crashed load ends the loop until a human says
+   continue. Related to q10: an agent that can auto-load *and* auto-retry is
+   the configuration in which a self-improving loop runs unattended, which is
+   exactly when it should not.
