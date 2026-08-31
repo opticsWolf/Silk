@@ -659,7 +659,7 @@ the ledger's job, not the lock's.**
   auditable -- exactly the shape task claims already have. A sandbox hook
   that consults claims as *dynamic* write policy (deny a write to a path
   claimed by another agent, alongside the static `file_permissions`
-  narrowing) is recorded as an option, not built (§20 q8).
+  narrowing) is recorded as an option, not built (§21 q8).
 - *Lost updates at the reasoning level* -- `edit_file`'s anchors already
   catch the common case. If blind `write_file` overwrites ever bite in
   practice, the remedy is a CAS precondition (optional expected-digest
@@ -1261,7 +1261,7 @@ and it is legal by I12.** A store-scanning projection node:
   actors), then pulses `signed` -- one output port, fanned out to every
   agent's `run`. For the N-agent case this **absorbs the Sign-Off node**;
   whether the single-agent node remains as a convenience is open
-  (§20 q6).
+  (§21 q6).
 - **Outputs:** `plans_json` (digest -- the port's evaluated value is honest
   per rule 1), `pending` (count of open sign-offs *and* outstanding mid-run
   decision requests, from the D2 stream -- countable here, answerable only at
@@ -1486,11 +1486,143 @@ assertion sign-off, and cross-session searchable memory in exchange.
 *Placement (default, revisable):* one **task ledger per sandbox root**
 (working dir), preserving T4/D58 discovery. Whether *history* shares that
 file or lives in a per-user memory ledger (`~/.weave/silk/memory.db`) for
-cross-project recall is open (§20 q7).
+cross-project recall is open (§21 q7).
 
 ---
 
-## 18. Phasing
+## 18. Graph authoring -- the agent places nodes
+
+A tool family that lets an agent **build graph** -- place nodes on the canvas
+and connect them -- from a user-editable whitelist. This is the first Silk
+tool whose effect is on *Weave itself* rather than on files, a model, or a
+task store, and that changes what has to be true before it runs.
+
+**D69. Six tools, two of them read-only, all on one whitelist.** Placement
+without inspection is blind: an agent that cannot see the graph cannot place
+a node *relative* to it, cannot reuse an existing node, and cannot know which
+ports are free. So the family is:
+
+| Tool | Risk | What it does |
+|---|---|---|
+| `list_placeable_nodes` | low | the whitelist, rendered as the model needs it: class name, display name, description, category, input/output ports with datatypes -- all of it already in `NODE_REGISTRY` metadata (`registry/metadata.py`) and each node's port list |
+| `describe_graph` | low | current nodes (id, class, title, position, ports, which are connected) and edges as `(src_id, src_port, dst_id, dst_port)` -- the same tuple shape the undo commands speak |
+| `place_node` | medium | instantiate a whitelisted class at a position, optional title; returns the new node id |
+| `connect` | medium | one edge, validated by the port type system before it is attempted |
+| `disconnect` | high | remove one edge |
+| `remove_node` | high | remove a node **created in this run** (D73) |
+
+Two design notes. *The port type system does the hard part for free*:
+`PortType.can_connect_from` consults `PortRegistry`'s converter registry
+(`node/port_registry.py`), so an illegal connection is refused with a typed
+reason the model can act on ("`silk_toolbox` does not connect to a
+`silk_toolset` input") rather than producing a broken graph. And *the
+descriptions the model reads already exist* -- `node_description`,
+`node_tags`, port `datatype` and `port_description` are written for humans in
+the node UI; nothing new has to be authored for the model.
+
+Deliberately **not** in v1: setting widget values, moving/resizing nodes,
+saving or loading graph files, creating nodes *not* on the whitelist,
+and anything touching another graph. Setting widget values is the obvious
+next request and is left out on purpose -- it is how a placed node becomes
+*configured*, which is a much larger surface (every widget type) and wants
+its own decision.
+
+**D70. The tool runs on a worker thread and the canvas is main-thread-only,
+so it needs the same seam as D49 -- generalised.** A tool executes inside
+`ToolBox.execute_tool_calls_async` on the agent's `ThreadedNode` worker
+(under `asyncio.to_thread`); every canvas mutation must happen on the Qt main
+thread. The existing worker->main channels are one-way and return nothing
+(`emit_stream`, `pulse`), which is exactly the gap D49 filled for human
+decisions.
+
+*Ruling:* generalise `DecisionSeam` into a **`MainThreadCall` seam** with the
+same mechanics and the same ordering rule -- a queued signal carries the
+request to the main thread, the main thread performs the mutation and writes
+the outcome **under the lock before setting the event**, the blocked worker
+re-reads under the lock. The human-decision seam (D48-D50) and this one are
+then the same object with a different resolver: a person, or the main-thread
+canvas. Same timeout discipline, same cancel path, same fail-closed default
+(D36) -- a request that cannot be delivered (no canvas, headless run, graph
+closing) **denies**, it does not hang.
+
+This is the second user of D49's machinery, and it is the reason D49 was
+specified as a general waiter rather than an approval-specific one. Build the
+seam once, in `functions/`; the Qt resolver lives in the node layer.
+
+**D71. The whitelist is a node-level, user-editable allow-list, and the
+default is empty.** The tool pack mounts on the **ToolBox node** (which is
+where sandbox roots and toolchains already live -- the graph-wide capability
+surface), with a checkable tree of registered node classes grouped by
+category, the same widget the tool tree already uses. Rules:
+
+- **Default-deny.** An empty whitelist means the tools register but every
+  placement is refused, and `list_placeable_nodes` returns nothing. There is
+  no "allow all" checkbox; selecting every entry is possible but must be a
+  deliberate act, not a default. Same reasoning as I6's monotone narrowing:
+  the safe state is the one you get by doing nothing.
+- **Whitelisting is by class name**, resolved against `NODE_REGISTRY` at
+  build time, and a whitelisted class that is no longer registered is
+  reported at ToolBox evaluation -- visibly, in the node -- rather than at
+  agent run time.
+- **The whitelist narrows like everything else** (I6): a ToolSet or Role may
+  remove entries, never add. The Role's existing tool selector already gates
+  the six tools as a group; per-class narrowing rides on the same grant model.
+- **It travels as part of the ToolBox recipe**, so it is visible in the saved
+  graph and shareable in a preset -- unlike grants (D35) it carries no secret
+  and no filesystem authority.
+
+**D72. Every mutation is one undoable command, and that is the primary safety
+property.** Placements and connections go through the existing undo
+commands -- `AddNodeCommand`, `AddConnectionCommand`, `RemoveNodesCommand`,
+`RemoveConnectionsCommand` (`canvas/undo_commands.py`) -- pushed onto the
+canvas's own `UndoManager`, never through raw scene manipulation. A tool call
+that creates several items pushes **one `CompoundCommand`**, so one Ctrl+Z
+undoes one *tool call*, not one primitive.
+
+The consequence is the point: **the human can undo the agent's graph edits
+with the same gesture they undo their own**, and the agent's work appears in
+the same history. An agent whose edits could not be undone would be a
+different, much more dangerous tool -- and would also be *invisible*, since
+the undo stack is where a user looks to see what happened.
+
+**D73. Approval, and the self-modification guard.**
+
+- `place_node` and `connect` are `risk="medium"`; `disconnect` and
+  `remove_node` are `risk="high"` and `requires_approval=True`. The approval
+  gate (D30-D38, D48) already covers them -- the request renders in the
+  Agent node's own stream UI, where the human can see the graph the change
+  applies to. No new approval machinery.
+- **Destructive calls are scoped to the run.** `remove_node` and `disconnect`
+  operate only on nodes and edges **created by this agent, in this run** --
+  tracked in the run's own record of what it placed. An agent may clean up
+  after itself; it may not prune the user's graph. Widening that is a
+  separate decision, and would need a much stronger approval story.
+- **The agent may not modify its own execution path.** Refuse any mutation
+  touching the Agent node itself, its ToolBox / ToolSet / Role / model chain,
+  or any node upstream of it. The graph that *is running the agent* is not
+  material the agent edits mid-run: the evaluation model gives no coherent
+  meaning to rewiring a node's own inputs while it sits inside `compute()`,
+  and this is the same class of objection as D51's. The check is a cheap
+  upstream walk from the Agent node at request time.
+
+**D74. What this composes with.** The tools are ordinary `ToolBox`
+registrations, so they inherit hooks, `tool_events`, role enforcement and the
+gate exactly like every other tool (the D56 property). Consequences worth
+naming: a graph-authoring call appears in the Hook Monitor like any tool
+call; a delegated worker inherits the whitelist through the toolset it was
+given, and its placements are gated by D36's deny-without-a-UI rule; and the
+Macrame history ledger (§17) records placements as ordinary run facts, so
+*"what did the agent build, and when"* is answerable after the fact.
+
+Interaction with Weave's hot-load work (`docs/HOT_RELOAD_PLAN.md`): the
+whitelist is resolved through `NODE_REGISTRY`, which that plan gives a
+`generation` counter and change notification. The ToolBox node should
+re-resolve its whitelist on registry change, so a hot-loaded plugin's nodes
+become placeable without rebuilding the graph.
+
+---
+
+## 19. Phasing
 
 **Foundations first, then surface.** Each phase leaves the tree working.
 
@@ -1583,6 +1715,10 @@ cross-project recall is open (§20 q7).
     behind the existing task-store protocol, `HistoryLedger` + `recall`
     tool (FTS5 first). Preceded by declaring dependencies (G5) — the
     ledger is Silk's first declared binary dependency.
+8. Graph authoring (§18, D69–D74): the `MainThreadCall` seam generalised
+    from D49, the whitelist widget on the ToolBox node, the six tools, the
+    self-modification guard. Strictly after the Phase 2 seam — it is the
+    seam's second user, not its first.
 
 **Later:** embeddings for `recall` (vector half of §17 — needs an
 embedding producer; the GGUF pool can serve one); nested budgets (D26);
@@ -1593,7 +1729,7 @@ selects it as soon as the graph shape changes.
 
 ---
 
-## 19. Gaps this closes
+## 20. Gaps this closes
 
 | Item | Closed by |
 |---|---|
@@ -1621,7 +1757,7 @@ name), G12 (version metadata), T5 (delegation depth), T6 (HTML floor), T7
 
 ---
 
-## 20. Open questions
+## 21. Open questions
 
 1. The grant record schema and the revocation *surface* -- where a user sees
    and withdraws what they have granted (§7; location settled by D35).
@@ -1658,3 +1794,9 @@ name), G12 (version metadata), T5 (delegation depth), T6 (HTML floor), T7
    (D68) -- deny writes to paths another agent has claimed -- and whether a
    claim then needs a release path and a timeout, which is approval-gate
    territory (D38) rather than lock territory.
+9. Whether graph authoring (§18) ever gains **widget configuration** -- an
+   agent that can place a node but not set its values builds skeletons a
+   human must finish. The surface is every widget type, so it needs its own
+   decision rather than an extension of D69; the likely shape is a narrow
+   typed setter over `WidgetCore` bindings, whitelisted per node class the
+   way the classes themselves are.

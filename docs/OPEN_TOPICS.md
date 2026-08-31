@@ -467,6 +467,30 @@ Silk's pool does not depend on cross-request prompt caching. That was
 inherited from a hosted-API framing where a cache miss costs money. Locally
 it costs latency, and the code shows the dependency is real.
 
+### G20. Silk depends on Weave behaviour that has no version or contract
+
+Silk reaches into Weave internals that are stable by convention rather than
+by declaration: `PortRegistry._by_name` / `_cast_registry` for port
+registration (ARCHITECTURE_REVIEW R9), `NODE_REGISTRY` metadata and the undo
+command tuple shapes for graph authoring (spec §18), the NodePanel mirror
+system for the Decision Inbox (D59), and `emit_stream` / `pulse` semantics
+throughout. None of this is versioned, and Weave's own graph files carry a
+*format* version that the deserialiser explicitly does not gate on
+(`canvas/serializer.py`).
+
+Two consequences. A Weave refactor can break Silk silently at import time,
+and there is no declared floor to test against — the same shape as G5 for
+Python dependencies, one layer up. And Silk's own nodes carry no version, so
+a Silk graph saved today has no defined behaviour when a node's ports change
+(a real prospect: D55 makes delegation depth a port, D16 makes file access a
+port, §18 adds a whitelist to the ToolBox node).
+
+`docs/HOT_RELOAD_PLAN.md` (Weave) specifies the mechanism that closes the
+second half — `node_version` / `node_state_api` / `migrate_state`, and a
+`GhostNode` so an unknown class never silently drops the node *and its
+connections*. Silk should adopt the metadata as soon as it lands, starting
+with the nodes whose ports the spec is already changing.
+
 ## Open topics
 
 ### T1. Design of the approval gate (closes G1)
@@ -573,6 +597,27 @@ events); the raw `tool_events` firehose stays JSONL — events are a log,
 not belief. T7's open call (build it, and when) is unchanged, but its role
 is now defined rather than speculative, and D65 keeps the firehose out of
 the ledger by construction.
+
+### T9. Graph authoring: how far does an agent's build authority go?
+
+Spec §18 (D69–D74) settles v1: six tools, a default-deny whitelist on the
+ToolBox node, every mutation an undoable command, destructive calls scoped to
+what the run created, and a refusal to touch the agent's own execution path.
+What is deliberately unsettled:
+
+- **Widget configuration** (§21 q9) — without it the agent builds skeletons.
+- **Whether an agent may edit the user's pre-existing graph** rather than only
+  its own additions. v1 says no. The approval story for "yes" is much
+  larger than one gate: the human would need to see a *diff* of the proposed
+  change, which is a different UI from the per-call approval of D48.
+- **Whether a built graph should be reviewable before it is applied** — an
+  agent proposing a subgraph as a *plan* (a value on a port, or a ledger
+  assertion) that a human applies with one gesture, rather than mutating the
+  canvas call by call. This is the strictly safer design and it inverts D70:
+  no main-thread seam is needed at all, because nothing is applied from a
+  worker thread. It is not chosen for v1 because incremental placement is
+  what makes the tool usable interactively — but if D73's guard rails start
+  accumulating exceptions, that is the signal to switch.
 
 ### T8. Context budget under raised autonomy (compaction — G14)
 
