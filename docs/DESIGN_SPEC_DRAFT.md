@@ -1842,7 +1842,7 @@ self-improving loop with no feedback on failure does not improve; it repeats.
     root, the always-approve floor with its diff-carrying request,
     `weave_lint` in the toolchain, `request_relaunch` + the release
     participants, the quarantine fact. Gated on Weave shipping
-    `HOT_RELOAD_PLAN.md` Phases 1-2 and 5 -- until a load is lossless and
+    `HOT_RELOAD_PLAN.md` Phases 1-2 and 6 -- until a load is lossless and
     reportable there is nothing safe to call. Everything except the load verb
     exists already (D75), so the Silk-side cost is mostly the approval
     surface, not the plumbing.
