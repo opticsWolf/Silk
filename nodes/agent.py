@@ -78,6 +78,7 @@ log = get_logger("SilkAgent")
 @register_node
 class SilkAgentNode(ThreadedManualNode):
     """Autonomous tool-calling agent over model + toolbox + role."""
+    node_state_api = 1   # owns a hand-written state dict
 
     # Worker → main-thread bridges (V6 R11.1).
     chunk_streamed = Signal(str)

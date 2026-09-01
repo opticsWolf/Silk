@@ -66,6 +66,7 @@ class SilkToolBoxNode(ActiveNode):
     node_tags: ClassVar[Optional[List[str]]] = ["silk", "agent", "tools", "sandbox", "llm"]
     node_icon: ClassVar[Optional[str]] = "grid-dots"
     vertical_size_policy: ClassVar[VerticalSizePolicy] = VerticalSizePolicy.FIT
+    node_state_api = 1   # owns a hand-written state dict
 
     def __init__(self, title: str = "Silk ToolBox", **kwargs: Any) -> None:
         super().__init__(title=title, **kwargs)
