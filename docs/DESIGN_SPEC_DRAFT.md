@@ -1505,6 +1505,31 @@ serialiser), one small lock for *decisions*, one registry for *ownership*
 -- and gets branch-isolated workers, bitemporal plan audit, promoted-by-
 assertion sign-off, and cross-session searchable memory in exchange.
 
+**Implemented (2026-09-02), except branch isolation.** `functions/ledger.py`
+grew `TaskLedger` (the SQLite store's protocol exactly -- parity is
+pinned field-by-field, refusal wording included, in
+`tests/test_silk_task_ledger.py`), `HistoryLedger` (runs, turns,
+compaction-as-supersession, `recall`), and `open_task_store` /
+`open_history`, the seam that picks a backend from `SILK_TASK_BACKEND`
+and falls back to SQLite with one warning line. The agent reaches memory
+through `functions/tools/recall_tool.py`, mounted by the ToolBox node's
+`enable_recall` port; no node and no tool imports `macrame`.
+
+The D64 lock is one `RLock` per ledger file around read-check-assert --
+eight threads racing one claim leave one winner and seven `Conflict`s
+naming it, and a refused decision writes nothing. D65's turn shape is
+there: discrete facts as they happen, the turn's bookkeeping edges as one
+`write_bulk_atomic`. `load(as_of=t)` is the payoff -- the plan at a past
+instant as a read.
+
+Not built: **D63's worker branches** (`on_branch`, fork/abandon,
+promotion by re-assertion), which need the fan-out orchestrator to have
+a lineage to fork from -- a §15 change, not a storage one. And the
+default backend is still `sqlite`: plan *discovery* is file-shaped
+(`PlanRef`, `scan_all`, the D58 hub all look for `plan-*.db`), so
+flipping the default is a discovery-shaped change of its own. The ledger
+is opt-in per process until then.
+
 *Placement (default, revisable):* one **task ledger per sandbox root**
 (working dir), preserving T4/D58 discovery. Whether *history* shares that
 file or lives in a per-user memory ledger (`~/.weave/silk/memory.db`) for
@@ -1855,7 +1880,9 @@ self-improving loop with no feedback on failure does not improve; it repeats.
 7. `functions/ledger.py` (§17, D62–D66): `LedgerRegistry`, `TaskLedger`
     behind the existing task-store protocol, `HistoryLedger` + `recall`
     tool (FTS5 first). Preceded by declaring dependencies (G5) — the
-    ledger is Silk's first declared binary dependency.
+    ledger is Silk's first declared binary dependency. **Done 2026-09-02** (D63's worker
+    branches excepted, and the default backend still `sqlite` pending
+    ledger-aware plan discovery).
 8. Graph authoring (§18, D69–D74): the `MainThreadCall` seam generalised
     from D49, the whitelist widget on the ToolBox node, the six tools, the
     self-modification guard. Strictly after the Phase 2 seam — it is the
@@ -1940,11 +1967,17 @@ need a `__version__` to name. Still trivial; now load-bearing.
    with the rest of the parked-state machinery, and the hub inherited the
    *viewing* half only -- nothing is parked, so nothing is signed off
    outside the turn that asks.
-7. Ledger placement for *history* (§17): share the per-root task ledger, or
-   a per-user memory ledger (`~/.weave/silk/memory.db`) so `recall` spans
-   projects. Task ledgers are per sandbox root either way. Related: which
+7. Ledger placement for *history* (§17): **half-answered 2026-09-02** --
+   history is its own file (`history.macrame`) beside the task ledger
+   under the same root, not shared with it: one Write Actor each keeps a
+   per-turn writer from queueing behind a plan read, and a graph can drop
+   its memory while keeping its plan. Still open is the *scope* question
+   the placement does not settle: a per-user memory ledger
+   (`~/.weave/silk/memory.db`) so `recall` spans projects, which is a
+   second ledger rather than a move. Related and untouched: which
    embedding model stamps turn vectors, and whether embedding versioning
-   (Macrame stores per-model tables) tracks the pool's loaded model.
+   (Macrame stores per-model tables) tracks the pool's loaded model --
+   `recall` is FTS5-only today.
 8. Whether the sandbox consults ledger claims as *dynamic* write policy
    (D68) -- deny writes to paths another agent has claimed -- and whether a
    claim then needs a release path and a timeout, which is approval-gate

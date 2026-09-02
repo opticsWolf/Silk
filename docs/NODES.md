@@ -36,6 +36,18 @@ on. Left unwired, they discover the newest plan under the sandbox root —
 which is how several agents share one plan, and why two unrelated plans in
 one root used to find each other (D23).
 
+The **Recall (memory)** checkbox mounts the `recall` tool: keyword search
+over the turns and runs remembered in this sandbox root's history ledger,
+including ones from earlier sessions and ones compaction dropped (§17,
+D66). It needs the `ledger` extra (`pip install macrame-db`); without it
+the tool registers and says so rather than quietly returning nothing.
+
+Which backend stores the plan is the environment's business, not the
+node's: `SILK_TASK_BACKEND=ledger` puts it on the Macrame ledger, the
+default keeps the SQLite store, and both answer the same protocol — the
+Plan Viewer, the Task Hub and the sign-off flow cannot tell which
+answered.
+
 ### Silk ToolSet — `nodes/toolset.py`
 Selects a subset of ToolBox tools for an agent, with optional per-toolset
 sandbox permissions and named presets.

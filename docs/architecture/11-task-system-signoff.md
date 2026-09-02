@@ -106,6 +106,112 @@ never silently. Edge types are validated by Macrame against `[A-Z0-9]+`,
 so the vocabulary is `CLAIMEDBY` / `SUBTASKOF` / `INRUN`, not the
 underscored names §17 writes prose in.
 
+### `TaskLedger` — the task store on the ledger (D63–D66)
+
+`TaskLedger` answers `SqliteTaskStore`'s protocol exactly: same methods,
+same keyword-only signatures, same `Plan` / `Task` / `Goal` / `Deviation`
+objects, same `Conflict` on a refusal, same `history()` shape (entries
+numbered by position in the log, which is what the SQLite store's rowid
+was doing). `tests/test_silk_task_ledger.py` runs one identical sequence
+through both backends and compares the results field by field, including
+the wording of nine refusals — because a tool that special-cases a
+message must not have to ask which backend answered.
+
+What changes is underneath. A status transition **supersedes** rather
+than overwrites (Doctrine III), so `load(as_of=<datetime>)` answers *what
+did the plan look like at 14:00* as a read: the plan header, its tasks
+and its revision log all travel to the same instant, because Macrame
+refuses `as_of` without an attribute mode and returning the past's
+topology under the present's titles is the mistake that refusal exists to
+prevent. Nothing is ever deleted (Doctrine V): a dropped task is a
+superseded status with the revision that dropped it still readable.
+
+The graph shape is the point. A plan owns its tasks (`HASTASK`) and its
+revision log (`HASREVISION`); a subtask points at its parent
+(`SUBTASKOF`); a claim is an edge to an `agent:<name>` concept
+(`CLAIMEDBY`, `DONEBY`), so *what did this agent touch* is a traversal
+rather than a scan. Actors are upserted before they are linked — an edge
+needs both ends to exist, and an actor deserves to be a node anyway.
+Re-asserting an edge that is already open is refused by Macrame (it would
+be two claims of one fact), so the idempotent cases — an agent retrying
+its own claim — go through `_link`, which asserts only what is not
+already there.
+
+**The lock is for decisions, not throughput (D64).** Macrame's Write
+Actor already serialises writes within the process; N agent threads may
+call write methods concurrently. What needs protecting is
+read-check-assert: claim-a-task, advance-a-status-with-a-precondition.
+Those run under one `threading.RLock` **per ledger file** — two roots are
+two decision domains, and serialising them together would make one
+agent's claim wait on an unrelated plan. Eight threads racing for one
+task produce exactly one winner and seven `Conflict`s that name it. A
+refused decision writes nothing at all, not even a bumped revision.
+
+`start()` writes its edges in one `write_bulk_atomic` and the head
+pointer last (D65): a plan either started or did not, and a half-started
+one would read as a plan with missing tasks rather than as no plan.
+
+### `HistoryLedger` and `recall` — memory instead of scrollback (§17, D66)
+
+History is the half of §17 that fits structurally: an append-only
+assertion log is what Silk's history already is (I11 — the prefix grows
+only at the tail). Moving it off the node buys two things the node
+cannot.
+
+**Compaction stops being destructive.** `compacted(run_id, dropped=…,
+kept=…, rationale=…)` records a supersession event rather than a
+deletion, so `turns(run_id, include_superseded=False)` is what the model
+sees now and `turns(run_id)` is still the whole conversation. *What did
+the model actually see at round 7* survives the squeeze — the question
+D41's measurement and D42's tests want and could not have while history
+lived in `self._history` and died with the node (D24/D25).
+
+**Memory outlives the run.** `recall(query, top_k=…, kinds=…)` is FTS5
+keyword search over remembered turns and runs, so it reaches into earlier
+runs and earlier sessions, and into rounds compaction dropped. §17's plan
+is hybrid search (FTS5 + vectors, fused by RRF); FTS5 needs no embedding
+model, so it ships first and the result shape does not change when the
+vector half arrives.
+
+Writes are turn-shaped (D65): the run concept and its identity edges at
+start (`BYAGENT`, `INSESSION` — D60's observability plumbing and the
+ledger's keys are the same plumbing), then per turn one concept for the
+discrete fact and **one** `write_bulk_atomic` for the bookkeeping
+(`INRUN`, `USED`, `TOUCHED`). A crash between the two leaves an orphan
+turn, which reads as *a turn happened and we do not know what it
+touched* — the honest answer. A turn recorded without a `start_run` still
+lands, and gets a run to hang on.
+
+History lives in its own file (`history.macrame`) beside the task ledger
+(`ledger.macrame`): one Write Actor each keeps a chatty turn writer from
+queueing behind a plan read, and lets a graph keep its plan while
+dropping its memory.
+
+`recall` reaches the agent as a tool
+(`functions/tools/recall_tool.py`, the `Recall (memory)` checkbox on the
+ToolBox node). It imports `functions/ledger.py` and nothing else — D66's
+seam is that no node and no tool ever imports `macrame` — so a missing
+extra is a tool that says why, not an ImportError at load time.
+
+### Choosing a backend, loudly (D66)
+
+`open_task_store(root, plan=…)` hands back whichever backend the
+environment asks for via `SILK_TASK_BACKEND` (`ledger` / `sqlite`), and
+`attach_task_tools` goes through it, so the tools never choose. If the
+ledger is asked for and `macrame-db` is absent, that is **one warning
+line and the SQLite store** — the graph degrades to today's behaviour,
+never silently and never by crashing a run that was only going to write a
+task list. `open_history()` has nothing to degrade to (before D66 history
+died with the node), so it answers `None` and logs once, rather than
+returning an empty search that reads like *nothing happened*.
+
+**The default is still `sqlite`, deliberately.** Not because the ledger
+is unfinished — the parity suite says otherwise — but because plan
+*discovery* is still file-shaped: `PlanRef`, `scan_all` and the D58 hub
+all look for `plan-*.db`. Flipping the default is a separate,
+discovery-shaped change; until it happens the ledger is opt-in per
+process, and everything above the store is already backend-blind.
+
 ### `functions/task_board.py` — the multi-agent projection (D58)
 
 N independent top-level agents share no event port and never will, so

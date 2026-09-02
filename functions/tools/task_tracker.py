@@ -14,8 +14,11 @@ state a **rationale**. Enforcement is structural: those tools take a required,
 non-blank ``rationale`` field, so the model cannot change the plan without saying
 why. Plain progress (``task_update``) and reads need none.
 
-Backed by :class:`~weave.plugins.silk.functions.task_store.SqliteTaskStore` (the
-store of record; §see docs/TASK_TRACKER_PLAN.md). One plan may be shared by
+Backed by whichever task store the environment selects (D66) --
+:class:`~weave.plugins.silk.functions.task_store.SqliteTaskStore` by default,
+the Macrame ledger when ``SILK_TASK_BACKEND=ledger`` and the extra is
+installed. Both answer the same protocol, so nothing below this line knows
+(the store of record; §see docs/TASK_TRACKER_PLAN.md). One plan may be shared by
 several agents; a genuine collision (same task, double-complete, goal race) comes
 back as an informational ``conflict`` result, never a silent lost update.
 """
@@ -30,9 +33,9 @@ from pydantic import BaseModel, Field, field_validator
 # ``dynamic_tools.task_tracker`` (no parent package), so a ``..`` relative import
 # would be "beyond top-level". Absolute resolution works in both load paths and
 # yields the same module object as a normal import (no duplicate class identity).
+from weave.plugins.silk.functions.ledger import open_task_store
 from weave.plugins.silk.functions.task_store import (
-    Conflict, DEFAULT_ACTOR, LedgerClosed, PlanRef, SqliteTaskStore, plan_to_json,
-    render_markdown,
+    Conflict, DEFAULT_ACTOR, LedgerClosed, plan_to_json, render_markdown,
 )
 
 if TYPE_CHECKING:
@@ -160,7 +163,7 @@ class PlanResult(BaseModel):
 
 # ── helpers ─────────────────────────────────────────────────────────────────
 
-def _get_store(toolbox: Any) -> "SqliteTaskStore":
+def _get_store(toolbox: Any) -> Any:
     store = getattr(toolbox, "_task_store", None)
     if store is None:
         raise RuntimeError(
@@ -214,17 +217,17 @@ def attach_task_tools(toolbox: "ToolBox", sandbox: "FileToolSandbox",
                       plan: Any = None) -> None:
     """Mount the task planning/tracking tools.
 
+    Which *backend* answers is the environment's business, not the
+    tools' (D66): `open_task_store` hands back the Macrame ledger or the
+    SQLite store, both speaking the protocol below.
+
     Without *plan* the store is rooted at the sandbox working directory and
     finds the newest plan there -- shared-plan discovery, which is how
     several agents in one root work on one plan. With a `PlanRef` from a
     Task node the plan is named outright (D23), so two unrelated plans in
     one directory cannot cross-discover by file timestamp.
     """
-    ref = PlanRef.coerce(plan)
-    if ref is not None and (ref.is_explicit or ref.root):
-        store = ref.store()
-    else:
-        store = SqliteTaskStore(root=getattr(sandbox, "root_dir", "."))
+    store = open_task_store(getattr(sandbox, "root_dir", "."), plan=plan)
     toolbox._task_store = store  # type: ignore[attr-defined]
 
     @toolbox.register(

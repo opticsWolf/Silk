@@ -17,6 +17,11 @@
 | Cap or shape a run | `UsageLimits` caps, `ReflectionConfig` retries, or an `OutputSchema` + validator on the final answer |
 | Add planning / audit behaviour | `SqliteTaskStore` operations + a `signoff` policy; surface it via the Plan Viewer node |
 | Open a Macrame ledger | `LedgerRegistry.acquire()` in `functions/ledger.py` — never `Database.open`, anywhere else (D62) |
+| Put the task plan on the ledger instead of SQLite | `SILK_TASK_BACKEND=ledger` — `open_task_store()` picks, the tools never do; a missing extra falls back to SQLite with one warning line (D66) |
+| Ask what the plan looked like at some past instant | `TaskLedger.load(as_of=<datetime>)` — a read, not an archaeology project (D63) |
+| Make a compound task decision atomic | put it behind `TaskLedger._commit()` — one RLock per ledger file around read-check-assert (D64); never a second lock elsewhere |
+| Remember a turn across runs and sessions | `HistoryLedger.record_turn()` in `functions/ledger.py`; the agent reads it back with the `recall` tool (§17, D66) |
+| Compact without losing what was compacted | `HistoryLedger.compacted()` — a supersession event, so the dropped rounds stay readable (D24/D25, I11) |
 | Centralise answering N agents' approval prompts | the Decision Inbox dock (`widgets/decision_inbox.py`) over `functions/decision_registry.py` — never a node (D59, D51, I12) |
 | See what N independent agents are doing | a `Silk Task Hub` node fed from `Silk ToolBox.root_paths`; it reads the plan stores, never the agents (D58) |
 | Point agents at a *specific* plan | a `Silk Task` node into the ToolBox node's `plan` input (and the Plan Viewer's `plan_ref`); leave both unwired to keep newest-under-root shared discovery (D23) |

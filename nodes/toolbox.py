@@ -41,6 +41,7 @@ from ..functions.tools.file_sandbox import FileToolSandbox
 from ..functions.tools.file_read import attach_file_read_tools
 from ..functions.tools.file_write import attach_file_write_tools
 from ..functions.tools.file_manipulate import attach_file_manipulate_tools
+from ..functions.tools.recall_tool import attach_recall_tool
 from ..functions.tools.ripgrep_tool import attach_ripgrep_tools
 from ..functions.tools.toolchains import attach_toolchain_tools
 from ..functions.tools.task_tracker import attach_task_tools
@@ -148,6 +149,20 @@ class SilkToolBoxNode(ActiveNode):
         form.addRow("Task Planning:", self.chk_planning)
         self._widget_core.register_widget(
             "enable_planning", self.chk_planning, role=PortRole.INTERNAL,
+            datatype="bool", default=False, add_to_layout=False,
+        )
+
+        self.chk_recall = QCheckBox()
+        self.chk_recall.setToolTip(
+            "Memory search (recall): keyword search over turns and runs "
+            "remembered in this sandbox root's history ledger — including "
+            "ones from earlier sessions and ones compaction dropped. "
+            "Needs the 'ledger' extra (macrame-db); without it the tool "
+            "says so rather than returning nothing."
+        )
+        form.addRow("Recall (memory):", self.chk_recall)
+        self._widget_core.register_widget(
+            "enable_recall", self.chk_recall, role=PortRole.INTERNAL,
             datatype="bool", default=False, add_to_layout=False,
         )
 
@@ -298,6 +313,12 @@ class SilkToolBoxNode(ActiveNode):
                 partial(attach_task_tools, plan=plan_ref)
                 if plan_ref is not None else attach_task_tools,
             ))
+
+        # Memory. Attached after the task tools so a box that has both
+        # reads as plan-then-memory in the tool list, which is the order
+        # an agent uses them in.
+        if inputs.get("enable_recall", False):
+            recipe.append(("recall", attach_recall_tool))
 
         toolchains = tuple(inputs.get("toolchains") or ())
         if toolchains:
