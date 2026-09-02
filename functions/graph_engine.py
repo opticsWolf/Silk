@@ -20,6 +20,7 @@ import time
 from collections.abc import Iterator
 from typing import Any, Optional
 
+from .prefix_guard import PrefixGuard
 from .reflection import ReflectionConfig
 from .usage_limits import UsageLimits
 
@@ -62,6 +63,12 @@ class GraphEngine:
         self._native_tools_enabled = False
         self._tool_schemas: list[dict[str, Any]] = []
         self._pending_tool_calls: list[dict[str, Any]] = []
+
+        # Invariant I11: each request's message list must extend the last
+        # one. The guard reports; it never repairs. A break is a bug in
+        # whatever built the messages, and the cost of it -- a re-prefill
+        # of everything after the break -- is otherwise invisible (D41).
+        self.prefix_guard = PrefixGuard()
 
     # -- AgentEngine: control ------------------------------------------------
 
@@ -232,8 +239,13 @@ class GraphEngine:
             if self._native_tools_enabled and self._tool_schemas:
                 params["tools"] = self._tool_schemas
                 params["tool_choice"] = "auto"
+            messages = self.build_messages()
+            self.prefix_guard.observe(
+                messages, system_prompt=self.system_prompt,
+                tools=params.get("tools"),
+            )
             stream = model.create_chat_completion(
-                messages=self.build_messages(),
+                messages=messages,
                 stream=True,
                 **params,
             )

@@ -40,3 +40,28 @@ implements the GGUF v1 vs v2+ length-encoding difference and *skips*
 non-integer KV values by seeking — the probe only cares about integers but
 must advance the stream past everything else.
 
+### `functions/prefix_guard.py` — invariant I11
+
+Between two requests in one run, the earlier request's message sequence
+must be a **prefix** of the later one. `GraphEngine` carries a
+`PrefixGuard` and observes every request through it.
+
+The rule is invisible at the call site: nothing in `build_messages` breaks
+if a section starts rendering the time of day, if a tool schema is added
+mid-run, or if a hook edits an already-sent message in place. What breaks
+is the backend's KV cache — llama.cpp keeps the longest common prefix
+between the new prompt and the last one it evaluated and re-evaluates only
+the suffix, so a change at position *k* costs a re-prefill of everything
+after *k*. The failure is silent, it costs in proportion to how far back
+it happened, and it looks exactly like the model being slow (D41).
+
+The guard therefore **reports and never repairs**: a break is a bug in
+whatever built the messages, and an automatic fix would leave the cost in
+place and remove the signal. It names three kinds, because they have three
+causes — `system` (volatile prompt content; the most expensive, since it
+invalidates everything), `tools` (the advertised schemas changed, which
+deferred capability loading does by design), and `history` (an
+already-sent message rewritten or dropped, the one kind that is never
+intentional). Compaction declares itself with `note_compaction()` and is
+forgiven exactly once: forever would make the guard go quiet for the rest
+of any run that compacts.
