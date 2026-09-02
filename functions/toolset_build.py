@@ -21,6 +21,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
+from .hooks import is_middleware_event
 from .tool_box import ToolBox
 from .tools.file_sandbox import FileToolSandbox
 
@@ -138,6 +139,41 @@ def sandbox_from_permissions(
     )
 
 
+def carry_essential_hooks(source: Any, derived: Any) -> int:
+    """Copy *source*'s essential hooks onto *derived*; returns how many (D14).
+
+    Replaying the recipe already reinstalls anything the recipe attached,
+    which is most of the infrastructure tier -- so the usual answer is
+    zero, and that is fine. What this catches is the hook registered
+    *outside* the recipe: the approval gate the Agent node installs on a
+    live toolbox, say. Invariant I7 says such a hook survives derivation,
+    and without this it would not, because nothing in the recipe knows it
+    exists.
+
+    Skips anything the replay already produced -- same event, same callable
+    -- so a recipe hook is not installed twice.
+    """
+    registry = getattr(source, "hooks", None)
+    target = getattr(derived, "hooks", None)
+    if registry is None or target is None:
+        return 0
+
+    carried = 0
+    for event, entry in registry.essential_entries():
+        existing = (
+            target.middleware_entries(event) if is_middleware_event(event)
+            else target.entries(event)
+        )
+        if any(e.callback is entry.callback for e in existing):
+            continue
+        if is_middleware_event(event):
+            target.register_middleware(event, entry)
+        else:
+            target.register(event, entry)
+        carried += 1
+    return carried
+
+
 def build_toolset(
     source: Any,
     selected_names: Iterable[str],
@@ -174,6 +210,8 @@ def build_toolset(
     for name in list(toolset.tools):
         if name not in keep:
             toolset.unregister(name)
+
+    carry_essential_hooks(source, toolset)
 
     # Propagate the recipe so a toolset remains introspectable downstream.
     toolset.build_recipe = recipe  # type: ignore[attr-defined]

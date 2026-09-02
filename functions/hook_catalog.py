@@ -42,6 +42,7 @@ from weave.logger import get_logger
 from .signoff import CHANGE_TYPES, preset_policy
 
 from .hooks import (
+    HookEntry,
     HOOK_AFTER_RUN,
     HOOK_AFTER_TOOL_EXECUTE,
     HOOK_BEFORE_RUN,
@@ -290,7 +291,11 @@ def _make_task_audit(config: Optional[BaseModel]) -> HookMap:
         handler: Callable = None, tool_name: str = "",
         tool_args: Optional[dict] = None, **_kw: Any,
     ) -> Any:
-        if cfg.strict and tool_name in _AUDIT_GUARDED:
+        # No `tool_name in _AUDIT_GUARDED` test here: the binding below says
+        # which tools this applies to, and the registry does the filtering
+        # (D13). The set is the same set; the difference is that it is now
+        # visible from outside the closure.
+        if cfg.strict:
             rationale = (tool_args or {}).get("rationale")
             if _too_weak(rationale):
                 log.warning(
@@ -306,13 +311,16 @@ def _make_task_audit(config: Optional[BaseModel]) -> HookMap:
         return await handler()
 
     def after(tool_name: str = "", **_kw: Any) -> None:
-        if tool_name in _AUDIT_PLAN_TOOLS:
-            stamp = time.strftime("%Y-%m-%dT%H:%M:%S")
-            log.info(f"[hook:task_audit] {stamp} plan op: {tool_name}")
+        stamp = time.strftime("%Y-%m-%dT%H:%M:%S")
+        log.info(f"[hook:task_audit] {stamp} plan op: {tool_name}")
 
     return {
-        HOOK_WRAP_TOOL_EXECUTE: [enforce],
-        HOOK_AFTER_TOOL_EXECUTE: [after],
+        HOOK_WRAP_TOOL_EXECUTE: [
+            HookEntry(callback=enforce, tools=_AUDIT_GUARDED)
+        ],
+        HOOK_AFTER_TOOL_EXECUTE: [
+            HookEntry(callback=after, tools=_AUDIT_PLAN_TOOLS)
+        ],
     }
 
 

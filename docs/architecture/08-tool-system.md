@@ -220,6 +220,30 @@ in one `HookRegistry`:
 - `register_ordered(capability_id, position, wraps, wrapped_by, requires)`
   records ordering constraints for capabilities.
 
+**Binding and tiers** (spec D13/D14) — a registration is a `HookEntry`, not
+a bare callable, and it carries two declarations the registry acts on:
+
+- `tools` / `categories` scope the hook to particular tool calls. Empty
+  means every tool, which is what every hook used to mean; a hook that
+  cares about one tool now *says so* in the registry instead of opening
+  with `if tool_name != ...: return` in a body nothing outside it can read.
+  Categories are resolved through `ToolBox.tool_category`, which the box
+  lends the registry at construction (`bind_categories`) — a bare registry
+  with no index matches no category, so a category-bound hook stays quiet
+  rather than firing for everything. A **bound** hook does not fire on the
+  tool-less events (`before_run`): it declared it was about a tool.
+- `essential=True` marks the infrastructure tier. `unregister` raises
+  `EssentialHookError`, `clear()` keeps it unless you pass
+  `keep_essential=False`, and `carry_essential_hooks` copies it onto a
+  derived ToolSet — which is what makes invariant **I7** true for a hook
+  installed *outside* the build recipe (the recipe replay already covers
+  the ones inside it). The approval gate is the first hook that genuinely
+  must not be droppable.
+
+Both declarations can travel a `HookMap` — a plain `{event: [callables]}`
+dict with no room for keywords — either as a `HookEntry` value or via the
+`@bind_tools(...)` / `@essential` decorators on the callable itself.
+
 The `Hooks` facade exposes ergonomic decorator registration:
 `hooks.on.before_model_request(...)`, `.wrap_tool_execute(...)`,
 `.after_run(...)`, etc., plus `get_tools()` / `get_instructions()` /
@@ -246,8 +270,9 @@ emitted today, the rest are defined but not yet wired):
 | `HOOK_WRAP_OUTPUT_PROCESS` / `HOOK_ON_OUTPUT_PROCESS_ERROR` | middleware/event | — | wrap post-processing of the final output |
 | `HOOK_WRAP_RUN_EVENT_STREAM` | middleware | — | wrap the run's event stream itself |
 
-Rows marked `—` are defined and subscribable but nothing emits them yet —
-see [Open Topics](../OPEN_TOPICS.md).
+Rows marked `—` are defined but nothing emits them yet, so registering on
+one **raises `UnwiredHookEvent`** rather than registering cleanly and never
+firing (D15) — see [Open Topics](../OPEN_TOPICS.md).
 
 ### Hook catalog
 

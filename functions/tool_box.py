@@ -87,6 +87,9 @@ class ToolBox:
 
         # Phase 2: Lifecycle hooks
         self.hooks = HookRegistry()
+        # A category-bound hook (D13) needs to know a tool's category, and
+        # the registry has no tool index of its own. This is that index.
+        self.hooks.bind_categories(self.tool_category)
 
         # Phase 4: Capabilities
         self._capabilities: dict[str, BaseCapability] = {}
@@ -539,6 +542,18 @@ class ToolBox:
             return True
         return self._role_filter(name, self.tools.get(name))
 
+    def tool_category(self, name: str) -> str | None:
+        """The registered category of tool *name*, if it has one.
+
+        Lent to the hook registry so a hook can bind to a category rather
+        than to a list of tool names (D13) -- the binding a capability
+        wants, since a capability adds tools over time and a name list goes
+        stale the moment it does.
+        """
+        meta = self.tools.get(name) or {}
+        category = meta.get("category")
+        return str(category) if category else None
+
     # -- prompt / schema ------------------------------------------------
 
     def build_system_prompt(self, base_prompt: str) -> str:
@@ -741,7 +756,7 @@ class ToolBox:
                 # Keep sync tools off the event loop.
                 return await asyncio.to_thread(executable, **args)
 
-            if self.hooks._middleware.get(HOOK_WRAP_TOOL_EXECUTE):
+            if self.hooks.has_middleware(HOOK_WRAP_TOOL_EXECUTE, name):
                 output = await self.hooks.emit_middleware(
                     HOOK_WRAP_TOOL_EXECUTE,
                     innermost=_run_tool,

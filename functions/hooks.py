@@ -12,7 +12,8 @@ from __future__ import annotations
 
 import asyncio
 
-from collections.abc import AsyncIterable, Awaitable, Callable
+from collections.abc import AsyncIterable, Awaitable, Callable, Iterable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol
 
 
@@ -159,6 +160,88 @@ def _check_event(event: str, *, middleware: bool) -> None:
         "Known events are: " + ", ".join(sorted(KNOWN_EVENTS))
     )
 
+class EssentialHookError(ValueError):
+    """Raised when something tries to remove a hook declared essential.
+
+    A ``ValueError`` for the same reason :class:`UnwiredHookEvent` is: a
+    caller that already guards hook wiring keeps working. Its own class so
+    "you may not drop this" reads differently from "that event does not
+    exist" (spec D14, invariant I7).
+    """
+
+
+@dataclass(frozen=True)
+class HookEntry:
+    """One registration: the callback plus what it declares about itself.
+
+    Two declarations, both from spec section 8:
+
+    *Binding* (D13) -- ``tools`` and ``categories`` say which tool calls the
+    hook applies to. Empty means every tool, which is what every hook meant
+    before this existed. The point is that a hook scoped to ``write_file``
+    now says so in the registry, where config and a UI can see it, instead
+    of opening with ``if tool_name != "write_file": return`` in a body
+    nothing outside the function can read.
+
+    *Tier* (D14) -- ``essential`` marks a hook that must survive derivation:
+    it rides the recipe into every ToolSet built from a ToolBox, and
+    :meth:`HookRegistry.unregister` refuses to take it off. The approval
+    gate is the first hook that genuinely must not be droppable, but the
+    "infrastructure hooks: part of the recipe" comment in ``nodes/toolbox``
+    has been asserting this informally for a while.
+    """
+
+    callback: Callable
+    #: Tool names this hook applies to; empty = every tool.
+    tools: frozenset[str] = frozenset()
+    #: Tool categories this hook applies to; empty = every category.
+    categories: frozenset[str] = frozenset()
+    #: Survives derivation and cannot be unregistered (D14, I7).
+    essential: bool = False
+
+    @property
+    def bound(self) -> bool:
+        """Whether this entry declares a binding at all."""
+        return bool(self.tools or self.categories)
+
+    def applies_to(self, tool_name: Any, category: Any) -> bool:
+        """Whether the hook should fire for this tool.
+
+        An unbound hook fires for everything, including events that carry no
+        tool at all (``before_run``). A *bound* hook fires only for a tool it
+        names, which means it stays silent on the tool-less events --
+        deliberately: a hook that declared "I am about ``write_file``" has
+        nothing to say when no tool is involved.
+        """
+        if not self.bound:
+            return True
+        if tool_name and str(tool_name) in self.tools:
+            return True
+        return bool(category and str(category) in self.categories)
+
+
+def bind_tools(*tools: str, categories: Iterable[str] = ()) -> Callable:
+    """Declare which tools a hook applies to (D13), as a decorator.
+
+    :meth:`HookRegistry.register` reads the declaration off the function, so
+    a hook can carry its own binding through a :data:`HookMap` -- which is a
+    plain ``{event: [callables]}`` dict with nowhere else to put it.
+    """
+
+    def decorate(func: Callable) -> Callable:
+        func._hook_tools = frozenset(tools)  # type: ignore[attr-defined]
+        func._hook_categories = frozenset(categories)  # type: ignore[attr-defined]
+        return func
+
+    return decorate
+
+
+def essential(func: Callable) -> Callable:
+    """Declare a hook essential (D14), as a decorator."""
+    func._hook_essential = True  # type: ignore[attr-defined]
+    return func
+
+
 # â”€â”€ Hook Registry â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 
@@ -175,25 +258,151 @@ class HookRegistry:
     """
 
     def __init__(self) -> None:
-        self._hooks: dict[str, list[Callable]] = {}
-        self._middleware: dict[str, list[Callable]] = {}
+        self._hooks: dict[str, list[HookEntry]] = {}
+        self._middleware: dict[str, list[HookEntry]] = {}
         self._ordering: dict[str, dict[str, Any]] = {}
+        # How to find a tool's category, for category-bound hooks (D13).
+        # The registry does the filtering, so it needs the answer -- but it
+        # has no tool registry of its own, so the ToolBox lends it one.
+        # Unbound until then: an unknown category matches nothing, which is
+        # the safe direction (a category-bound hook stays quiet rather than
+        # firing for every tool).
+        self._category_of: Callable[[str], Any] | None = None
 
-    def register(self, event: str, callback: Callable) -> None:
+    def bind_categories(self, resolver: Callable[[str], Any] | None) -> None:
+        """Teach the registry how to map a tool name to its category."""
+        self._category_of = resolver
+
+    def _category(self, tool_name: Any) -> Any:
+        if not tool_name or self._category_of is None:
+            return None
+        try:
+            return self._category_of(str(tool_name))
+        except Exception:
+            return None
+
+    @staticmethod
+    def _entry(
+        callback: Callable,
+        tools: Iterable[str] | None,
+        categories: Iterable[str] | None,
+        essential_hook: bool | None,
+    ) -> HookEntry:
+        """Build an entry, falling back to what the callback declares.
+
+        An explicit argument always wins; the decorators exist for the hook
+        maps, which are plain dicts with nowhere to put a keyword.
+        """
+        if isinstance(callback, HookEntry):
+            return callback
+        return HookEntry(
+            callback=callback,
+            tools=frozenset(
+                tools if tools is not None
+                else getattr(callback, "_hook_tools", ())
+            ),
+            categories=frozenset(
+                categories if categories is not None
+                else getattr(callback, "_hook_categories", ())
+            ),
+            essential=bool(
+                essential_hook if essential_hook is not None
+                else getattr(callback, "_hook_essential", False)
+            ),
+        )
+
+    def _applicable(self, event: str, kwargs: dict[str, Any]) -> list[HookEntry]:
+        """The entries of *event* that apply to this call (D13)."""
+        entries = self._hooks.get(event, [])
+        if not any(entry.bound for entry in entries):
+            return list(entries)
+        tool_name = kwargs.get("tool_name")
+        category = self._category(tool_name)
+        return [e for e in entries if e.applies_to(tool_name, category)]
+
+    def entries(self, event: str) -> list[HookEntry]:
+        """The registrations on *event*, declarations and all."""
+        return list(self._hooks.get(event, ()))
+
+    def callbacks(self, event: str) -> list[Callable]:
+        """Just the callables on *event*, in registration order."""
+        return [entry.callback for entry in self._hooks.get(event, ())]
+
+    def middleware_entries(self, event: str) -> list[HookEntry]:
+        """The middleware registrations on *event*, declarations and all."""
+        return list(self._middleware.get(event, ()))
+
+    def essential_entries(self) -> list[tuple[str, HookEntry]]:
+        """Every essential registration, as ``(event, entry)`` pairs (D14).
+
+        What derivation copies forward: a ToolSet rebuilt from a recipe gets
+        the recipe's hooks back automatically, but an essential hook
+        registered *outside* the recipe would otherwise be lost, and I7 says
+        it must not be.
+        """
+        pairs: list[tuple[str, HookEntry]] = []
+        for event, entries in self._hooks.items():
+            pairs.extend((event, e) for e in entries if e.essential)
+        for event, entries in self._middleware.items():
+            pairs.extend((event, e) for e in entries if e.essential)
+        return pairs
+
+    def has_middleware(self, event: str, tool_name: Any = None) -> bool:
+        """Whether any middleware on *event* applies to this tool."""
+        entries = self._middleware.get(event, [])
+        if not entries:
+            return False
+        if tool_name is None:
+            return True
+        category = self._category(tool_name)
+        return any(e.applies_to(tool_name, category) for e in entries)
+
+    def register(
+        self,
+        event: str,
+        callback: Callable,
+        *,
+        tools: Iterable[str] | None = None,
+        categories: Iterable[str] | None = None,
+        essential: bool | None = None,
+    ) -> HookEntry:
         """Register a callback for an event.
 
         Args:
             event: The event name (e.g. HOOK_BEFORE_MODEL_REQUEST).
-            callback: The callback function.
+            callback: The callback function, or a ready
+                :class:`HookEntry`.
+            tools: Tool names this hook applies to; ``None`` defers to what
+                the callback declares, and an empty set means every tool
+                (D13).
+            categories: Tool categories, resolved through the registry's
+                category binding.
+            essential: Whether the hook survives derivation and refuses
+                removal (D14); ``None`` defers to the callback.
+
+        Returns:
+            The :class:`HookEntry` that was stored -- the handle
+            :meth:`unregister` wants when the same callable is registered
+            twice with different bindings.
 
         Raises:
             UnwiredHookEvent: if nothing emits *event* -- an unknown name,
                 or one declared but not yet wired (D15).
         """
         _check_event(event, middleware=False)
-        self._hooks.setdefault(event, []).append(callback)
+        entry = self._entry(callback, tools, categories, essential)
+        self._hooks.setdefault(event, []).append(entry)
+        return entry
 
-    def register_middleware(self, event: str, handler: Callable) -> None:
+    def register_middleware(
+        self,
+        event: str,
+        handler: Callable,
+        *,
+        tools: Iterable[str] | None = None,
+        categories: Iterable[str] | None = None,
+        essential: bool | None = None,
+    ) -> HookEntry:
         """Register a middleware handler for an event.
 
         Middleware handlers receive a 'handler' callable that they can
@@ -209,7 +418,9 @@ class HookRegistry:
                 wired today; the rest are open (T2).
         """
         _check_event(event, middleware=True)
-        self._middleware.setdefault(event, []).append(handler)
+        entry = self._entry(handler, tools, categories, essential)
+        self._middleware.setdefault(event, []).append(entry)
+        return entry
 
     def register_ordered(
         self,
@@ -246,23 +457,20 @@ class HookRegistry:
             event: The event name.
             **kwargs: Keyword arguments passed to callbacks.
         """
-        callbacks = self._hooks.get(event, [])
+        # Per-tool binding is applied here, once, for every hook -- which is
+        # the whole point of D13. A hook that only cares about `write_file`
+        # used to have to say so in its own body, so the config could not
+        # show it and two hooks could not agree on what "applies" means.
+        entries = self._applicable(event, kwargs)
         if event.startswith("after_"):
             # After hooks fire in reverse order (LIFO)
-            for callback in reversed(callbacks):
-                try:
-                    callback(**kwargs)
-                except Exception:
-                    # Don't let hook exceptions break the run
-                    pass
-        else:
-            # Before/middleware hooks fire in registration order (FIFO)
-            for callback in callbacks:
-                try:
-                    callback(**kwargs)
-                except Exception:
-                    # Don't let hook exceptions break the run
-                    pass
+            entries = list(reversed(entries))
+        for entry in entries:
+            try:
+                entry.callback(**kwargs)
+            except Exception:
+                # Don't let hook exceptions break the run
+                pass
 
     async def emit_middleware(
         self,
@@ -287,7 +495,12 @@ class HookRegistry:
         Returns:
             The result from the (possibly short-circuited) chain.
         """
-        handlers = list(self._middleware.get(event, []))
+        tool_name = kwargs.get("tool_name")
+        category = self._category(tool_name)
+        handlers = [
+            e.callback for e in self._middleware.get(event, [])
+            if e.applies_to(tool_name, category)
+        ]
 
         async def _default_innermost(**kw):
             return kwargs.get("default_result", None)
@@ -317,10 +530,7 @@ class HookRegistry:
             event: The event name.
             handler: The middleware handler to remove.
         """
-        if event in self._middleware:
-            self._middleware[event] = [
-                h for h in self._middleware[event] if h is not handler
-            ]
+        self._remove(self._middleware, event, handler)
 
     def unregister(self, event: str, callback: Callable) -> None:
         """Unregister a callback for an event.
@@ -329,13 +539,60 @@ class HookRegistry:
             event: The event name.
             callback: The callback function.
         """
-        if event in self._hooks:
-            self._hooks[event] = [cb for cb in self._hooks[event] if cb is not callback]
+        self._remove(self._hooks, event, callback)
 
-    def clear(self) -> None:
-        """Clear all registered hooks."""
-        self._hooks.clear()
-        self._middleware.clear()
+    @staticmethod
+    def _remove(
+        store: dict[str, list[HookEntry]], event: str, target: Any
+    ) -> None:
+        """Drop *target* from *store*, refusing an essential hook (D14).
+
+        *target* is either the callable or the :class:`HookEntry` handed
+        back by ``register``; the entry form is what disambiguates one
+        callable registered twice with different bindings.
+        """
+        entries = store.get(event)
+        if not entries:
+            return
+        if isinstance(target, HookEntry):
+            # The exact registration -- which is what tells two
+            # registrations of one callable with different bindings apart.
+            doomed = [e for e in entries if e is target]
+        else:
+            doomed = [e for e in entries if e.callback is target]
+        for entry in doomed:
+            if entry.essential:
+                raise EssentialHookError(
+                    f"Cannot unregister '{event}' hook "
+                    f"{getattr(entry.callback, '__name__', entry.callback)!r}: "
+                    "it is declared essential, so it rides the recipe into "
+                    "every derived toolset and cannot be dropped downstream "
+                    "(spec D14, invariant I7)."
+                )
+        store[event] = [e for e in entries if not any(e is d for d in doomed)]
+
+    def clear(self, *, keep_essential: bool = True) -> None:
+        """Clear registered hooks, keeping the essential tier (D14).
+
+        Clearing is how a registry gets reused, and an essential hook that a
+        reuse silently dropped would be exactly the failure I7 names. Pass
+        ``keep_essential=False`` to tear the registry down completely --
+        appropriate when the registry itself is being discarded, not when it
+        is being re-populated.
+        """
+        if keep_essential:
+            kept = {
+                event: [e for e in entries if e.essential]
+                for event, entries in self._hooks.items()
+            }
+            kept_mw = {
+                event: [e for e in entries if e.essential]
+                for event, entries in self._middleware.items()
+            }
+        else:
+            kept, kept_mw = {}, {}
+        self._hooks = {k: v for k, v in kept.items() if v}
+        self._middleware = {k: v for k, v in kept_mw.items() if v}
         self._ordering.clear()
 
     def get_ordered_capabilities(self) -> list[str]:
@@ -837,8 +1094,13 @@ def is_middleware_event(event: str) -> bool:
 def register_hook_map(
     registry: HookRegistry,
     mapping: dict[str, Any] | None,
-) -> list[tuple[str, Callable]]:
-    """Register a hook map; returns (event, callback) pairs for removal.
+) -> list[tuple[str, Any]]:
+    """Register a hook map; returns (event, entry) pairs for removal.
+
+    A map's values may be bare callables or :class:`HookEntry` instances,
+    so a hook map -- a plain dict with no room for keywords -- can still
+    carry a per-tool binding or the essential flag (D13, D14). A callable
+    decorated with :func:`bind_tools` or :func:`essential` carries them too.
 
     All or nothing. Registration refuses an event nothing emits
     (:class:`UnwiredHookEvent`), and a map that names one is a
@@ -847,17 +1109,17 @@ def register_hook_map(
     the run in a state nobody described, so anything already registered is
     rolled back and the error propagates to whoever is building the run.
     """
-    registered: list[tuple[str, Callable]] = []
+    registered: list[tuple[str, Any]] = []
     try:
         for event, callbacks in (mapping or {}).items():
             if not isinstance(callbacks, (list, tuple)):
                 callbacks = [callbacks]
             for callback in callbacks:
                 if is_middleware_event(event):
-                    registry.register_middleware(event, callback)
+                    entry = registry.register_middleware(event, callback)
                 else:
-                    registry.register(event, callback)
-                registered.append((event, callback))
+                    entry = registry.register(event, callback)
+                registered.append((event, entry))
     except UnwiredHookEvent:
         unregister_hook_map(registry, registered)
         raise
@@ -866,11 +1128,17 @@ def register_hook_map(
 
 def unregister_hook_map(
     registry: HookRegistry,
-    registered: list[tuple[str, Callable]],
+    registered: list[tuple[str, Any]],
 ) -> None:
-    """Remove exactly the pairs returned by :func:`register_hook_map`."""
-    for event, callback in registered:
+    """Remove exactly the pairs returned by :func:`register_hook_map`.
+
+    Raises :class:`EssentialHookError` if the map contained an essential
+    hook: a layer that installed one does not get to take it away again
+    (D14). Deactivating a Role therefore cannot strip the infrastructure
+    tier, which is the direction I7 cares about.
+    """
+    for event, entry in registered:
         if is_middleware_event(event):
-            registry.unregister_middleware(event, callback)
+            registry.unregister_middleware(event, entry)
         else:
-            registry.unregister(event, callback)
+            registry.unregister(event, entry)
