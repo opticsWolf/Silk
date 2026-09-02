@@ -7,6 +7,8 @@
 | Give one agent narrower file access than its toolset | a `FileGrants` on the `permissions` port (ToolSet → Role → Agent); it composes by narrowing, never widening (`functions/file_grants.py`, I6) |
 | Constrain what one agent may do / tell it how | a `ToolSelector` + `Role` from the `Silk Role` node, activated by a `RoleBinding` |
 | Package tools + instructions + hooks together | a `Capability` (`@tool` / `@instructions` members) |
+| Let an agent find a tool it was not given | it already can — `search_tools` (D4/D5) is on every ToolBox and survives every derived ToolSet; a hit carries the schema, and calling an unloaded tool auto-loads it (D6) |
+| Keep a large tool suite out of the prompt without hiding it | `ToolBox.defer_tools(names)` — registered and dispatchable, not advertised; discovery is how the model reaches it |
 | Keep the prompt small with a large tool suite | `DeferredCapability` + the `load_capability` tool (backed by `ToolSearch`) |
 | Swap the model backend | implement the `AgentEngine` protocol (reference: `GraphEngine`) — the loop is unchanged |
 | Add a tool-call transport | a transport beside `FenceTransport` / `NativeTransport` in `functions/tool_transport.py` |

@@ -147,7 +147,9 @@ against the source's sandbox or one re-rooted from *permissions* — so a
 derived ToolBox keeps every ToolBox guarantee (dispatch-time role gate,
 hooks, schema generation) and each agent gets an independent instance that
 never fights another over one `RoleBinding`. Tools not in *selected_names*
-are dropped, but `INFRASTRUCTURE_TOOLS` (`load_capability`) always stay.
+are dropped, but `INFRASTRUCTURE_TOOLS` (`load_capability`,
+`search_tools`) always stay -- a selection that could drop discovery
+would leave the agent unable to find the tools it was not given.
 `tool_catalog(toolbox)` flattens a registry into plain-data entries
 (`{name, description, parameters, category, tags, risk}`, infrastructure
 excluded) that are safe to hand across threads to UI code.

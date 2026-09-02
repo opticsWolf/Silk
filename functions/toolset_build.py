@@ -27,7 +27,7 @@ from .tool_box import ToolBox
 from .tools.file_sandbox import FileToolSandbox
 
 #: Tools that are ToolBox infrastructure, never part of a user selection.
-INFRASTRUCTURE_TOOLS = frozenset({"load_capability"})
+INFRASTRUCTURE_TOOLS = frozenset({"load_capability", "search_tools"})
 
 #: Permission modes in ascending order of access. Defined once, in
 #: ``file_grants``; re-exported here because this is where callers of the

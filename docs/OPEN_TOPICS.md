@@ -63,7 +63,7 @@ race catalog that makes any of it testable (D42). The no-answerer question is
 transport raises, timeout, gated subagent) deny. Still open: the grant record
 schema and the revocation surface.
 
-### G2. The BM25 tool-search strategy is a keyword alias
+### G2. The BM25 tool-search strategy is a keyword alias — CLOSED
 
 `ToolSearch._bm25_search` is documented as "a placeholder for now" and
 delegates to `_keyword_search` (`functions/tool_search.py`,
@@ -81,6 +81,15 @@ discovery ships with `keywords` and the `bm25` option is hidden until real.
 `keyword_search` (FTS5) and `hybrid_search` (FTS5 + DiskANN, RRF) are real
 ranked search. The binary choice gains a third arm: delegate tool search to
 the ledger where present, keeping `keywords` as the no-ledger fallback.
+
+**Closed 2026-09-02 by the first arm.** `_bm25_search` is Okapi BM25 over
+tool names and descriptions (`k1 = 1.5`, `b = 0.75`), with identifier-aware
+tokenization so `read_file` matches "read a file". The idf factor is what
+was actually missing: in a tool corpus the common words are common to
+almost every tool and must count for almost nothing. `keywords` stays the
+default and the fallback. The third arm is not foreclosed — a ledger-backed
+strategy would slot in beside these as another `strategy` value — but it is
+no longer needed to make discovery honest.
 
 ### G3. 11 of the 19 hook events are defined but never emitted
 

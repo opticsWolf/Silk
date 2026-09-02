@@ -28,6 +28,9 @@ from .hooks import (
     register_hook_map,
 )
 from .capabilities import BaseCapability, DeferredCapability
+from .tool_discovery import (
+    SEARCH_TOOL_NAME, attach_search_tool, autoload,
+)
 from .tool_search import ToolSearch
 from .toolset import (
     CombinedToolSet,
@@ -97,7 +100,19 @@ class ToolBox:
         # Hooks each capability registered, keyed by capability id, so
         # deactivation (RoleBinding) can remove them precisely.
         self._capability_hooks: dict[str, list[tuple[str, Callable]]] = {}
-        self.tool_search = ToolSearch()
+        # Discovery reads the same role gate dispatch enforces, so what
+        # search offers and what dispatch accepts cannot drift (I8).
+        self.tool_search = ToolSearch(permits=self.role_permits)
+        # Tools that are registered and dispatchable but deliberately not
+        # advertised (spec D6): per-tool deferral. Auto-loading one mid-run
+        # must not rewrite the schema block at the head of the prompt, so a
+        # loaded tool joins this set rather than the advertisement.
+        self.deferred_tools: set[str] = set()
+        # Which capability provides which tool name -- populated for
+        # *deferred* capabilities too, so a tool can be found by search
+        # before anything has loaded it, and loaded by the dispatcher when
+        # it is called (D4, D6).
+        self._tool_capabilities: dict[str, str] = {}
 
         # ToolSet architecture
         # Each statically registered tool lives in its own StaticToolSet,
@@ -114,6 +129,8 @@ class ToolBox:
 
         # Phase 6: Register load_capability tool for deferred tool loading
         self.register_load_capability_tool()
+        # Spec D4/D5: the one always-present discovery tool.
+        attach_search_tool(self)
 
     # -- ToolSet management -----------------------------------------------
 
@@ -167,6 +184,18 @@ class ToolBox:
         """
         self._capabilities[capability.id] = capability
         self.tool_search.register_capability(capability)
+
+        # Index the capability's tools by name even when it is deferred.
+        # Without this, a deferred capability is discoverable only by id --
+        # which means only by an agent that already knows the id, which is
+        # the gap D4 exists to close.
+        for tool_def in (capability.get_tools() or []):
+            tool_name = (tool_def.get("function", tool_def) or {}).get("name")
+            if not tool_name:
+                continue
+            self._tool_capabilities[tool_name] = capability.id
+            if capability.defer_loading and tool_name not in self.tools:
+                self.tool_search.register_tool(tool_name, tool_def)
 
         # If the capability is not deferred, load it immediately
         if not capability.defer_loading:
@@ -319,6 +348,37 @@ class ToolBox:
         }
         self.tool_search.register_tool("load_capability", definition)
 
+    def capability(self, capability_id: str) -> Optional[BaseCapability]:
+        """The registered capability with this id, if any."""
+        return self._capabilities.get(capability_id)
+
+    # -- per-tool deferral (spec D6) --------------------------------------
+
+    def defer_tools(self, names: Iterable[str]) -> None:
+        """Keep these tools dispatchable but out of the advertisement.
+
+        Deferral is about the *prompt*, not about permission: a deferred
+        tool is refused or allowed by exactly the same role gate as any
+        other. What it does not do is occupy schema space at the head of
+        every request -- the model finds it with ``search_tools`` and calls
+        it from the schema in that result (D4-D6).
+        """
+        self.deferred_tools.update(str(name) for name in names if name)
+
+    def undefer_tools(self, names: Iterable[str]) -> None:
+        """Advertise these tools again.
+
+        Deliberate, and never done mid-run by the dispatcher: adding a
+        schema to the head of the prompt invalidates the KV prefix for
+        every remaining round (D41, I11).
+        """
+        for name in names:
+            self.deferred_tools.discard(str(name))
+
+    def is_deferred(self, name: str) -> bool:
+        """Whether *name* is registered but not advertised."""
+        return name in self.deferred_tools
+
     def get_deferred_capability_names(self) -> list[str]:
         """Get names of deferred (not yet loaded) capabilities.
 
@@ -443,6 +503,12 @@ class ToolBox:
                 "risk": risk,
             }
 
+            # Index it for discovery. Without this a registered tool is
+            # findable only if it is advertised, which is exactly backwards:
+            # search exists to reach the tools the prompt does not carry
+            # (D4).
+            self.tool_search.register_tool(name, definition)
+
             # Record provenance so a plugin reload can prune precisely.
             if self._current_source is not None:
                 self._sources.setdefault(self._current_source, set()).add(name)
@@ -459,6 +525,8 @@ class ToolBox:
     def unregister(self, name: str) -> None:
         """Remove a single tool and any bash hints it contributed."""
         self.tools.pop(name, None)
+        self.tool_search.tools.pop(name, None)
+        self.deferred_tools.discard(name)
         self._bash_index.remove_tool(name)
         for names in self._sources.values():
             names.discard(name)
@@ -584,6 +652,19 @@ class ToolBox:
                 if instructions:
                     sections.append(f"[CAPABILITY: {capability.id}]\n{instructions}")
 
+        # Say that discovery exists (D4/D5). One line, unconditional: the
+        # tools an agent was not given are exactly the ones it cannot see,
+        # so nothing else in the prompt can imply that they might be there.
+        if SEARCH_TOOL_NAME in self.tools:
+            sections.append(
+                "[TOOL DISCOVERY]\n"
+                "Not every available tool is listed above. Call "
+                "'search_tools' with a description of what you need before "
+                "concluding that something cannot be done here; the result "
+                "carries each tool's full schema, and you can call what you "
+                "find straight away."
+            )
+
         # Add deferred capability info (Phase 6)
         deferred = self.get_deferred_capability_names()
         if deferred:
@@ -605,6 +686,10 @@ class ToolBox:
         schemas = []
         for name, meta in self.tools.items():
             if not self.role_permits(name):
+                continue
+            # Deferred: registered, dispatchable, deliberately unadvertised
+            # (D6). `search_tools` is how the model reaches these.
+            if name in self.deferred_tools:
                 continue
             # Tools registered via @register have a "definition" key
             # Tools loaded from Capability are stored directly
@@ -635,8 +720,27 @@ class ToolBox:
             meta = self.tools.get(name)
 
             if meta is None:
+                # Discovered but never loaded: load it and run the call
+                # rather than spending a round trip telling the model to
+                # load it itself (D6). The role gate below is unchanged, so
+                # this can only ever save time, never widen permission.
+                failure = autoload(self, name)
+                if failure is not None:
+                    results.append(self._error(
+                        tc.id, name, failure["error"],
+                        error_type=failure.get("error_type"),
+                        suggestion=failure.get("suggestion"),
+                    ))
+                    continue
+                meta = self.tools.get(name)
+
+            if meta is None:
                 results.append(
-                    self._error(tc.id, name, f"Tool '{name}' is not registered.")
+                    self._error(
+                        tc.id, name, f"Tool '{name}' is not registered.",
+                        suggestion="Call search_tools to find what is "
+                                   "available for this.",
+                    )
                 )
                 continue
 

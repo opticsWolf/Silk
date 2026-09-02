@@ -3,14 +3,46 @@
 Enables searching for tools by name or description, useful for
 on-demand capability loading where only relevant tools are sent to
 the model.
+
+Two things make this model-facing rather than internal (spec D4, G2):
+
+*The role gate applies here too* (I8). The index is populated at attach
+time and knows nothing about which role is active, so without a filter
+discovery would advertise exactly what dispatch is going to refuse --
+half of I4, from the wrong side. ``permits`` is that filter; the ToolBox
+installs its own ``role_permits`` when it builds the index.
+
+*Ranking is load-bearing* now that a search result is how a tool reaches
+the model at all, so ``bm25`` is a real ranking function rather than an
+alias for ``keywords`` (closes G2).
 """
 from __future__ import annotations
 
 import asyncio
+import math
 import re
+from collections import Counter
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
+
+
+#: BM25 term-frequency saturation and length normalisation. The defaults
+#: from the literature; tool descriptions are short and uniform enough that
+#: tuning them here would be superstition.
+BM25_K1 = 1.5
+BM25_B = 0.75
+
+_WORD = re.compile(r"[a-z0-9]+")
+
+
+def tokenize(text: str) -> list[str]:
+    """Words of *text*, lowercased, with ``snake_case`` split apart.
+
+    Tool names carry most of the signal and are written as identifiers, so
+    ``read_file`` has to match a query saying "read a file".
+    """
+    return _WORD.findall((text or "").lower())
 
 
 if TYPE_CHECKING:
@@ -64,6 +96,14 @@ class ToolSearch:
     search_fn: ToolSearchFunc | None = None
     """Optional custom search function."""
 
+    permits: Callable[[str], bool] | None = field(default=None)
+    """Role gate, or ``None`` to allow everything.
+
+    Called with a tool name; a false answer removes the tool from every
+    result. The ToolBox installs :meth:`ToolBox.role_permits` here so that
+    what discovery offers and what dispatch accepts cannot drift (I8).
+    """
+
     def __post_init__(self) -> None:
         if self.tools is None:
             self.tools = {}
@@ -104,6 +144,20 @@ class ToolSearch:
             search_fn=search_fn,
         )
 
+    # -- the visible corpus ------------------------------------------
+
+    def visible(self) -> dict[str, dict]:
+        """The tools this search may return, after the role gate."""
+        if self.permits is None:
+            return dict(self.tools)
+        return {name: tool_def for name, tool_def in self.tools.items()
+                if self.permits(name)}
+
+    @staticmethod
+    def _text(tool_name: str, tool_def: dict) -> str:
+        function = tool_def.get("function", tool_def) or {}
+        return f"{tool_name} {function.get('description', '')}"
+
     def register_tool(self, tool_name: str, tool_def: dict) -> None:
         """Register a tool for search.
 
@@ -131,7 +185,7 @@ class ToolSearch:
             A list of matching tool definitions, sorted by relevance.
         """
         queries = [query]
-        tool_defs = list(self.tools.values())
+        tool_defs = list(self.visible().values())
 
         # Use custom search function if provided
         if self.search_fn is not None:
@@ -158,7 +212,7 @@ class ToolSearch:
         query_words = set(query.lower().split())
         scores: dict[str, int] = {}
 
-        for tool_name, tool_def in self.tools.items():
+        for tool_name, tool_def in self.visible().items():
             score = 0
             tool_desc = tool_def.get("function", {}).get("description", "").lower()
             tool_name_lower = tool_name.lower()
@@ -176,7 +230,14 @@ class ToolSearch:
         return results[:self.max_results]
 
     def _bm25_search(self, query: str) -> list[dict]:
-        """BM25-based search (placeholder for now).
+        """BM25 ranking over tool names and descriptions.
+
+        Okapi BM25 with the usual constants: a term saturates rather than
+        scoring linearly (``k1``), a long description is not rewarded for
+        its length (``b``), and a term appearing in every tool carries
+        almost no information (the idf factor). That last property is what
+        makes this worth having over keyword overlap in a tool corpus,
+        where words like "file" or "list" are in half the descriptions.
 
         Args:
             query: The search query.
@@ -184,8 +245,41 @@ class ToolSearch:
         Returns:
             A list of matching tool definitions, sorted by relevance.
         """
-        # TODO: Implement BM25 search
-        return self._keyword_search(query)
+        corpus = self.visible()
+        if not corpus:
+            return []
+
+        documents = {name: tokenize(self._text(name, tool_def))
+                     for name, tool_def in corpus.items()}
+        lengths = {name: len(tokens) for name, tokens in documents.items()}
+        total = sum(lengths.values())
+        if not total:
+            return []
+        average = total / len(documents)
+        frequencies = {name: Counter(tokens) for name, tokens in documents.items()}
+
+        containing: Counter = Counter()
+        for counts in frequencies.values():
+            containing.update(counts.keys())
+
+        count = len(documents)
+        scores: dict[str, float] = {}
+        for term in tokenize(query):
+            appearances = containing.get(term, 0)
+            if not appearances:
+                continue
+            idf = math.log(1 + (count - appearances + 0.5) / (appearances + 0.5))
+            for name, counts in frequencies.items():
+                frequency = counts.get(term, 0)
+                if not frequency:
+                    continue
+                norm = 1 - BM25_B + BM25_B * (lengths[name] / average)
+                scores[name] = scores.get(name, 0.0) + idf * (
+                    frequency * (BM25_K1 + 1) / (frequency + BM25_K1 * norm)
+                )
+
+        ranked = sorted(scores, key=lambda n: (-scores[n], n))
+        return [corpus[name] for name in ranked[:self.max_results]]
 
     def _regex_search(self, query: str) -> list[dict]:
         """Regex-based search.
@@ -200,7 +294,7 @@ class ToolSearch:
             pattern = re.compile(query, re.IGNORECASE)
             results = [
                 tool_def
-                for tool_name, tool_def in self.tools.items()
+                for tool_name, tool_def in self.visible().items()
                 if pattern.search(tool_def.get("function", {}).get("description", ""))
             ]
             return results[:self.max_results]
@@ -238,8 +332,13 @@ class ToolSearch:
             # Sync result
             pass
 
-        # Convert tool names to tool definitions
-        matched_names = set(result)
+        # Convert tool names to tool definitions. A custom strategy is
+        # handed the visible corpus, but it may return anything it likes,
+        # so the gate is applied to its answer as well.
+        matched_names = {
+            name for name in set(result)
+            if self.permits is None or self.permits(name)
+        }
         matched_tools = [
             tool_def
             for tool_def in tool_defs
@@ -257,8 +356,24 @@ class ToolSearch:
             A list of matching capabilities.
         """
         query_lower = query.lower()
-        return [
+        matches = [
             cap
             for cap in self.capabilities.values()
             if query_lower in cap.id.lower() or query_lower in cap.description.lower()
         ]
+        if self.permits is None:
+            return matches
+        # A capability every one of whose tools the role forbids is not a
+        # candidate to load: offering it would be the same drift between
+        # discovery and dispatch that `permits` exists to prevent (I8). One
+        # declaring no tools at all is instructions or hooks, and stays.
+        allowed = []
+        for cap in matches:
+            names = [
+                (tool.get("function", tool) or {}).get("name")
+                for tool in (cap.get_tools() or [])
+            ]
+            names = [name for name in names if name]
+            if not names or any(self.permits(name) for name in names):
+                allowed.append(cap)
+        return allowed
