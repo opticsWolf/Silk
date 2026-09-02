@@ -18,6 +18,7 @@
 | Add planning / audit behaviour | `SqliteTaskStore` operations + a `signoff` policy; surface it via the Plan Viewer node |
 | Require a human before a tool runs | the `tool_approval` catalog hook (risk band or tool names) — the same middleware the `signoff` policy uses |
 | Let a user say "don't ask again" | a `remember` scope on the decision: run-scoped in the gate closure, or a durable grant in `~/.weave/silk/grants.json` |
+| Give agents the tools of an MCP server | a `Silk MCP Server` node per server (it owns the session), optionally a `Silk MCP Aggregator` to switch individual tools off, into the ToolBox node's `mcp` input (D19–D22) |
 | Delegate work across agents | `Silk Agent Spec` nodes feeding the `Silk Orchestrator` (`delegate` / `delegate_parallel`) |
 | Persist a node's configuration | `functions/presets.py` (`PresetStore`, `~/.weave/presets/`) |
 | Pass structured data between agents | `AgentMessage` on the `outbox` → `inbox` ports |

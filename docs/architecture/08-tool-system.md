@@ -83,6 +83,48 @@ sampling) as a combined toolset via `load_mcp_toolsets(...)`. MCP tools are
 attached at the *registry* level, not through an engine-style seam — an MCP
 server extends an existing ToolBox rather than replacing the engine.
 
+### MCP servers as node-owned sessions (D19–D22)
+
+`functions/mcp_session.py`. The combined-toolset path above is the wrong
+shape for a graph: recipes are replayed per derived ToolSet, per agent, per
+evaluation, and external toolsets are entered and exited around each
+dispatched batch. An MCP server attached that way is re-handshaked
+constantly — a stdio server respawned, a remote one re-authenticated, for
+every batch of tool calls.
+
+So the **node owns the session** (D19), the way the GGUF Loader owns a
+model. `MCPSession` runs one connection on its own thread with its own
+event loop — necessary because the dispatcher runs each batch in a fresh
+`asyncio.run`, and a session belongs to the loop that opened it. `call()`
+is a blocking bridge onto that loop with a timeout, so a wedged server
+costs one bounded wait rather than a stuck agent.
+
+What lands on a ToolBox is therefore not a ToolSet but ordinary registered
+tools whose executables talk to an already-open session (`attach_mcp_tools`,
+and `attach_bundle` as a recipe entry). Replaying the recipe copies dicts
+and touches no server. It also means MCP tools get the rest of Silk for
+free: the role gate, the approval hook, spill and discovery all work on
+them without knowing what MCP is.
+
+- **`MCPServerSpec`** — how to reach one server, as plain data.
+  `credential` is a *name*, never a value (D22): resolved at connect time
+  from the environment or `~/.weave/silk/secrets.json`, which is outside the
+  graph, so saved graphs and presets stay shareable by construction. An
+  unset credential refuses to connect and says where to put it.
+- **`MCPBundle`** — the live sessions travelling one `mcp_servers` wire,
+  plus the servers and tools the Aggregator switched off. Exclusions are
+  recorded rather than filtered out, because unticking a tool must not cost
+  a handshake when it is ticked again. `with_session` replaces a server of
+  the same id rather than appending, so re-evaluation cannot double a
+  server's tools.
+- **Namespacing (D21)** — every tool is prefixed with its server id, so two
+  servers offering `search` cannot collide and the model can see where a
+  tool comes from. The prefix is Silk's: it is stripped again before the
+  call goes out.
+
+`load_mcp_toolsets(...)` and the ToolSet-level path remain for non-graph
+use.
+
 ### Capabilities
 
 `functions/capabilities.py` — a **capability** is a packaged bundle of

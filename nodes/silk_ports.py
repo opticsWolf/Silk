@@ -16,6 +16,8 @@ Types:
                       validated at the port boundary (D17)
     dirpath_list      ordered list of directory paths (sandbox roots)
     toolchains        list of ToolchainEnv handles (configured executables)
+    mcp_servers       an MCPBundle: live MCP sessions plus the tools the
+                      Aggregator switched off (D19-D21)
 """
 from __future__ import annotations
 
@@ -186,6 +188,26 @@ if "silk_agents" not in PortRegistry._by_name:
         casts_to={},
     )
 
+# The live MCP servers on one wire, plus whichever of their tools the
+# Aggregator switched off (D19-D21). The value is an MCPBundle carrying
+# open sessions -- handles, not settings: what travels the graph is a
+# connection that already exists, which is the whole of D19.
+if "mcp_servers" not in PortRegistry._by_name:
+    PortRegistry.register(
+        name="mcp_servers",
+        python_type=object,
+        color_index=45,
+        type_id=None,
+        default=lambda: None,
+        validator=lambda v: v is None or hasattr(v, "enabled_sessions"),
+        formatter=lambda v: (
+            f"<MCP: {len(v.enabled_sessions())} server(s)>"
+            if v is not None and hasattr(v, "enabled_sessions")
+            else "<no MCP servers>"
+        ),
+        casts_to={},
+    )
+
 GGUF_MODEL_TYPE = PortRegistry._by_name["gguf_model"]
 SILK_TOOLBOX_TYPE = PortRegistry._by_name["silk_toolbox"]
 SILK_TOOLSET_TYPE = PortRegistry._by_name["silk_toolset"]
@@ -195,3 +217,4 @@ DIRPATH_LIST_TYPE = PortRegistry._by_name["dirpath_list"]
 TOOLCHAINS_TYPE = PortRegistry._by_name["toolchains"]
 AGENT_MESSAGE_TYPE = PortRegistry._by_name["agent_message"]
 SILK_AGENTS_TYPE = PortRegistry._by_name["silk_agents"]
+MCP_SERVERS_TYPE = PortRegistry._by_name["mcp_servers"]

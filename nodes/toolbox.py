@@ -34,6 +34,7 @@ from weave.logger import get_logger
 from weave.widgets.path_history_picker import PathHistoryPicker
 
 from .silk_ports import SILK_TOOLBOX_TYPE  # noqa: F401
+from ..functions.mcp_session import MCPBundle, attach_bundle
 from ..functions.tool_box import ToolBox
 from ..functions.toolset_build import tool_catalog
 from ..functions.tools.file_sandbox import FileToolSandbox
@@ -76,6 +77,10 @@ class SilkToolBoxNode(ActiveNode):
         # list (wrapped) via the registered dirpath→dirpath_list cast.
         self.add_input("sandbox_roots", datatype="dirpath_list")
         self.add_input("toolchains", datatype="toolchains")
+        # Live MCP sessions, owned by MCP nodes upstream (D19). What
+        # arrives is a connection that is already open, so the recipe
+        # entry below registers tools without touching a server.
+        self.add_input("mcp", datatype="mcp_servers")
         self.add_output("toolbox", datatype="silk_toolbox")
         self.add_output("root_paths", datatype="dirpath_list")
 
@@ -290,6 +295,14 @@ class SilkToolBoxNode(ActiveNode):
                 "toolchains",
                 partial(attach_toolchain_tools, toolchains=toolchains),
             ))
+
+        mcp = inputs.get("mcp")
+        if mcp is not None and MCPBundle.coerce(mcp).enabled_sessions():
+            # Deliberately not `add_toolset`: an external ToolSet is
+            # entered and exited around every dispatched batch, which for
+            # MCP means a handshake per batch per agent. The recipe entry
+            # closes over the open sessions instead (D19).
+            recipe.append(("mcp", attach_bundle(mcp)))
 
         hooks_config = inputs.get("hooks_config") or {}
         hook_names = tuple(str(n) for n in (hooks_config.get("names") or ()))

@@ -26,6 +26,7 @@ ceiling), toolchain packs, category overview and per-tool details.
 |---|---|---|
 | in | `sandbox_roots` | `dirpath_list` |
 | in | `toolchains` | `toolchains` |
+| in | `mcp` | `mcp_servers` |
 | out | `toolbox` | `silk_toolbox` |
 | out | `root_paths` | `dirpath_list` |
 
@@ -39,6 +40,36 @@ sandbox permissions and named presets.
 | in | `permissions` | `file_permissions` |
 | out | `toolset` | `silk_toolset` |
 | out | `permissions` | `file_permissions` |
+
+### Silk MCP Server — `nodes/mcp_server.py`
+Connects to one MCP server and shares the **live session** with every
+downstream agent — one handshake per server, not per agent (D19). The
+credential field holds the *name* of an environment variable or an entry in
+`~/.weave/silk/secrets.json`; no secret is ever stored in the graph (D22).
+Servers chain through `mcp_in` like toolchains, and every tool is prefixed
+with the server id (D21).
+
+| Direction | Port | Type |
+|---|---|---|
+| in | `mcp_in` | `mcp_servers` |
+| in | `server_id` | `string` |
+| in | `transport` | `string` |
+| in | `command` | `string` |
+| in | `args` | `string` |
+| in | `url` | `string` |
+| in | `credential` | `string` |
+| out | `mcp` | `mcp_servers` |
+
+### Silk MCP Aggregator — `nodes/mcp_aggregator.py`
+Checkbox tree over every server on the wire: a category row is a server, a
+leaf is one tool (D20). Unchecking records an exclusion — it never closes a
+session, because the sessions belong to the MCP nodes and a toggle should
+not cost a handshake.
+
+| Direction | Port | Type |
+|---|---|---|
+| in | `mcp_in` | `mcp_servers` |
+| out | `mcp` | `mcp_servers` |
 
 ### Toolchain — `nodes/toolchain.py`
 Configures a set of external toolchains — Python interpreters/venvs, ruff,
@@ -188,6 +219,8 @@ agent's `done` port to `refresh` for updates without polling.
 ## Example graph
 
 ```
+[Silk MCP Server] ─mcp─▶ [Silk MCP Aggregator] ─mcp─┐
+                                                    ▼
 [Toolchain] ─toolchains─▶ [Silk ToolBox] ◀──sandbox_roots (dirpath_list)
                               │ silk_toolbox
                               ▼
