@@ -20,10 +20,13 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Iterable, Literal, Mapping, Optional
 
 from pydantic import BaseModel, Field, create_model
+
+from .file_locks import write_gate
 
 if TYPE_CHECKING:
     from ..tool_box import ToolBox
@@ -139,6 +142,17 @@ class CommandSpec(BaseModel):
     risk: str = "high"
     timeout_s: float = 120.0
     output_limit: int = 24_000   # chars of combined output fed to the model
+    writes_files: bool = False
+    """Whether this command may rewrite files in the sandbox root.
+
+    True makes the tool take the root's write gate exclusively for the
+    subprocess's duration, so a formatter cannot interleave with another
+    agent's ``edit_file`` on the same tree (spec D67 tier 2, closes G19).
+    Coarse on purpose: nothing can know which files a subprocess touches,
+    and a run that only *might* write (``ruff format --check``) is still
+    declared a writer -- the cost is a short wait, the alternative is a
+    lost update nobody is told about.
+    """
 
 
 def build_argv(
@@ -193,6 +207,7 @@ SPEC_PACKS: dict[str, list[CommandSpec]] = {
     "python": [
         CommandSpec(
             tool_name="run_python",
+            writes_files=True,
             toolchain_id="python",
             description=(
                 "Execute a Python code snippet with the configured "
@@ -222,6 +237,7 @@ SPEC_PACKS: dict[str, list[CommandSpec]] = {
         ),
         CommandSpec(
             tool_name="ruff_format",
+            writes_files=True,
             toolchain_id="ruff",
             description=(
                 "Format Python files with ruff. With check=true only "
@@ -273,6 +289,7 @@ SPEC_PACKS: dict[str, list[CommandSpec]] = {
     "maturin": [
         CommandSpec(
             tool_name="maturin_develop",
+            writes_files=True,
             toolchain_id="maturin",
             description=(
                 "Build the Rust crate and install it into the current "
@@ -287,6 +304,7 @@ SPEC_PACKS: dict[str, list[CommandSpec]] = {
         ),
         CommandSpec(
             tool_name="maturin_build",
+            writes_files=True,
             toolchain_id="maturin",
             description="Build release wheels (maturin build).",
             base_args=["build"],
@@ -300,6 +318,7 @@ SPEC_PACKS: dict[str, list[CommandSpec]] = {
     "cargo": [
         CommandSpec(
             tool_name="cargo_check",
+            writes_files=True,
             toolchain_id="cargo",
             description="Type-check the Rust crate (cargo check).",
             base_args=["check", "--message-format=short"],
@@ -310,6 +329,7 @@ SPEC_PACKS: dict[str, list[CommandSpec]] = {
         ),
         CommandSpec(
             tool_name="cargo_build",
+            writes_files=True,
             toolchain_id="cargo",
             description="Compile the Rust crate (cargo build).",
             base_args=["build", "--message-format=short"],
@@ -321,6 +341,7 @@ SPEC_PACKS: dict[str, list[CommandSpec]] = {
         ),
         CommandSpec(
             tool_name="cargo_test",
+            writes_files=True,
             toolchain_id="cargo",
             description="Run the Rust test suite (cargo test).",
             base_args=["test"],
@@ -331,6 +352,7 @@ SPEC_PACKS: dict[str, list[CommandSpec]] = {
         ),
         CommandSpec(
             tool_name="cargo_clippy",
+            writes_files=True,
             toolchain_id="cargo",
             description="Lint the Rust crate (cargo clippy).",
             base_args=["clippy", "--message-format=short"],
@@ -340,6 +362,7 @@ SPEC_PACKS: dict[str, list[CommandSpec]] = {
         ),
         CommandSpec(
             tool_name="cargo_fmt",
+            writes_files=True,
             toolchain_id="cargo",
             description=(
                 "Format the Rust crate (cargo fmt). With check=true only "
@@ -402,15 +425,25 @@ def attach_toolchain_tools(
                 def run_tool(db_pool, user_session, **args: Any) -> str:
                     argv = build_argv(spec, env, args, sandbox)
                     run_env = {**os.environ, **dict(env.env)}
+                    # A writer holds the whole root for as long as it runs;
+                    # a read-only command takes nothing (spec D67 tier 2).
+                    # The wait is legible: before_tool_execute has already
+                    # fired, so a queued formatter reads as a tool call in
+                    # flight rather than as a hang.
+                    gate = (
+                        write_gate(sandbox.root_dir) if spec.writes_files
+                        else nullcontext()
+                    )
                     try:
-                        proc = subprocess.run(
-                            argv,
-                            cwd=str(sandbox.root_dir),
-                            env=run_env,
-                            capture_output=True,
-                            text=True,
-                            timeout=spec.timeout_s,
-                        )
+                        with gate:
+                            proc = subprocess.run(
+                                argv,
+                                cwd=str(sandbox.root_dir),
+                                env=run_env,
+                                capture_output=True,
+                                text=True,
+                                timeout=spec.timeout_s,
+                            )
                     except subprocess.TimeoutExpired:
                         return (
                             f"error: '{spec.tool_name}' timed out after "

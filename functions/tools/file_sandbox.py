@@ -38,7 +38,14 @@ class FileToolSandbox:
         writable_paths: Optional[list[str | Path]] = None,
         path_modes: Optional[dict[str | Path, str]] = None,
     ):
+        # Announce the root to the process-wide lock registry: a subprocess
+        # that may write takes its root exclusively, and it can only do that
+        # for roots it knows about (spec D67 tier 2). Imported here, like
+        # lock_paths below, so the sandbox stays cheap to import.
+        from .file_locks import register_root
+
         self.root_dir = Path(root_dir).resolve() if root_dir else Path.cwd().resolve()
+        register_root(self.root_dir)
         self.allowed_paths = [
             Path(p).resolve() for p in (allowed_paths or [self.root_dir])
         ]
