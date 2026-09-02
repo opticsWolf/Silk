@@ -36,8 +36,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Optional
 
-#: The six tools of D69, named once so the Role's selector, the tests and
-#: the tool registrations cannot drift apart.
+#: The tools of D69 (six) and §22 q9 (two more), named once so the Role's
+#: selector, the tests and the tool registrations cannot drift apart.
 OP_LIST = "list_placeable_nodes"
 OP_DESCRIBE = "describe_graph"
 OP_PLACE = "place_node"
@@ -45,10 +45,36 @@ OP_CONNECT = "connect"
 OP_DISCONNECT = "disconnect"
 OP_REMOVE = "remove_node"
 
-READ_OPS = (OP_LIST, OP_DESCRIBE)
-WRITE_OPS = (OP_PLACE, OP_CONNECT)
+#: The two of §22 q9: a placed node that cannot be configured is a
+#: skeleton a human has to finish.
+OP_SETTINGS = "list_node_settings"
+OP_SET_VALUE = "set_node_value"
+
+READ_OPS = (OP_LIST, OP_DESCRIBE, OP_SETTINGS)
+WRITE_OPS = (OP_PLACE, OP_CONNECT, OP_SET_VALUE)
 DESTRUCTIVE_OPS = (OP_DISCONNECT, OP_REMOVE)
 OPS = READ_OPS + WRITE_OPS + DESTRUCTIVE_OPS
+
+#: Widget roles a value may be written to. DISPLAY is computed output and
+#: INTERNAL is node-local state -- which is where the permission-bearing
+#: switches live (a ToolBox's "Plugin authoring", for one), so an agent
+#: that could write INTERNAL could grant itself authority by ticking a
+#: box. Both are readable in the listing and neither is settable.
+SETTABLE_ROLES = ("INPUT", "BIDIRECTIONAL")
+
+#: Datatypes a *value* can carry. Everything else on a node -- a model, a
+#: toolset, a permissions object, a list of roots -- is supplied by a
+#: connection, and the refusal says so rather than guessing at a
+#: conversion. Narrow on purpose: it keeps the authority-bearing ports
+#: (`file_permissions`, `dirpath_list`) unwritable by construction rather
+#: than by a rule somebody has to remember.
+SETTABLE_TYPES = {
+    "string": str, "str": str, "text": str, "filepath": str, "dirpath": str,
+    "choice": str, "enum": str,
+    "int": int, "integer": int,
+    "float": float, "number": float,
+    "bool": bool, "boolean": bool,
+}
 
 
 @dataclass(frozen=True)
@@ -178,6 +204,83 @@ class RunScope:
                 op=OP_DISCONNECT, subject=" -> ".join(str(p) for p in edge),
             )
         return None
+
+
+def check_settable(port: dict, node_uid: str) -> Optional[Refusal]:
+    """Whether one port of a live node may be written (§22 q9).
+
+    Four ways a port is not a setting, and each gets its own sentence
+    because "no" without a reason sends a model round the same loop:
+    it does not exist, it is not a value port, it carries something only
+    a wire can supply, or a wire is already supplying it.
+    """
+    name = str(port.get("name", ""))
+    if not port.get("exists", True):
+        return Refusal(
+            f"Node '{node_uid}' has no setting called '{name}'. Call "
+            f"{OP_SETTINGS} to see what it does have.",
+            op=OP_SET_VALUE, subject=name)
+
+    role = str(port.get("role", "")).upper()
+    if role not in SETTABLE_ROLES:
+        return Refusal(
+            f"'{name}' is a {role.lower() or 'display'} widget, not a "
+            f"setting: it shows what the node computed or holds state the "
+            f"node manages itself. It cannot be written.",
+            op=OP_SET_VALUE, subject=name)
+
+    datatype = str(port.get("datatype", "")).lower()
+    if datatype not in SETTABLE_TYPES:
+        return Refusal(
+            f"'{name}' carries '{datatype}', which comes from a "
+            f"connection rather than a typed-in value. Connect a node "
+            f"that produces it.",
+            op=OP_SET_VALUE, subject=name)
+
+    if port.get("connected"):
+        return Refusal(
+            f"'{name}' is already fed by a connection, and the upstream "
+            f"value wins over the widget. Disconnect it first, or change "
+            f"the node that feeds it.",
+            op=OP_SET_VALUE, subject=name)
+    return None
+
+
+def coerce_value(datatype: str, value: Any) -> tuple:
+    """(value, refusal) -- the model's JSON as the widget's type.
+
+    Deliberately strict in one direction only: `1` is a fine float and
+    `"3"` is a fine int, but `"yes"` is not a bool and `1.7` is not an
+    int. A silent truncation is a value the agent believes it set and the
+    user never chose.
+    """
+    want = SETTABLE_TYPES.get(str(datatype).lower())
+    if want is None:
+        return None, Refusal(f"'{datatype}' is not a settable type.",
+                             op=OP_SET_VALUE, subject=str(datatype))
+    try:
+        if want is bool:
+            if isinstance(value, bool):
+                return value, None
+            raise TypeError("not a bool")
+        if want is int:
+            if isinstance(value, bool):
+                raise TypeError("a bool is not a number")
+            if isinstance(value, float) and value != int(value):
+                raise TypeError("not a whole number")
+            return int(value), None
+        if want is float:
+            if isinstance(value, bool):
+                raise TypeError("a bool is not a number")
+            return float(value), None
+        if isinstance(value, bool):
+            raise TypeError("a bool is not text")
+        return str(value), None
+    except (TypeError, ValueError) as exc:
+        return None, Refusal(
+            f"Cannot use {value!r} as a {datatype}: {exc}. Send a "
+            f"{want.__name__} instead.",
+            op=OP_SET_VALUE, subject=str(datatype))
 
 
 def upstream_of(node_uid: str, edges: Iterable[tuple]) -> set[str]:

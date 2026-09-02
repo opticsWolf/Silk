@@ -20,16 +20,22 @@ to be true before it runs. Three things carry the weight:
 * **One undoable command per call** (D72) -- so the human undoes the
   agent's edit with the gesture they undo their own.
 
-Placement without inspection is blind, so two of the six are read-only:
+Placement without inspection is blind, so three of the eight are read-only:
 an agent that cannot see the graph cannot place a node *relative* to it,
 reuse what is already there, or know which ports are free.
 
-Deliberately not here (v1): setting widget values, moving or resizing
-nodes, saving or loading graph files, placing classes off the whitelist,
-and anything touching another graph. Setting widget values is the obvious
-next request and is left out on purpose -- it is how a placed node becomes
-*configured*, which is every widget type at once and wants its own
-decision.
+Configuration arrived later (§22 q9, two more tools): a node an agent can
+place but not set up is a skeleton a human has to finish, so
+`list_node_settings` reads a node's widgets and `set_node_value` writes
+one -- values only, on nodes this run placed, through the same undo
+command a user's own edit goes through. What stays out is the reason the
+question needed its own answer: DISPLAY and INTERNAL widgets are not
+settings (INTERNAL is where the permission switches live), and any port
+whose datatype is an object comes from a connection.
+
+Deliberately not here: moving or resizing nodes, saving or loading graph
+files, placing classes off the whitelist, and anything touching another
+graph.
 """
 from __future__ import annotations
 
@@ -42,7 +48,8 @@ from pydantic import BaseModel, Field
 # relative import would be "beyond top-level".
 from weave.plugins.silk.functions.graph_author import (
     OP_CONNECT, OP_DESCRIBE, OP_DISCONNECT, OP_LIST, OP_PLACE, OP_REMOVE,
-    Refusal, RunScope, Whitelist, canvas_binding, check_self_modification,
+    OP_SET_VALUE, OP_SETTINGS, Refusal, RunScope, Whitelist, canvas_binding,
+    check_self_modification,
 )
 
 if TYPE_CHECKING:
@@ -82,6 +89,19 @@ class RemoveNodeArgs(BaseModel):
     id: str = Field(..., description="Id of the node to remove.")
 
 
+class SettingsArgs(BaseModel):
+    id: str = Field(..., description="Id of the node to inspect.")
+
+
+class SetValueArgs(BaseModel):
+    id: str = Field(..., description="Id of the node to configure.")
+    port: str = Field(..., min_length=1,
+                      description="Setting name, from list_node_settings.")
+    value: Any = Field(...,
+                       description="The new value: text, number or boolean, "
+                                   "matching the setting's datatype.")
+
+
 class GraphResult(BaseModel):
     ok: bool = Field(..., description="Whether the operation happened.")
     op: str = Field("", description="Which operation this was.")
@@ -106,7 +126,7 @@ def _no_canvas(op: str) -> GraphResult:
 
 def attach_graph_tools(toolbox: "ToolBox", sandbox: "FileToolSandbox",
                        whitelist: Any = ()) -> None:
-    """Mount the six graph-authoring tools against *whitelist*.
+    """Mount the eight graph-authoring tools against *whitelist*.
 
     The whitelist is fixed when the ToolBox is built -- it travels in the
     recipe, so a derived ToolSet replays it and may narrow it, never widen
@@ -268,6 +288,79 @@ def attach_graph_tools(toolbox: "ToolBox", sandbox: "FileToolSandbox",
         if scope is not None:
             scope.connected((src_id, src_port, dst_id, dst_port))
         return GraphResult(ok=True, op=OP_CONNECT, result=answer.value or {})
+
+    # ── configuring what this run placed (§22 q9) ────────────────────────
+
+    @toolbox.register(
+        name=OP_SETTINGS,
+        tags=("graph", "read"), category="graph", risk="low",
+        description=(
+            "List one node's settings: every widget with its name, type, "
+            "current value, default, and whether you may write it."
+        ),
+        args_model=SettingsArgs,
+        procedure=(
+            "Read a node's configuration before changing it.\n"
+            "- settable=false comes with why_not: a display or internal "
+            "widget, an object port that needs a connection, or a port "
+            "something is already wired into.\n"
+            "- 'value' is what the widget holds right now, so this also "
+            "reads results off a node you placed."
+        ),
+    )
+    def _list_settings(db_pool: Any, user_session: dict,
+                       id: str) -> GraphResult:  # noqa: A002
+        seam, _scope, _agent = _bound()
+        if seam is None:
+            return _no_canvas(OP_SETTINGS)
+        answer = seam.call(OP_SETTINGS, id=id)
+        if not answer.ok:
+            return GraphResult(ok=False, op=OP_SETTINGS,
+                               message=answer.failure_text())
+        return GraphResult(ok=True, op=OP_SETTINGS, result=answer.value or {})
+
+    @toolbox.register(
+        name=OP_SET_VALUE,
+        tags=("graph", "write"), category="graph", risk="medium",
+        description=(
+            "Set one setting on a node **this run placed**: text, number "
+            "or boolean. Nodes the user placed are not yours to retune."
+        ),
+        args_model=SetValueArgs,
+        procedure=(
+            "Configure your own node.\n"
+            "- Only nodes you placed in this run, and only value "
+            "settings: a model, a toolset or a permissions object comes "
+            "from a connection.\n"
+            "- Read the result: 'value' is what the widget holds after "
+            "the write, which is not always what you asked for.\n"
+            "- One call is one undo step for the user."
+        ),
+    )
+    def _set_node_value(db_pool: Any, user_session: dict, id: str,  # noqa: A002
+                        port: str, value: Any) -> GraphResult:
+        seam, scope, agent_uid = _bound()
+        if seam is None:
+            return _no_canvas(OP_SET_VALUE)
+        refusal = (scope or RunScope()).check_node(id)
+        if refusal is not None:
+            # The scope refusal is written for removal; configuring a
+            # node the user placed is the same trespass with a different
+            # verb, so it is worth saying which one this was.
+            return _refused(Refusal(
+                f"Node '{id}' was not created by this run, so its settings "
+                f"are not yours to change. Place your own node, or ask the "
+                f"user to change that one.",
+                op=OP_SET_VALUE, subject=str(id)))
+        refusal = check_self_modification(
+            OP_SET_VALUE, agent_uid, _graph_edges(seam), id)
+        if refusal is not None:
+            return _refused(refusal)
+        answer = seam.call(OP_SET_VALUE, id=id, port=port, value=value)
+        if not answer.ok:
+            return GraphResult(ok=False, op=OP_SET_VALUE,
+                               message=answer.failure_text())
+        return GraphResult(ok=True, op=OP_SET_VALUE, result=answer.value or {})
 
     # ── taking apart what this run built ─────────────────────────────────
 

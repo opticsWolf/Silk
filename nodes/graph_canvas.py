@@ -33,7 +33,8 @@ from weave.logger import get_logger
 
 from ..functions.graph_author import (
     OP_CONNECT, OP_DESCRIBE, OP_DISCONNECT, OP_LIST, OP_PLACE, OP_REMOVE,
-    describe_class, describe_instance,
+    OP_SET_VALUE, OP_SETTINGS, check_settable, coerce_value, describe_class,
+    describe_instance,
 )
 from ..functions.main_thread_call import CallRequest, MainThreadCall
 from ..functions.self_modify import (
@@ -99,6 +100,8 @@ class CanvasAuthor(QObject):
             OP_CONNECT: self._connect,
             OP_DISCONNECT: self._disconnect,
             OP_REMOVE: self._remove,
+            OP_SETTINGS: self._settings,
+            OP_SET_VALUE: self._set_value,
         }.get(request.op)
         if handler is None:
             return {"ok": False, "error": f"unknown operation '{request.op}'"}
@@ -174,6 +177,70 @@ class CanvasAuthor(QObject):
                                       "agent_id": str(getattr(
                                           self._node, "unique_id", ""))}}
 
+    def _settings(self, canvas: Any, args: dict) -> dict:
+        """Every widget on one node, with what it holds right now (q9).
+
+        Read-only, and it lists the ports it will *refuse* to write as
+        well as the ones it will accept: an agent told only "no" learns
+        nothing, and an agent shown a display port with its value can
+        read the node's result without touching it.
+        """
+        node = self._node_by_id(canvas, str(args.get("id") or ""))
+        if node is None:
+            return {"ok": False,
+                    "error": f"no node with id '{args.get('id')}' on the "
+                             f"canvas"}
+        rows = []
+        for row in self._bindings(node):
+            refusal = check_settable(row, str(args.get("id")))
+            rows.append({
+                **{k: row[k] for k in ("name", "role", "datatype",
+                                       "description", "connected")},
+                "value": row["value"],
+                "default": row["default"],
+                "settable": refusal is None,
+                "why_not": "" if refusal is None else refusal.reason,
+            })
+        return {"ok": True, "value": {
+            "id": str(getattr(node, "unique_id", "")),
+            "class_name": type(node).__name__,
+            "title": str(getattr(node, "title", "") or ""),
+            "settings": rows,
+        }}
+
+    @staticmethod
+    def _bindings(node: Any) -> list:
+        """The node's widget bindings, flattened. Main thread only."""
+        core = getattr(node, "_widget_core", None)
+        rows = []
+        if core is None:
+            return rows
+        connected = {str(getattr(port, "name", ""))
+                     for side in ("inputs", "outputs")
+                     for port in getattr(node, side, []) or []
+                     if getattr(port, "connected_traces", None)}
+        try:
+            bindings = core.bindings()
+        except (AttributeError, RuntimeError):
+            return rows
+        for name, binding in (bindings or {}).items():
+            role = getattr(getattr(binding, "role", None), "name", "")
+            try:
+                value = core.get_port_value(name)
+            except Exception:  # noqa: BLE001 - a widget mid-teardown
+                value = None
+            rows.append({
+                "name": str(name),
+                "role": str(role),
+                "datatype": str(getattr(binding, "datatype", "") or ""),
+                "description": str(getattr(binding, "description", "") or ""),
+                "connected": str(name) in connected,
+                "value": value,
+                "default": getattr(binding, "default", None),
+                "exists": True,
+            })
+        return sorted(rows, key=lambda r: r["name"])
+
     # -- mutations, each one undoable command ------------------------------
 
     def _place(self, canvas: Any, args: dict) -> dict:
@@ -208,6 +275,63 @@ class CanvasAuthor(QObject):
         return {"ok": True, "value": {"id": str(uid), "class_name": cls_name,
                                       "title": str(getattr(node, "title", "")),
                                       "position": list(npos)}}
+
+    def _set_value(self, canvas: Any, args: dict) -> dict:
+        """Write one widget value, as one undoable command (q9, D72).
+
+        The whole point of routing through `WidgetValueCommand` rather
+        than `apply_port_value` directly: the user undoes the agent's
+        configuration with the same Ctrl+Z that undoes their own, and the
+        node's mirror panel updates because the command is what the rest
+        of Weave already listens to.
+        """
+        from weave.canvas.undo_commands import WidgetValueCommand
+
+        node_uid = str(args.get("id") or "")
+        name = str(args.get("port") or "")
+        node = self._node_by_id(canvas, node_uid)
+        if node is None:
+            return {"ok": False,
+                    "error": f"no node with id '{node_uid}' on the canvas"}
+
+        rows = {row["name"]: row for row in self._bindings(node)}
+        row = rows.get(name, {"name": name, "exists": False})
+        refusal = check_settable(row, node_uid)
+        if refusal is not None:
+            available = ", ".join(r["name"] for r in rows.values()
+                                  if check_settable(r, node_uid) is None)
+            return {"ok": False, "error": (
+                f"{refusal.reason} Settable here: {available or 'nothing'}.")}
+
+        value, refusal = coerce_value(row["datatype"], args.get("value"))
+        if refusal is not None:
+            return {"ok": False, "error": refusal.reason}
+
+        before = row["value"]
+        core = getattr(node, "_widget_core", None)
+        if core is None:
+            return {"ok": False, "error": (
+                f"'{node_uid}' has no widgets to configure.")}
+        # Apply first, then record -- the same order `_place` uses, because
+        # the undo manager records what happened rather than performing it.
+        if not core.apply_port_value(name, value):
+            return {"ok": False, "error": (
+                f"The widget for '{name}' would not take that value, and "
+                f"nothing was changed.")}
+        canvas.undo_manager.push(
+            WidgetValueCommand(node_uid, name, before, value))
+
+        # Read it back rather than reporting what was asked for: a widget
+        # may clamp, round or reject, and an agent that believes it set
+        # something the user never sees is the failure this avoids.
+        after = core.get_port_value(name)
+        return {"ok": True, "value": {
+            "id": node_uid, "port": name,
+            "requested": value, "value": after, "previous": before,
+            "note": ("" if after == value else
+                     "the widget adjusted the value; 'value' is what it "
+                     "holds now"),
+        }}
 
     def _connect(self, canvas: Any, args: dict) -> dict:
         from weave.canvas.undo_commands import AddConnectionCommand

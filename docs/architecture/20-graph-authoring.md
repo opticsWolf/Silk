@@ -98,7 +98,7 @@ without Qt and unit-testable against a fake resolver:
   teardown. A binding left behind would point at a canvas nobody is driving,
   and would let the next run delete this one's nodes.
 
-### `functions/tools/graph_authoring.py` — the six tools (D69)
+### `functions/tools/graph_authoring.py` — the tools (D69, §22 q9)
 
 `attach_graph_tools(toolbox, sandbox, whitelist=())` registers
 `list_placeable_nodes` and `describe_graph` (`risk="low"`), `place_node` and
@@ -130,5 +130,38 @@ registrations into one rebuild (D74), so a suite hot-loaded into the running
 session becomes tickable there — the tools already resolve the registry live,
 and without this the widget would be the only place that had not noticed.
 
-Deliberately not in v1: setting widget values, moving or resizing nodes,
-saving or loading graph files, and anything touching another graph.
+### Configuration: `list_node_settings` / `set_node_value` (§22 q9)
+
+A node an agent can place but not set up is a skeleton a human has to finish,
+which was the question: the surface is *every widget type*, so it needed its
+own decision rather than an extension of D69. The answer is a narrow typed
+setter over `WidgetCore` bindings, and the narrowing is where the safety is:
+
+- **Values only.** `SETTABLE_TYPES` is string, int, float, bool and the
+  path-like strings. Everything else on a node — a model, a toolset, a
+  permissions object, a list of roots — comes from a connection, and the
+  refusal says so. That keeps the authority-bearing ports (`file_permissions`,
+  `dirpath_list`) unwritable *by construction* rather than by a rule someone
+  has to remember.
+- **INPUT and BIDIRECTIONAL roles only.** DISPLAY is computed output;
+  INTERNAL is node-local state, and INTERNAL is where the permission switches
+  live — a ToolBox's **Plugin authoring** checkbox is an INTERNAL widget, so
+  an agent that could write INTERNAL could grant itself authority by ticking a
+  box. Both roles stay *readable*: `list_node_settings` returns every widget
+  with its current value, and an agent reading a display port is reading a
+  result, not editing one.
+- **A wired port is not written behind the wire.** The upstream value wins
+  over the widget, so writing one would be a change the graph then discards.
+- **The same scope as removal** (D73): only nodes this run placed, never the
+  user's, and never the agent's own execution path.
+- **One call, one undoable command.** `WidgetValueCommand`, applied then
+  pushed — the order `_place` already uses, because the undo manager records
+  what happened rather than performing it.
+
+The result reports what the widget *holds afterwards*, not what was asked for.
+A combo box takes the items it has; an agent that believes it set a value the
+user never sees is the failure this avoids, so a rejected or clamped write
+comes back `ok` with the real value and a note saying it changed.
+
+Deliberately still not in v1: moving or resizing nodes, saving or loading
+graph files, and anything touching another graph.

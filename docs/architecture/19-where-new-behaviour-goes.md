@@ -35,6 +35,8 @@
 | Persist a node's configuration | `functions/presets.py` (`PresetStore`, `~/.weave/presets/`) |
 | Pass structured data between agents | `AgentMessage` on the `outbox` → `inbox` ports |
 | Let an agent build graph | tick classes in the `Silk ToolBox` node's **Placeable Nodes** tree; the six tools mount only when the list is non-empty, and default-deny is the empty state (D69, D71) |
+| Let an agent configure a node it placed | `set_node_value` — values only, INPUT/BIDIRECTIONAL only, nodes this run placed only, through `WidgetValueCommand` (§22 q9) |
+| Make an object port settable by an agent | don't: object datatypes come from a connection, which is what keeps `file_permissions` and `dirpath_list` unwritable by construction (§22 q9) |
 | Reach the Qt main thread from a tool | `MainThreadCall.call()` (`functions/main_thread_call.py`) — the same waiter as the decision seam, resolved by the event loop instead of a person (D70) |
 | Add a canvas op an agent may perform | a method on `CanvasAuthor` (`nodes/graph_canvas.py`) that goes through an undo command, plus a policy check in `functions/graph_author.py` — never raw scene manipulation (D72) |
 | Add a blocking worker→elsewhere channel of your own | subclass `BlockingSeam` (`functions/blocking_seam.py`); never re-implement the ordering rule (D49) |

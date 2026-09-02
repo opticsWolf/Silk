@@ -43,9 +43,10 @@ D66). It needs the `ledger` extra (`pip install macrame-db`); without it
 the tool registers and says so rather than quietly returning nothing.
 
 The **Placeable Nodes** tree is the graph-authoring grant (§18, D71):
-tick the node classes an agent may place, and the six graph tools
-(`list_placeable_nodes`, `describe_graph`, `place_node`, `connect`,
-`disconnect`, `remove_node`) mount. Leave it empty — the default — and no
+tick the node classes an agent may place, and the eight graph tools
+(`list_placeable_nodes`, `describe_graph`, `list_node_settings`,
+`place_node`, `connect`, `set_node_value`, `disconnect`, `remove_node`)
+mount. Leave it empty — the default — and no
 agent fed by this ToolBox can build graph at all. Every edit an agent makes
 goes onto the canvas's own undo stack, so one Ctrl+Z takes back one tool
 call; destructive calls reach only what that run itself placed, and no
@@ -204,6 +205,14 @@ where no graph channel can reach it; the `decision.request` /
 `decision.response` pair on `events` is a *mirror* for a monitor, never
 the way the answer arrives (D59). Stop cancels the seam directly, so a run
 waiting on a decision unwinds at once instead of waiting out the timeout.
+
+**A placed node can also be configured** (§22 q9). `list_node_settings`
+reads a node's widgets — name, type, current value, and why a port is not
+writable — and `set_node_value` writes one, as one undo step. Values only
+(text, number, boolean): a model, a toolset or a permissions object comes
+from a connection, and display and internal widgets are readable but never
+writable, which is what keeps a `Plugin authoring` checkbox out of an
+agent's reach. Only nodes the run placed itself.
 
 **An approved plugin comes back by itself, until it is edited** (§22 q10).
 Approving a `load_suite` pins the SHA-256 of every importable file in that

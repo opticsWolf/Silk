@@ -2046,12 +2046,25 @@ need a `__version__` to name. Still trivial; now load-bearing.
    (D68) -- deny writes to paths another agent has claimed -- and whether a
    claim then needs a release path and a timeout, which is approval-gate
    territory (D38) rather than lock territory.
-9. Whether graph authoring (§18) ever gains **widget configuration** -- an
-   agent that can place a node but not set its values builds skeletons a
-   human must finish. The surface is every widget type, so it needs its own
-   decision rather than an extension of D69; the likely shape is a narrow
-   typed setter over `WidgetCore` bindings, whitelisted per node class the
-   way the classes themselves are.
+9. ~~Whether graph authoring (§18) ever gains **widget configuration** --
+   an agent that can place a node but not set its values builds skeletons a
+   human must finish.~~ **Answered (2026-09-02):** yes, as the narrow typed
+   setter the question guessed at -- `list_node_settings` and
+   `set_node_value`, two more ordinary tools behind the same whitelist,
+   the same seam and the same undo command. The narrowing is the answer:
+   **values only** (string, int, float, bool, path-like), so a model, a
+   toolset, a permissions object or a list of roots still comes from a
+   connection and the authority-bearing ports stay unwritable by
+   construction; **INPUT and BIDIRECTIONAL roles only**, because INTERNAL
+   is where the permission switches live (a ToolBox's *Plugin authoring*
+   is an INTERNAL widget, and an agent that could write one could tick its
+   own authority on) though both stay readable; **no writing behind a
+   wire**, since the upstream value wins anyway; and **the same scope as
+   removal** -- nodes this run placed, never the user's, never the agent's
+   own execution path (D73). The result reports what the widget holds
+   *after* the write rather than what was asked for, because a combo box
+   takes the items it has and an agent that believes it set something the
+   user never sees is the failure worth avoiding.
 10. ~~Whether a suite the agent wrote should **auto-load at the next
    start** once a human has approved it once, or require approval every
    session.~~ **Answered (2026-09-02):** the middle, as suspected, and it
