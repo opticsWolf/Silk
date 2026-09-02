@@ -107,6 +107,35 @@ class LedgerRegistry:
     def __init__(self) -> None:
         self._lock = threading.RLock()
         self._open: dict[str, _Entry] = {}
+        self._participant = None
+
+    # ── the release protocol (spec D80) ───────────────────────────────
+
+    def _register_for_shutdown(self) -> None:
+        """Let the process let go of these handles before it hands off.
+
+        One write actor per process is the whole of Macrame's concurrency
+        model, so two processes on one file -- which is exactly what a
+        relaunch produces if the parent still holds it -- breaks D64's
+        earliest-`recorded_at` adjudication. Registering here rather than
+        relying on GC is the point: interpreter teardown is not a
+        guarantee, and a handle closed late loses its final snapshot.
+        """
+        if self._participant is not None:
+            return
+        try:
+            from weave.engine.shutdown import (
+                get_shutdown_registry, install_shutdown_handlers,
+            )
+        except Exception:  # noqa: BLE001 - a plugin must not need the host
+            return
+        install_shutdown_handlers()
+        self._participant = get_shutdown_registry().register(
+            "Macrame ledger handles",
+            lambda timeout_s=0.0: (self.close_all(), True)[1],
+            busy=lambda: (f"{len(self._open)} ledger file(s) open"
+                          if self._open else None),
+        )
 
     # ── opening ───────────────────────────────────────────────────────
 
@@ -137,6 +166,7 @@ class LedgerRegistry:
             handle = _macrame.Database.open(
                 key, snapshot_every_entries=snapshot_every_entries)
             self._open[key] = _Entry(handle=handle, refs=1, path=key)
+            self._register_for_shutdown()
             log.debug(f"Opened ledger {key}")
             return handle
 

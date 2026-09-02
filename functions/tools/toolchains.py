@@ -55,6 +55,11 @@ class ToolchainEnv:
 KNOWN_TOOLCHAINS: dict[str, dict[str, Any]] = {
     "python": {"names": ["python", "python3"], "version_args": ["--version"]},
     "ruff": {"names": ["ruff"], "version_args": ["--version"]},
+    # The node linter (spec D78). A human author gets code review; an
+    # agent author gets this, which is why it belongs in the toolchain
+    # beside ruff and mypy rather than in a script nobody runs.
+    "weave_lint": {"names": ["weave-lint", "weave_lint"],
+                   "version_args": ["--help"]},
     "mypy": {"names": ["mypy"], "version_args": ["--version"]},
     "radon": {"names": ["radon"], "version_args": ["--version"]},
     "maturin": {"names": ["maturin"], "version_args": ["--version"]},
@@ -252,6 +257,31 @@ SPEC_PACKS: dict[str, list[CommandSpec]] = {
             ],
             category="lint", tags=["format", "python", "ruff"],
             risk="medium", timeout_s=120.0,
+        ),
+    ],
+    "weave_lint": [
+        CommandSpec(
+            tool_name="weave_lint_check",
+            toolchain_id="weave_lint",
+            description=(
+                "Check Weave node and widget classes: port declarations, "
+                "state versioning (WV520-WV522), and the node/widget "
+                "contract. Run this before loading any suite you wrote -- "
+                "a state-version finding means saved graphs would not "
+                "survive the load, and the load will be refused."
+            ),
+            base_args=["--no-color"],
+            params=[
+                _PATH_PARAM,
+                ParamSpec(name="select", type="str", default="",
+                          flag="--select",
+                          description="Only these codes, e.g. 'WV521'."),
+                ParamSpec(name="fmt", type="str", default="line",
+                          flag="--format",
+                          description="human | line | json | github."),
+            ],
+            category="lint", tags=["lint", "nodes", "weave", "state"],
+            risk="low", timeout_s=300.0,
         ),
     ],
     "mypy": [

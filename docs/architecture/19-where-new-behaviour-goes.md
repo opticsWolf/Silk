@@ -35,4 +35,9 @@
 | Reach the Qt main thread from a tool | `MainThreadCall.call()` (`functions/main_thread_call.py`) — the same waiter as the decision seam, resolved by the event loop instead of a person (D70) |
 | Add a canvas op an agent may perform | a method on `CanvasAuthor` (`nodes/graph_canvas.py`) that goes through an undo command, plus a policy check in `functions/graph_author.py` — never raw scene manipulation (D72) |
 | Add a blocking worker→elsewhere channel of your own | subclass `BlockingSeam` (`functions/blocking_seam.py`); never re-implement the ordering rule (D49) |
+| Let an agent write and load its own nodes | tick **Plugin authoring** on the `Silk ToolBox` node; it mounts the four load verbs, adds `~/.weave/plugins` to the sandbox, and installs the approval floor with them (D75, D76) |
+| Add a verb that runs agent-authored code | put the ask in `functions/load_floor.py`'s floor, never behind a policy — a gate a preset can switch off is not a control (D77) |
+| Check that a node change survives saved graphs | `weave_lint` — as the `weave_lint_check` toolchain tool, and as the hard stop `lint_suite()` applies before any load (D78) |
+| Restart Weave from inside a run | `request_relaunch(reason)` — it queues; a human confirms at a turn boundary, and the agent never sees the far side (D79) |
+| Tell the next run why its plugin vanished | `record_quarantine()` in `functions/self_modify.py`; `list_suites` reads it back (D81) |
 | Stop an agent editing the graph that runs it | nothing — `check_self_modification` already refuses the agent, its tool chain, and everything upstream of it (D73) |

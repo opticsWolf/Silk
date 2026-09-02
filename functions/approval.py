@@ -65,6 +65,7 @@ from .decision_seam import (
 )
 from .grants import SCOPE_ALWAYS, SCOPE_RUN, GrantStore, RunGrants
 from .hooks import HOOK_WRAP_TOOL_EXECUTE
+from .self_modify import ALWAYS_APPROVE
 from .signoff import (
     CHANGE_TYPES,
     TOOL_CHANGE_TYPE,
@@ -258,6 +259,12 @@ def attach_approval_gate(
         tool_args: Optional[dict] = None, **_kw: Any,
     ) -> Any:
         args = dict(tool_args or {})
+        if tool_name in ALWAYS_APPROVE:
+            # The load verbs have a floor of their own (D77) that asks
+            # every time and consults no grant. Asking here as well would
+            # put two dialogs in front of one call, and the stricter of
+            # the two is not this one.
+            return await handler()
         ctype = _task_change(tool_name, args) if gated_tasks else None
 
         # Two domains, one call: the stricter answer wins. A tool that is

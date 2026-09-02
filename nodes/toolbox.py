@@ -42,6 +42,8 @@ from ..functions.tools.file_read import attach_file_read_tools
 from ..functions.tools.file_write import attach_file_write_tools
 from ..functions.tools.file_manipulate import attach_file_manipulate_tools
 from ..functions.tools.graph_authoring import attach_graph_tools
+from ..functions.tools.suite_tools import attach_suite_tools
+from ..functions.self_modify import user_plugin_root
 from ..functions.tools.recall_tool import attach_recall_tool
 from ..functions.tools.ripgrep_tool import attach_ripgrep_tools
 from ..functions.tools.toolchains import attach_toolchain_tools
@@ -188,6 +190,24 @@ class SilkToolBoxNode(ActiveNode):
             datatype="list", default=[], add_to_layout=False,
         )
 
+        # Plugin authoring (§19, D75-D77). The load verb is the only
+        # missing step of write-verify-observe-load, and it is the one
+        # that crosses an execution boundary the sandbox cannot: every
+        # load asks the user, every time, and shows them the diff.
+        self.chk_self_modify = QCheckBox()
+        self.chk_self_modify.setToolTip(
+            "Plugin authoring: lets the agent write node suites into "
+            "~/.weave/plugins and load them into this session. Loading "
+            "always asks you, shows the diff, and cannot be pre-approved "
+            "by a grant or a Role — importing runs the code with the full "
+            "authority of this process. Core and Silk stay read-only."
+        )
+        form.addRow("Plugin authoring:", self.chk_self_modify)
+        self._widget_core.register_widget(
+            "enable_self_modify", self.chk_self_modify, role=PortRole.INTERNAL,
+            datatype="bool", default=False, add_to_layout=False,
+        )
+
         # Infrastructure hooks: part of the recipe, so every derived
         # ToolSet re-creates them — always on, outside any role layer.
         # Value shape: {"names": [...], "configs": {name: {...}}}.
@@ -296,11 +316,34 @@ class SilkToolBoxNode(ActiveNode):
 
         # All roots are allowed (the hard ceiling); the first is the
         # working root (cwd for toolchain processes, relative-path base).
+        writes = bool(inputs.get("enable_write") or
+                      inputs.get("enable_manipulate"))
+        writable: List[str] = []
+        if inputs.get("enable_self_modify", False):
+            # D76: the agent authors plugins in its own root, and that
+            # root is the only place the load verb will look. Adding it
+            # here rather than asking the user to wire it keeps the two
+            # halves of the grant -- write here, load from here -- from
+            # drifting apart.
+            plugin_root = user_plugin_root()
+            try:
+                plugin_root.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                log.warning(f"could not create the plugin root: {exc}")
+            if str(plugin_root) not in roots:
+                roots = roots + [str(plugin_root)]
+            if not writes:
+                # Write access to the plugin root only: plugin authoring
+                # is not a reason to make the user's project writable.
+                writes = True
+                writable = [str(plugin_root)]
+
         sandbox = FileToolSandbox(
             root_dir=roots[0],
             allowed_paths=list(roots),
             max_read_bytes=int(inputs.get("max_read_kib", 512)) * 1024,
-            write_enabled=bool(inputs.get("enable_write") or inputs.get("enable_manipulate")),
+            write_enabled=writes,
+            writable_paths=writable or None,
         )
 
         # Recipe: which attach groups built this box. ToolSet nodes replay
@@ -337,6 +380,15 @@ class SilkToolBoxNode(ActiveNode):
                 "graph_authoring",
                 partial(attach_graph_tools, whitelist=tuple(placeable)),
             ))
+
+        # Plugin authoring. The user plugin root joins the sandbox as a
+        # writable path when this is on: an agent that may load code it
+        # wrote needs somewhere to write it, and D76 says that somewhere
+        # is ~/.weave/plugins and nowhere else. Weave core, Silk and the
+        # virtualenv stay outside every root, so the existing static
+        # narrowing is what keeps them read-only -- no new mechanism.
+        if inputs.get("enable_self_modify", False):
+            recipe.append(("suite_tools", attach_suite_tools))
 
         # Memory. Attached after the task tools so a box that has both
         # reads as plan-then-memory in the tool list, which is the order

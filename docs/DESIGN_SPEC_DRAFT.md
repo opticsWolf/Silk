@@ -1804,6 +1804,31 @@ agent is told *"your plugin `x` was quarantined after crashing on load, here
 is the traceback"* instead of silently discovering that its work evaporated. A
 self-improving loop with no feedback on failure does not improve; it repeats.
 
+**Implemented (2026-09-02), with Silk-improving-Silk still out (T10).** The
+load verb landed as four ordinary tools in `functions/tools/suite_tools.py`;
+the policy is Qt-free in `functions/self_modify.py` (`check_suite` against the
+user plugin root, `capability_for` issuing Weave's one-suite handle,
+`ChangeSet` + `attach_change_tracking` for the diff, `lint_suite` for the
+WV520-522 hard stop, `record_quarantine`/`annotate` for the feedback fact);
+the unconditional approval floor is `functions/load_floor.py`, installed with
+the tools rather than by a policy, and `approval.py`'s policy gate steps aside
+for those two names so one call never raises two dialogs. Loading marshals to
+the main thread across §18's seam -- `CanvasAuthor` grew `load_suite`,
+`reload_suite` and `request_relaunch`, dispatched before its canvas check
+since a registry-only load is meaningful headless -- after an out-of-process
+`validate_suite`. `weave_lint` joined the toolchain catalog as
+`weave_lint_check`, and the ToolBox node grew one **Plugin authoring**
+checkbox that adds `~/.weave/plugins` as the sandbox's only writable root when
+nothing else made it writable. 36 tests in
+`tests/test_silk_self_modification.py` (three of them D80's release
+participants) plus three live-Qt checks in
+`tests/test_silk_graph_canvas.py`.
+
+D80's participants are registered where the resource is: the model pool
+and the task store already were, and the Macrame `LedgerRegistry` and each
+MCP session now register too -- explicitly, because interpreter teardown is
+not a guarantee and a ledger handle closed late loses its final snapshot.
+
 ---
 
 ## 20. Phasing
@@ -1914,7 +1939,8 @@ self-improving loop with no feedback on failure does not improve; it repeats.
     `HOT_RELOAD_PLAN.md` Phases 1-2 and 6 -- until a load is lossless and
     reportable there is nothing safe to call. Everything except the load verb
     exists already (D75), so the Silk-side cost is mostly the approval
-    surface, not the plumbing.
+    surface, not the plumbing. **Done 2026-09-02** (Weave's
+    six hot-reload phases had all shipped; Silk improving Silk stays out, T10).
 
 **Later:** embeddings for `recall` (vector half of §17 — needs an
 embedding producer; the GGUF pool can serve one); nested budgets (D26);

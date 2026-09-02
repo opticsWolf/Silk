@@ -53,6 +53,17 @@ mutation may touch the agent, its tool chain, or anything upstream of it
 (D72, D73). The list travels in the saved graph and in presets: it carries
 no secret and no filesystem authority.
 
+The **Plugin authoring** checkbox (§19) lets the agent write node suites
+into `~/.weave/plugins` and load them into the running session. It adds
+that directory to the sandbox as the only writable root (unless file
+writing is already on), and mounts `list_suites`, `load_suite`,
+`reload_suite` and `request_relaunch`. Every load asks you, every time,
+and shows you the diff of what this run wrote — no Role, preset or
+grant can pre-approve it, because importing runs that code with the
+full authority of the Weave process. A state-version finding
+(WV520–WV522) stops the load before you are even asked: it means saved
+graphs would not survive it. Weave core and Silk stay read-only.
+
 Which backend stores the plan is the environment's business, not the
 node's: `SILK_TASK_BACKEND=ledger` puts it on the Macrame ledger, the
 default keeps the SQLite store, and both answer the same protocol — the

@@ -52,6 +52,9 @@ from .silk_ports import GGUF_MODEL_TYPE, SILK_ROLE_TYPE, SILK_TOOLSET_TYPE  # no
 from ..functions.agent_loop import AgentLoop, DEFAULT_MAX_ROUNDS
 from ..functions.approval import bind_run_seam
 from ..functions.graph_author import CanvasBinding, RunScope, bind_canvas
+from ..functions.self_modify import (
+    ALWAYS_APPROVE, ChangeSet, attach_change_tracking, bind_changes,
+)
 from ..functions.main_thread_call import (
     DEFAULT_TIMEOUT_S as CANVAS_TIMEOUT_S, MainThreadCall,
 )
@@ -73,6 +76,7 @@ from ..functions.hooks import (
     HOOK_BEFORE_MODEL_REQUEST,
     HOOK_BEFORE_RUN,
     HOOK_TOOL_DENIED,
+    HOOK_WRAP_TOOL_EXECUTE,
 )
 from ..functions.messaging import AgentMessage
 from ..functions.role import DEFAULT_ROLE, RoleBinding
@@ -539,6 +543,8 @@ class SilkAgentNode(ThreadedManualNode):
         # Named before the try so the exit path can release this run's
         # decision rows even when the run never got as far as an id.
         run_id = ""
+        # The write-watching middleware, when this run has the load verbs.
+        change_entry = None
         try:
             if toolset is not None:
                 try:
@@ -624,6 +630,14 @@ class SilkAgentNode(ThreadedManualNode):
                     seam=self._canvas_seam, scope=RunScope(),
                     agent_uid=str(getattr(self, "unique_id", "")),
                 ))
+
+                # What this run writes, so a load approval can show the
+                # diff rather than a suite name (D77). Costs one dict
+                # entry per file touched, and only when the load verbs
+                # are mounted -- an agent that cannot load code has
+                # nothing to show anybody.
+                if any(name in toolset.tools for name in ALWAYS_APPROVE):
+                    change_entry = attach_change_tracking(toolset, ChangeSet())
 
                 def _emit_plan_if_changed() -> None:
                     # Live plan updates for the Plan Viewer. No-op when the
@@ -847,6 +861,13 @@ class SilkAgentNode(ThreadedManualNode):
             if toolset is not None:
                 bind_run_seam(toolset, None)
                 bind_canvas(toolset, None)
+                # The change record is this run's, like the run scope: the
+                # next run's approval must not show diffs this one wrote.
+                bind_changes(toolset, None)
+                if change_entry is not None:
+                    toolset.hooks.unregister_middleware(
+                        HOOK_WRAP_TOOL_EXECUTE, change_entry.callback)
+                    change_entry = None
             self._detach_run_observers(toolset)
             if toolset is not None:
                 for event_name, callback in event_hooks:

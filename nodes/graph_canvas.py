@@ -36,6 +36,9 @@ from ..functions.graph_author import (
     describe_class, describe_instance,
 )
 from ..functions.main_thread_call import CallRequest, MainThreadCall
+from ..functions.self_modify import (
+    OP_LOAD_SUITE, OP_RELAUNCH, OP_RELOAD_SUITE,
+)
 
 log = get_logger("SilkGraphCanvas")
 
@@ -72,6 +75,18 @@ class CanvasAuthor(QObject):
         self._seam.serve(request, self._perform)
 
     def _perform(self, request: CallRequest) -> Any:
+        session = {
+            OP_LOAD_SUITE: self._load_suite,
+            OP_RELOAD_SUITE: self._reload_suite,
+            OP_RELAUNCH: self._request_relaunch,
+        }.get(request.op)
+        if session is not None:
+            # Session ops (§19) are main-thread work that does not need a
+            # canvas: a registry-only load is meaningful in a headless
+            # graph, and refusing it for want of a scene would refuse the
+            # wrong thing.
+            return session(request.args)
+
         canvas = self._canvas()
         if canvas is None:
             return {"ok": False, "error": (
@@ -256,6 +271,75 @@ class CanvasAuthor(QObject):
                                       "edges_removed": len(edges)}}
 
     # -- lookups ----------------------------------------------------------
+
+    # -- session ops: loading code, and asking to restart (§19) ----------
+
+    def _load_suite(self, args: dict) -> dict:
+        """Register a suite's classes, then rebuild any waiting ghosts.
+
+        The capability comes from the caller, scoped to this one suite:
+        Weave enforces it at the verb, so a Silk agent cannot reach core
+        or another vendor's plugin even by naming it.
+        """
+        from weave.canvas.rehydrate import rehydrate_placeholders
+        from weave.engine.suite_loader import load_suite
+
+        name = str(args.get("name") or "")
+        report = load_suite(name, None, args.get("capability"))
+        value = self._report(report)
+        canvas = self._canvas()
+        if report.ok and report.committed and canvas is not None:
+            try:
+                revived = rehydrate_placeholders(canvas, None)
+                value["value"]["rehydrated"] = list(revived.revived)
+            except Exception as exc:      # noqa: BLE001 -- a failed
+                # rehydration must not undo a successful load; the
+                # placeholders still hold their data.
+                log.exception("Rehydration after loading %r failed", name)
+                value["value"]["note"] = (
+                    f"loaded, but placeholders were not rebuilt: {exc!r}")
+        return value
+
+    def _reload_suite(self, args: dict) -> dict:
+        """Re-import and swap the live nodes -- as one undo step."""
+        from weave.canvas.hot_reload import reload_suite_into_session
+
+        canvas = self._canvas()
+        report = reload_suite_into_session(
+            str(args.get("name") or ""),
+            canvas=canvas,
+            undo_manager=getattr(canvas, "undo_manager", None),
+            capability=args.get("capability"),
+        )
+        return self._report(report)
+
+    def _request_relaunch(self, args: dict) -> dict:
+        """Queue a restart request. Never restarts anything itself (D79)."""
+        from weave.canvas.relaunch import request_relaunch
+
+        reason = str(args.get("reason") or "").strip()
+        state = request_relaunch(reason or "an agent asked for a restart")
+        return {"ok": True, "value": {"state": state, "reason": reason}}
+
+    @staticmethod
+    def _report(report: Any) -> dict:
+        """A `SuiteReport` as the tool layer's dict."""
+        value = {
+            "ok": bool(report.ok),
+            "committed": bool(report.committed),
+            "name": report.name,
+            "classes": list(report.classes),
+            "note": report.note,
+            "failures": dict(report.failures),
+            "tracebacks": {k: v[-4000:] for k, v in report.tracebacks.items()},
+            "replaced": list(report.replaced),
+            "added": list(report.added),
+            "removed": list(report.removed),
+            "swapped": report.swapped,
+            "dropped_connections": list(report.dropped_connections),
+            "summary": report.summary_lines(),
+        }
+        return {"ok": True, "value": value}
 
     @staticmethod
     def _node_by_id(canvas: Any, node_uid: str) -> Optional[Any]:

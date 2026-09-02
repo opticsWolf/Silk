@@ -33,6 +33,7 @@ document — merge the numbered files back together in manifest order.
 | 18 | `18-design-rules.md` | Design rules |
 | 19 | `19-where-new-behaviour-goes.md` | Where new behaviour goes |
 | 20 | `20-graph-authoring.md` | Graph authoring |
+| 21 | `21-self-modification.md` | Self-modification |
 
 The merge contract is the order above. Per-file line counts are
 deliberately not tracked (they churn on every edit); the rebuild script
@@ -63,7 +64,7 @@ machine.
 
 It does three things:
 
-1. **Concatenates** `00-header.md` through `20-*.md` in order. The chunks
+1. **Concatenates** `00-header.md` through `21-*.md` in order. The chunks
    were cut at section boundaries with their original spacing, so plain
    concatenation restores the document's line structure exactly.
 2. **Reverts the split's link rewrites** — the only transformation the split

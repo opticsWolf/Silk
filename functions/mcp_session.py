@@ -256,6 +256,7 @@ class MCPSession:
         self._thread: Optional[threading.Thread] = None
         self._ready = threading.Event()
         self._closing = False
+        self._participant = None
 
     # -- lifecycle -------------------------------------------------------
 
@@ -287,6 +288,7 @@ class MCPSession:
             target=self._serve, name=f"silk-mcp-{self.spec.id}", daemon=True,
         )
         self._thread.start()
+        self._register_for_shutdown()
         if not self._ready.wait(timeout):
             self.error = f"timed out after {timeout:g}s while connecting"
             self.close()
@@ -329,6 +331,28 @@ class MCPSession:
             loop.close()
             self._loop = None
 
+    def _register_for_shutdown(self) -> None:
+        """Stop this server before the process hands off (spec D80).
+
+        A stdio server is a subprocess of *this* process. It re-resolves
+        its credentials at connect (D22), so a relaunched Weave
+        reconnects cleanly -- provided the outgoing one actually stopped
+        its servers rather than leaving them parented to nothing.
+        """
+        if self._participant is not None:
+            return
+        try:
+            from weave.engine.shutdown import (
+                get_shutdown_registry, install_shutdown_handlers,
+            )
+        except Exception:  # noqa: BLE001 - a plugin must not need the host
+            return
+        install_shutdown_handlers()
+        self._participant = get_shutdown_registry().register(
+            f"MCP server '{self.spec.id}'",
+            lambda timeout_s=0.0: (self.close(), True)[1],
+        )
+
     def close(self) -> None:
         """Close the session. Safe to call twice, and from any thread."""
         self._closing = True
@@ -340,6 +364,14 @@ class MCPSession:
             thread.join(timeout=5)
         self._thread = None
         self.tools = []
+        if self._participant is not None:
+            try:
+                from weave.engine.shutdown import get_shutdown_registry
+
+                get_shutdown_registry().unregister(self._participant)
+            except Exception:  # noqa: BLE001 - closing anyway
+                pass
+            self._participant = None
 
     # -- calling ---------------------------------------------------------
 

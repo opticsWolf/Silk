@@ -49,6 +49,7 @@ restored by the reconstruction below.
 - [Design rules](18-design-rules.md)
 - [Where new behaviour goes](19-where-new-behaviour-goes.md)
 - [Graph authoring](20-graph-authoring.md)
+- [Self-modification](21-self-modification.md)
 
 ## Files
 
@@ -75,5 +76,6 @@ restored by the reconstruction below.
 | `18-design-rules.md` | Design rules |
 | `19-where-new-behaviour-goes.md` | Where new behaviour goes |
 | `20-graph-authoring.md` | Graph authoring |
+| `21-self-modification.md` | Self-modification |
 | `README.md` | this index (not part of the reconstruction) |
 | `RECONSTRUCT.md` | how to remerge everything into one file |
