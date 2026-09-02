@@ -223,6 +223,25 @@ Sources are tried in order: an explicit `plan` snapshot, then `plan_ref`,
 then `root`. The reference outranks the root because a root only says
 *where* to look, and looking picks the newest plan there.
 
+### Task Hub — `nodes/task_hub.py` *(Display / Agents)*
+The multi-agent progress board (D58). Scans **every** `plan-*.db` under the
+graph's sandbox roots and renders one section per plan, tasks grouped by
+lane, with `claimed_by` as the per-task agent badge — the field the store
+has always recorded and no view has ever shown.
+
+| Direction | Port | Type |
+|---|---|---|
+| in | `roots` | `dirpath_list` (wire `Silk ToolBox.root_paths`) |
+| in | `event` | `dict` (any agent's `events`; counted, never answered) |
+| in | `refresh` | `exec` (a timer pulse or any agent's `done`) |
+| out | `plans_json` | `dict` |
+| out | `pending` | `int` |
+
+`pending` is how many agents are blocked on a decision right now. The hub
+may **count** those; only the asking node — or its dock mirror — may answer
+one (D59). There are no Approve/Reject buttons here: D31–D33 deleted parked
+sign-off, so a task change is decided during the turn, not held in a row.
+
 ### Chat Log Display — `nodes/chat_display.py` *(Display / Chat)*
 Sink that continuously appends chat turns to a running log, rendering the
 thread as markdown/HTML.
@@ -262,6 +281,7 @@ agent's `done` port to `refresh` for updates without polling.
        │                        │
        └─ pool_info             ├─ events ─┬─▶ [Hook Monitor]
                                 │          ├─▶ [Chat Log Display]
+                                │          ├─▶ [Task Hub] ◀─root_paths─ [Silk ToolBox]
                                 │          └─▶ [Plan Viewer]
                                 └─ done (exec) ─▶ [Pool Monitor] .refresh
 ```

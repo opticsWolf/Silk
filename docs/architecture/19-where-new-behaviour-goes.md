@@ -16,6 +16,7 @@
 | Rewrite what the model sees | `GraphEngine.replace_history_prefix` — the one non-appending history operation, and it refuses cuts that orphan a tool result (I9) |
 | Cap or shape a run | `UsageLimits` caps, `ReflectionConfig` retries, or an `OutputSchema` + validator on the final answer |
 | Add planning / audit behaviour | `SqliteTaskStore` operations + a `signoff` policy; surface it via the Plan Viewer node |
+| See what N independent agents are doing | a `Silk Task Hub` node fed from `Silk ToolBox.root_paths`; it reads the plan stores, never the agents (D58) |
 | Point agents at a *specific* plan | a `Silk Task` node into the ToolBox node's `plan` input (and the Plan Viewer's `plan_ref`); leave both unwired to keep newest-under-root shared discovery (D23) |
 | Require a human before a tool runs | the `tool_approval` catalog hook (risk band or tool names) — the same middleware the `signoff` policy uses |
 | Let a user say "don't ask again" | a `remember` scope on the decision: run-scoped in the gate closure, or a durable grant in `~/.weave/silk/grants.json` |

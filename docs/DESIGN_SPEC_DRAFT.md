@@ -1272,6 +1272,17 @@ however many agents run: it is a database viewer wearing a node costume --
 which, unlike D51's dock-in-a-costume, is exactly what a node *is*: evaluate
 inputs, produce values.
 
+**Implemented (2026-09-02), minus the sign-off half.** `functions/task_board.py`
++ `nodes/task_hub.py`: `scan_roots` / `board` / `render_board` and a
+`PendingDecisions` counter, with `roots`, `event`, `refresh` in and
+`plans_json`, `pending` out. What is *not* built is the Approve/Reject
+action and the `signed` port: D31-D33 deleted parked sign-off, so no
+change waits in a row for a click -- a gated task change is decided
+during the turn on the run's decision seam, and D59 reserves answering to
+the asking node or its mirror. The hub counts (`pending`); it cannot
+answer. That also settles §22 q6: the single-agent Sign-Off node does not
+survive the hub because D32 had already deleted it.
+
 **D59. Mid-run centralization is a dock, never a node.** With N agents, D48's
 answering widgets are scattered across N node bodies. Centralizing them must
 not reintroduce the rejected answerer node (D51), and does not have to --
@@ -1912,10 +1923,12 @@ need a `__version__` to name. Still trivial; now load-bearing.
 4. Spill-file cleanup policy and its lifetime (§12).
 5. Whether the hook-node question returns once per-tool binding exists --
    D12 is a "not yet", not a "never".
-6. Whether the single-agent Sign-Off node survives once the Task Hub (D58)
-   absorbs its role for N agents -- keep both (a small graph wants a small
-   node) or deprecate toward the hub. Low stakes; decide when the hub is
-   built.
+6. ~~Whether the single-agent Sign-Off node survives once the Task Hub
+   (D58) absorbs its role for N agents.~~ **Answered (2026-09-02)** by the
+   hub being built: there is no node to keep. D32 deleted `signoff_node.py`
+   with the rest of the parked-state machinery, and the hub inherited the
+   *viewing* half only -- nothing is parked, so nothing is signed off
+   outside the turn that asks.
 7. Ledger placement for *history* (§17): share the per-root task ledger, or
    a per-user memory ledger (`~/.weave/silk/memory.db`) so `recall` spans
    projects. Task ledgers are per sandbox root either way. Related: which

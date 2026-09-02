@@ -78,6 +78,40 @@ file reported as a row with an `error` rather than raised. It is what the
 Task node's dropdown offers and what the Task Hub scans under D58/D60;
 agents without a reference keep using newest-only discovery.
 
+### `functions/task_board.py` — the multi-agent projection (D58)
+
+N independent top-level agents share no event port and never will, so
+there is no wire that shows all of them — except the one place they all
+write to. `scan_roots(roots)` gathers every plan under every root (the
+same plan reached through two overlapping roots is one lane, not two),
+`board(rows)` turns them into plain data, `render_board(data)` into
+markdown.
+
+`claimed_by` is what the projection exists for. The schema has carried it
+since it was written and no view has ever shown it, which is why "who is
+doing what" was unanswerable in a graph running four agents. It appears
+per task and, aggregated, as the plan's actor list (D60(3)).
+
+A plan that will not open still becomes a lane, carrying its error and no
+tasks: a board that hides the file it could not read lies about how many
+plans there are.
+
+`PendingDecisions` folds the event stream into one number — how many
+agents are blocked on a human right now. It holds correlation ids and
+nothing that could resolve them, because D58 lets the hub **count**
+mid-run requests and D59 reserves answering them to the asking node or
+its dock mirror. A run that finishes clears whatever it never answered,
+so a timeout does not pin the count above zero forever.
+
+**The sign-off half of D58 is not implemented, deliberately.** D58 gave
+the hub Approve/Reject buttons that write a sign-off to the store and a
+`signed` pulse. D31–D33 then deleted parked sign-off entirely: there is
+no `awaiting_signoff` row to approve later, because a gated task change
+is decided *during* the turn on the run's decision seam. So the hub is
+read-only, `signed` would have had nothing to pulse, and §22 q6 ("does
+the single-agent Sign-Off node survive the hub?") is answered by D32
+having already deleted that node.
+
 ### `functions/signoff.py` — the user sign-off gate
 
 A **policy** maps each *change type* to who may sign it:
