@@ -217,7 +217,20 @@ class GGUFModelPool:
             value = llama_kwargs.get(key)
             if value is not None:
                 model_settings[key] = value
-        config = {"host": self._host, "port": self._port, "models": [model_settings]}
+        # interrupt_requests defaults to True in llama_cpp.server, and it
+        # does not mean what it sounds like: while one request streams, the
+        # arrival of a second one *truncates the first* with a well-formed
+        # [DONE]. The reader cannot tell that from a natural stop, so an
+        # agent reasons over half an answer whenever two agents share the
+        # server — which is the normal case here (spec D43). Turned off; the
+        # missing-finish_reason check in GraphEngine stays anyway, because a
+        # remote backend can truncate for its own reasons.
+        config = {
+            "host": self._host,
+            "port": self._port,
+            "interrupt_requests": False,
+            "models": [model_settings],
+        }
 
         fd, self._config_path = tempfile.mkstemp(prefix="silk-llama-", suffix=".json")
         with os.fdopen(fd, "w", encoding="utf-8") as handle:

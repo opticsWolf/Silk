@@ -32,6 +32,7 @@ from .hooks import (
     HOOK_BEFORE_MODEL_REQUEST,
     HOOK_BEFORE_RUN,
 )
+from .model_errors import classify_model_error
 from .protocols import AgentEngine, ToolRegistry
 from .reflection import is_retryable_tool_error, parse_tool_error
 from .stream_events import (
@@ -189,13 +190,26 @@ class AgentLoop:
                 yield EventError(error=str(exc), context="usage_limits", recoverable=False)
                 return
             except Exception as exc:
-                yield EventError(error=str(exc), context="stream_response", recoverable=False)
+                yield _model_error(exc)
                 return
 
             stats = engine.last_stats or {}
             if stats.get("error"):
-                yield EventError(error=str(stats["error"]), context="stream_response",
-                                 recoverable=False)
+                yield _model_error(stats["error"])
+                return
+            if stats.get("truncated"):
+                # The request succeeded and the answer was cut off anyway:
+                # a shared llama_cpp.server interrupts an in-flight stream
+                # when a second agent asks (spec D43), and the [DONE] it
+                # sends is indistinguishable from a clean finish except by
+                # the missing finish_reason. Reasoning over half an
+                # assistant turn is worse than failing the round.
+                yield _model_error(
+                    "The response stream ended without a finish reason — the "
+                    "answer was truncated. If two agents share one llama.cpp "
+                    "server, start it with interrupt_requests disabled.",
+                    truncated=True,
+                )
                 return
 
             self._final_text = full_text
@@ -347,6 +361,22 @@ class AgentLoop:
                 **engine.usage_limits.snapshot(),
             },
         )
+
+
+def _model_error(error: Any, *, truncated: bool = False) -> EventError:
+    """One place where a model-request failure becomes an event.
+
+    The classification rides along as ``kind`` so a consumer can tell an
+    overflow (which compaction may answer) from a dead server (which it
+    must not) without re-parsing the message (spec D40).
+    """
+    verdict = classify_model_error(error, truncated=truncated)
+    return EventError(
+        error=verdict.message,
+        context="stream_response",
+        recoverable=verdict.is_retryable,
+        kind=verdict.kind,
+    )
 
 
 def _args_as_dict(arguments: Any) -> dict[str, Any]:

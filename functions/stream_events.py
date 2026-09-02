@@ -175,11 +175,17 @@ class EventError:
         error: The exception or error message.
         context: Additional context about where the error occurred.
         recoverable: Whether the error can be recovered from.
+        kind: For a model-request failure, the classification from
+            ``model_errors`` (``overflow`` / ``retryable`` / ``terminal`` /
+            ``truncated``). Empty for errors raised elsewhere. Consumers key
+            compaction off ``kind == "overflow"``, never off ``context``,
+            which covers every stream failure alike (spec D40).
     """
     timestamp: datetime = field(default_factory=datetime.now)
     error: str = ""
     context: str = ""
     recoverable: bool = True
+    kind: str = ""
 
 
 @dataclass
@@ -351,6 +357,7 @@ class EventBuilder:
         error: str,
         context: str = "",
         recoverable: bool = True,
+        kind: str = "",
     ) -> EventError:
         """Build an EventError from raw data."""
         return EventError(
@@ -358,6 +365,7 @@ class EventBuilder:
             error=error,
             context=context,
             recoverable=recoverable,
+            kind=kind,
         )
 
     @staticmethod

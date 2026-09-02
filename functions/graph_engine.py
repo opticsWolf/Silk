@@ -199,7 +199,13 @@ class GraphEngine:
         model, pool = self._checkout()
         full_text = ""
         token_count = 0
-        finish_reason = "stop"
+        # Deliberately None, not "stop": a stream truncated by the server
+        # (llama_cpp.server's ``interrupt_requests``, spec D43) carries no
+        # finish_reason at all, and a default of "stop" is precisely the
+        # value that hides it. Unset at the end of a stream that did not
+        # raise means the answer was cut off.
+        finish_reason: Optional[str] = None
+        errored = False
         start = time.time()
         try:
             params = {k: gen_params[k] for k in _GEN_PARAM_KEYS if k in gen_params}
@@ -239,6 +245,7 @@ class GraphEngine:
             if self._native_tools_enabled:
                 self._pending_tool_calls = _finalize_tool_calls(tool_frags)
         except Exception as exc:
+            errored = True
             self.last_stats = {"error": str(exc), "text": full_text}
             raise
         finally:
@@ -249,6 +256,7 @@ class GraphEngine:
                 "input_tokens": self.count_prompt_tokens() if not pool else 0,
                 "tps": (token_count / elapsed) if elapsed > 0 else 0.0,
                 "finish_reason": finish_reason,
+                "truncated": finish_reason is None and not errored,
             })
             self._checkin(model, pool, session_id=self.session_id)
 
