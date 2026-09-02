@@ -39,6 +39,16 @@ class EventType(Enum):
     REFLECTION = "reflection"
 
 
+#: How a run ended, on ``EventRunResult.outcome``. A consumer must key off
+#: this and never off "is there a final text": a run that hit ``max_rounds``
+#: produces text and is not a success, which is exactly how that abort used
+#: to be reported as a clean finish (G13).
+OUTCOME_COMPLETED = "completed"
+OUTCOME_STOPPED = "stopped"
+OUTCOME_USAGE_LIMITED = "usage_limited"
+OUTCOME_ERROR = "error"
+
+
 # â”€â”€ Event Classes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 @dataclass
@@ -51,12 +61,16 @@ class EventStart:
         settings: Generation settings (temperature, top_p, etc.).
         input_tokens: Estimated input token count.
         system_prompt: The system prompt being used.
+        context_length: The backend's context window, when it is knowable —
+            the denominator every context-pressure decision needs, and which
+            never used to reach the loop at all (G14c).
     """
     timestamp: datetime = field(default_factory=datetime.now)
     model: str | None = None
     settings: dict[str, Any] = field(default_factory=dict)
     input_tokens: int | None = None
     system_prompt: str | None = None
+    context_length: int | None = None
 
 
 @dataclass
@@ -153,6 +167,8 @@ class EventRunResult:
         tool_results: List of tool results received during the run.
         error: Error message if an error occurred.
         usage_stats: Usage statistics for the run.
+        outcome: How the run ended — one of ``completed``, ``stopped``,
+            ``usage_limited``, ``error``. See the OUTCOME_* constants.
     """
     timestamp: datetime = field(default_factory=datetime.now)
     text: str = ""
@@ -164,6 +180,7 @@ class EventRunResult:
     tool_results: list[dict[str, Any]] = field(default_factory=list)
     error: str | None = None
     usage_stats: dict[str, Any] = field(default_factory=dict)
+    outcome: str = OUTCOME_COMPLETED
 
 
 @dataclass
@@ -248,6 +265,7 @@ class EventBuilder:
         settings: dict[str, Any] | None = None,
         input_tokens: int | None = None,
         system_prompt: str | None = None,
+        context_length: int | None = None,
     ) -> EventStart:
         """Build an EventStart from raw data."""
         return EventStart(
@@ -256,6 +274,7 @@ class EventBuilder:
             settings=settings or {},
             input_tokens=input_tokens,
             system_prompt=system_prompt,
+            context_length=context_length,
         )
 
     @staticmethod
@@ -337,6 +356,7 @@ class EventBuilder:
         tool_results: list[dict[str, Any]] | None = None,
         error: str | None = None,
         usage_stats: dict[str, Any] | None = None,
+        outcome: str = OUTCOME_COMPLETED,
     ) -> EventRunResult:
         """Build an EventRunResult from raw data."""
         return EventRunResult(
@@ -350,6 +370,7 @@ class EventBuilder:
             tool_results=tool_results or [],
             error=error,
             usage_stats=usage_stats or {},
+            outcome=outcome,
         )
 
     @staticmethod

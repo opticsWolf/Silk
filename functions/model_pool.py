@@ -207,6 +207,12 @@ class GGUFModelPool:
         self._log_path: Optional[str] = None
         self._log_handle = None
         self._participant = None
+        # The context window the server was actually started with. The one
+        # number a context budget is a fraction of; kept here because this
+        # is where it stops being a request and becomes a fact (G14c).
+        self.context_length: Optional[int] = (
+            int(llama_kwargs["n_ctx"]) if llama_kwargs.get("n_ctx") else None
+        )
 
         # Build the server config from the requested settings (robust: JSON, so
         # bools/ints serialize correctly and no CLI flag names are guessed).

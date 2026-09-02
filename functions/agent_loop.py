@@ -36,6 +36,9 @@ from .model_errors import classify_model_error
 from .protocols import AgentEngine, ToolRegistry
 from .reflection import is_retryable_tool_error, parse_tool_error
 from .stream_events import (
+    OUTCOME_COMPLETED,
+    OUTCOME_ERROR,
+    OUTCOME_STOPPED,
     EventDelta,
     EventError,
     EventFinalResult,
@@ -92,6 +95,23 @@ class AgentLoop:
         """Request a graceful stop; the engine breaks at the next token."""
         self.engine.request_stop()
 
+    def context_length(self) -> Optional[int]:
+        """The engine's context window, or ``None`` if it does not say.
+
+        Optional on the AgentEngine protocol, because an engine over a
+        backend that never reports one is still a usable engine — the
+        budget is then simply unknown, and callers must treat it as such
+        rather than substituting a guess.
+        """
+        getter = getattr(self.engine, "context_length", None)
+        if getter is None:
+            return None
+        try:
+            value = getter()
+        except Exception:      # a backend probe must not fail a run
+            return None
+        return int(value) if value else None
+
     def _emit(self, event: str, **kwargs: Any) -> None:
         """Emit a lifecycle hook via the toolbox's registry, if present.
 
@@ -124,6 +144,7 @@ class AgentLoop:
         yield EventStart(
             settings=dict(gen_params),
             input_tokens=engine.count_prompt_tokens(),
+            context_length=self.context_length(),
         )
         self._emit(HOOK_BEFORE_RUN, user_input=user_input, settings=dict(gen_params))
 
@@ -159,6 +180,8 @@ class AgentLoop:
         retry_count = 0
         self._final_text = ""
         self._rounds_used = 0
+
+        outcome = OUTCOME_COMPLETED
 
         for _round in range(self.max_rounds):
             # 1. Usage gates before each request.
@@ -234,7 +257,10 @@ class AgentLoop:
             #    from ```tool_call fences, or the engine's structured
             #    tool_calls when the model supports native tool calling.
             calls = self._transport.extract_calls(engine, full_text)
-            if not calls or engine.stop_requested() or self.toolbox is None:
+            if engine.stop_requested():
+                outcome = OUTCOME_STOPPED
+                break
+            if not calls or self.toolbox is None:
                 break
 
             try:
@@ -316,6 +342,11 @@ class AgentLoop:
             # Loop back so the model can read the tool output(s) / retry.
             continue
         else:
+            # The loop ran out of rounds with the model still calling tools.
+            # There *is* a final text -- the last assistant turn -- which is
+            # why this used to read as a clean finish downstream (G13). The
+            # outcome is what says otherwise.
+            outcome = OUTCOME_ERROR
             yield EventError(
                 error=f"max_rounds ({self.max_rounds}) reached without a final answer.",
                 context="agent_loop",
@@ -361,6 +392,7 @@ class AgentLoop:
                 "elapsed_s": elapsed,
                 **engine.usage_limits.snapshot(),
             },
+            outcome=outcome,
         )
 
 

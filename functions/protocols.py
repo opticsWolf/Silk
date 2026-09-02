@@ -46,6 +46,14 @@ class AgentEngine(Protocol):
         """Whether a stop has been requested for the current run."""
         ...
 
+    # Optional. An engine may omit it; the loop then treats the context
+    # window as unknown rather than substituting a guess. Not part of the
+    # runtime-checkable surface for that reason -- a fake engine in a test
+    # is still an AgentEngine without it.
+    #
+    # def context_length(self) -> Optional[int]:
+    #     """The backend's context window, or None when unknown."""
+
 
 @runtime_checkable
 class ToolRegistry(Protocol):

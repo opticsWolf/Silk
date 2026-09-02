@@ -10,7 +10,7 @@ Only one monitor needed per pool regardless of how many agents share it.
 
 from typing import Any, ClassVar, Dict, List, Optional
 
-from PySide6.QtCore import Qt, QEvent, Signal, Slot
+from PySide6.QtCore import Signal, Slot
 from PySide6.QtWidgets import QFormLayout, QLabel, QVBoxLayout, QWidget
 
 from weave.widgetcore import WidgetCore, PortRole

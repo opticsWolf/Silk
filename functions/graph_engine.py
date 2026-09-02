@@ -177,6 +177,22 @@ class GraphEngine:
                 messages.append({"role": role, "content": content})
         return messages
 
+    def context_length(self) -> Optional[int]:
+        """The backend's context window, or ``None`` when it is unknown.
+
+        The denominator for every context-pressure decision. It is known at
+        load time -- the loader reads it off the GGUF and the pool is
+        started with it -- and used to stop at the loader, so the loop had
+        no idea how much room it was working in (G14c). Read from the handle
+        first (an explicit value wins) and from the pool second.
+        """
+        explicit = self._handle.get("context_length")
+        if explicit:
+            return int(explicit)
+        pool = self._handle.get("pool")
+        value = getattr(pool, "context_length", None) if pool is not None else None
+        return int(value) if value else None
+
     def count_prompt_tokens(self) -> int:
         """Best-effort input-token estimate for the current prompt state."""
         text = "\n".join(m["content"] for m in self.build_messages())
