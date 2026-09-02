@@ -328,6 +328,22 @@ class HookRegistry:
         """Just the callables on *event*, in registration order."""
         return [entry.callback for entry in self._hooks.get(event, ())]
 
+    def make_outermost(self, event: str, entry: HookEntry) -> None:
+        """Move *entry* to the front of the middleware chain for *event*.
+
+        The chain runs first-registered outermost, and a middleware may
+        return without calling ``handler()`` -- so anything ahead of a
+        guard can answer a call the guard never sees. A guard that must be
+        monotonic (the approval gate, spec D37/I10) says so here instead of
+        relying on the order a config file happened to produce.
+        """
+        entries = self._middleware.get(event)
+        if not entries or entries[0] is entry:
+            return
+        self._middleware[event] = [
+            entry, *(e for e in entries if e is not entry)
+        ]
+
     def middleware_entries(self, event: str) -> list[HookEntry]:
         """The middleware registrations on *event*, declarations and all."""
         return list(self._middleware.get(event, ()))

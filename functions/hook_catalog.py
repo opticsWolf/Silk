@@ -501,7 +501,7 @@ def attach_catalog_hooks(
     register_hook_map(toolbox.hooks, build_hooks(names, configs))
 
     if "signoff" in names:
-        from .signoff import attach_signoff_gate  # local: avoid import cycle
+        from .approval import attach_signoff_gate  # local: avoid import cycle
         cfg = resolve_config(HOOK_CATALOG["signoff"], (configs or {}).get("signoff"))
         attach_signoff_gate(
             toolbox, sandbox, policy=signoff_policy_from_config(cfg),  # type: ignore[arg-type]

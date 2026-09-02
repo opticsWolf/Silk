@@ -219,6 +219,12 @@ in one `HookRegistry`:
   `handler()` call doesn't find an emptied list and silently skip layers).
 - `register_ordered(capability_id, position, wraps, wrapped_by, requires)`
   records ordering constraints for capabilities.
+- `make_outermost(event, entry)` moves one entry to the front of the chain.
+  The chain runs first-registered outermost, and a middleware may return
+  without calling `handler()` — so anything ahead of a guard can answer a
+  call the guard never sees. A guard that must be monotonic (the approval
+  gate, D37/I10) says so here instead of relying on the order a config file
+  happened to produce.
 
 **Binding and tiers** (spec D13/D14) — a registration is a `HookEntry`, not
 a bare callable, and it carries two declarations the registry acts on:
@@ -238,7 +244,10 @@ a bare callable, and it carries two declarations the registry acts on:
   derived ToolSet — which is what makes invariant **I7** true for a hook
   installed *outside* the build recipe (the recipe replay already covers
   the ones inside it). The approval gate is the first hook that genuinely
-  must not be droppable.
+  must not be droppable — and it is the worked example of the two tiers
+  being different properties: `essential` means *cannot be dropped* (I7),
+  `make_outermost` means *cannot be bypassed by something registered around
+  it* (I10).
 
 Both declarations can travel a `HookMap` — a plain `{event: [callables]}`
 dict with no room for keywords — either as a `HookEntry` value or via the
