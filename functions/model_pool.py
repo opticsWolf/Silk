@@ -33,6 +33,8 @@ from typing import Any, Dict, List, Optional
 
 from weave.logger import get_logger
 
+from .prefix_stats import LogDrain, PrefixMeter
+
 log = get_logger("SilkModelPool")
 
 # ── Dependency guards ────────────────────────────────────────────────────────
@@ -244,6 +246,12 @@ class GGUFModelPool:
         # Capture server stderr to a file so a failed start reports *why*.
         self._log_path = self._config_path + ".log"
         self._log_handle = open(self._log_path, "w", encoding="utf-8")
+        # That same file is where the backend already reports, per request,
+        # how much of the prompt it had cached. Reading it is the whole of
+        # the D41 measurement -- nothing is added to the model path.
+        self._prefix_meter = PrefixMeter()
+        self._prefix_drain = LogDrain(self._log_path)
+        self._prefix_lock = threading.Lock()
 
         cmd = [sys.executable, "-m", "llama_cpp.server",
                "--config_file", self._config_path]
@@ -400,6 +408,37 @@ class GGUFModelPool:
                 self._active_sessions -= 1
                 log.debug(f"Checkin: session {session_id[:8]}… → released")
 
+    # -- prefix-reuse measurement (spec D41/D47) --------------------------
+
+    def begin_request(self, session_id: str = "default") -> None:
+        """Drop log lines written before this request starts.
+
+        Attribution is sequential because the server is: every request goes
+        through ``llama_outer_lock``, so what appears between begin and end
+        belongs to the request in between (spec D43/D53).
+        """
+        with self._prefix_lock:
+            self._prefix_drain.drain()
+
+    def end_request(
+        self, session_id: str = "default", wall_s: Optional[float] = None
+    ) -> None:
+        """Fold this request's log lines into the meter."""
+        with self._prefix_lock:
+            lines = self._prefix_drain.drain()
+            self._prefix_meter.record_lines(
+                lines, session=session_id, wall_s=wall_s
+            )
+
+    def prefix_report(self) -> dict:
+        """D47's three numbers so far; ``None`` where there is no data."""
+        with self._prefix_lock:
+            return self._prefix_meter.report().as_dict()
+
+    def reset_prefix_stats(self) -> None:
+        with self._prefix_lock:
+            self._prefix_meter.reset()
+
     def snapshot(self) -> dict:
         with self._lock:
             return {
@@ -415,4 +454,7 @@ class GGUFModelPool:
                 "kv_total_tokens": 0,
                 "kv_fill_pct": 0.0,
                 "clear_on_return": self._clear_on_return,
+                # The number the context design hangs on, surfaced where the
+                # pool is already being watched (D41; G15).
+                "prefix_reuse": self.prefix_report(),
             }

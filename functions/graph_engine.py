@@ -216,6 +216,7 @@ class GraphEngine:
         self.usage_limits.reserve_request()
 
         model, pool = self._checkout()
+        self._begin_measured_request(pool)
         full_text = ""
         token_count = 0
         # Deliberately None, not "stop": a stream truncated by the server
@@ -275,6 +276,7 @@ class GraphEngine:
                 "finish_reason": finish_reason,
                 "truncated": finish_reason is None and not errored,
             })
+            self._end_measured_request(pool, elapsed)
             self._checkin(model, pool, session_id=self.session_id)
 
     # -- pool handling -----------------------------------------------------
@@ -293,6 +295,30 @@ class GraphEngine:
         if model is None:
             raise RuntimeError("gguf_model handle has neither 'model' nor 'pool'.")
         return model, None
+
+    def _begin_measured_request(self, pool: Any) -> None:
+        """Mark the start of a request for the prefix meter, if the pool has one.
+
+        Optional on purpose: a pool that does not measure is still a pool,
+        and a measurement must never be able to fail a run (spec D41).
+        """
+        hook = getattr(pool, "begin_request", None) if pool is not None else None
+        if hook is None:
+            return
+        try:
+            hook(session_id=self.session_id)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _end_measured_request(self, pool: Any, elapsed: float) -> None:
+        """Fold the finished request into the pool's prefix meter."""
+        hook = getattr(pool, "end_request", None) if pool is not None else None
+        if hook is None:
+            return
+        try:
+            hook(session_id=self.session_id, wall_s=elapsed)
+        except Exception:  # noqa: BLE001
+            pass
 
     @staticmethod
     def _checkin(model: Any, pool: Any, session_id: str = "default") -> None:
