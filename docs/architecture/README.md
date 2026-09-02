@@ -48,6 +48,7 @@ restored by the reconstruction below.
 - [Invariants](17-invariants.md)
 - [Design rules](18-design-rules.md)
 - [Where new behaviour goes](19-where-new-behaviour-goes.md)
+- [Graph authoring](20-graph-authoring.md)
 
 ## Files
 
@@ -73,5 +74,6 @@ restored by the reconstruction below.
 | `17-invariants.md` | Invariants |
 | `18-design-rules.md` | Design rules |
 | `19-where-new-behaviour-goes.md` | Where new behaviour goes |
+| `20-graph-authoring.md` | Graph authoring |
 | `README.md` | this index (not part of the reconstruction) |
 | `RECONSTRUCT.md` | how to remerge everything into one file |

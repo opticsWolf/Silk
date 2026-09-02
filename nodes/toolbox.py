@@ -41,12 +41,14 @@ from ..functions.tools.file_sandbox import FileToolSandbox
 from ..functions.tools.file_read import attach_file_read_tools
 from ..functions.tools.file_write import attach_file_write_tools
 from ..functions.tools.file_manipulate import attach_file_manipulate_tools
+from ..functions.tools.graph_authoring import attach_graph_tools
 from ..functions.tools.recall_tool import attach_recall_tool
 from ..functions.tools.ripgrep_tool import attach_ripgrep_tools
 from ..functions.tools.toolchains import attach_toolchain_tools
 from ..functions.tools.task_tracker import attach_task_tools
 from ..functions.hook_catalog import attach_catalog_hooks
 from ..widgets.hook_select import HookSelectWidget
+from ..widgets.node_whitelist import NodeWhitelistWidget
 from ..widgets.tool_tree import ToolDetailWidget, ToolTreeWidget
 
 log = get_logger("SilkToolBox")
@@ -173,6 +175,17 @@ class SilkToolBoxNode(ActiveNode):
         self._widget_core.register_widget(
             "max_read_kib", self.spin_read_kib, role=PortRole.INTERNAL,
             datatype="int", default=512, add_to_layout=False,
+        )
+
+        # Graph authoring (§18, D71). The whitelist is the safety
+        # property, not the checkbox: an empty list means the tools are
+        # mounted and every placement is refused, and there is no
+        # "allow all".
+        self._node_whitelist = NodeWhitelistWidget()
+        form.addRow("Placeable Nodes:", self._node_whitelist)
+        self._widget_core.register_widget(
+            "placeable_nodes", self._node_whitelist, role=PortRole.INTERNAL,
+            datatype="list", default=[], add_to_layout=False,
         )
 
         # Infrastructure hooks: part of the recipe, so every derived
@@ -312,6 +325,17 @@ class SilkToolBoxNode(ActiveNode):
                 "task_tracker",
                 partial(attach_task_tools, plan=plan_ref)
                 if plan_ref is not None else attach_task_tools,
+            ))
+
+        # Graph authoring. Mounted whenever the user has ticked a class:
+        # the whitelist *is* the grant, so an empty one means the pack has
+        # nothing to offer and stays out of the prompt entirely (D71).
+        placeable = [str(n) for n in (inputs.get("placeable_nodes") or ())
+                     if str(n).strip()]
+        if placeable:
+            recipe.append((
+                "graph_authoring",
+                partial(attach_graph_tools, whitelist=tuple(placeable)),
             ))
 
         # Memory. Attached after the task tools so a box that has both

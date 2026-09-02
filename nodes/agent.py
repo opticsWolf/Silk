@@ -51,6 +51,11 @@ from weave.widgets.sync_button import SyncButton
 from .silk_ports import GGUF_MODEL_TYPE, SILK_ROLE_TYPE, SILK_TOOLSET_TYPE  # noqa: F401
 from ..functions.agent_loop import AgentLoop, DEFAULT_MAX_ROUNDS
 from ..functions.approval import bind_run_seam
+from ..functions.graph_author import CanvasBinding, RunScope, bind_canvas
+from ..functions.main_thread_call import (
+    DEFAULT_TIMEOUT_S as CANVAS_TIMEOUT_S, MainThreadCall,
+)
+from .graph_canvas import CanvasAuthor
 from ..functions.compaction import Compactor
 from ..functions.file_grants import resolve_grants
 from ..functions.decision_registry import REGISTRY as DECISIONS
@@ -133,6 +138,9 @@ class SilkAgentNode(ThreadedManualNode):
         # Both are None between runs; `cancel_compute` reads the seam, which
         # is why it lives on the node rather than in `compute`'s frame.
         self._seam: Optional[DecisionSeam] = None
+        #: The canvas seam and its main-thread resolver, per run (D70).
+        self._canvas_seam: Optional[MainThreadCall] = None
+        self._canvas_author: Optional[CanvasAuthor] = None
         self._pending_decision: Optional[dict] = None
         self._emit_event: Optional[Any] = None
 
@@ -605,6 +613,18 @@ class SilkAgentNode(ThreadedManualNode):
                 self._seam = DecisionSeam(_ask, timeout_s=DEFAULT_TIMEOUT_S)
                 bind_run_seam(toolset, self._seam)
 
+                # The canvas seam (D70): the same waiter, resolved by the
+                # main thread instead of a person. Bound per run and per
+                # agent, so the run scope that says "you may remove only
+                # what you placed" (D73) cannot outlive its run.
+                self._canvas_seam = MainThreadCall(timeout_s=CANVAS_TIMEOUT_S)
+                self._canvas_author = CanvasAuthor(self, self._canvas_seam)
+                self._canvas_seam.attach(self._canvas_author.deliver)
+                bind_canvas(toolset, CanvasBinding(
+                    seam=self._canvas_seam, scope=RunScope(),
+                    agent_uid=str(getattr(self, "unique_id", "")),
+                ))
+
                 def _emit_plan_if_changed() -> None:
                     # Live plan updates for the Plan Viewer. No-op when the
                     # toolset has no task store; dedup-by-revision means reads
@@ -813,6 +833,10 @@ class SilkAgentNode(ThreadedManualNode):
             if self._seam is not None:
                 self._seam.close()
                 self._seam = None
+            if self._canvas_seam is not None:
+                self._canvas_seam.close()
+                self._canvas_seam = None
+            self._canvas_author = None
             self._emit_event = None
             self.decision_settled.emit("")
             # A stopped or timed-out run never answers what it asked, and a
@@ -822,6 +846,7 @@ class SilkAgentNode(ThreadedManualNode):
                 DECISIONS.clear_run(run_id)
             if toolset is not None:
                 bind_run_seam(toolset, None)
+                bind_canvas(toolset, None)
             self._detach_run_observers(toolset)
             if toolset is not None:
                 for event_name, callback in event_hooks:

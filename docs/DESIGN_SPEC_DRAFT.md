@@ -1667,6 +1667,24 @@ whitelist is resolved through `NODE_REGISTRY`, which that plan gives a
 re-resolve its whitelist on registry change, so a hot-loaded plugin's nodes
 become placeable without rebuilding the graph.
 
+**Implemented (2026-09-02), except the hot-reload re-resolve.** D49's waiter
+was lifted into `functions/blocking_seam.py` and `DecisionSeam` now subclasses
+it, so D70's `MainThreadCall` (`functions/main_thread_call.py`) is the same
+object with the event loop as its resolver rather than a person — pinned by
+identity, not by comment. The policy half lives Qt-free in
+`functions/graph_author.py` (`Whitelist`, `RunScope`,
+`check_self_modification`, `CanvasBinding`), the six tools in
+`functions/tools/graph_authoring.py`, the Qt resolver in
+`nodes/graph_canvas.py` (`CanvasAuthor`, every op through an undo command),
+and the grant in `widgets/node_whitelist.py` on the ToolBox node's
+`placeable_nodes` port. 40 tests: `tests/test_silk_main_thread_call.py` (the
+seam and D36's four failure paths), `tests/test_silk_graph_authoring.py`
+(default-deny, run scope, the self-modification walk) and
+`tests/test_silk_graph_canvas.py` (a real `Canvas`, in a subprocess, because
+D72's claim cannot be faked: the undo *is* the safety property). Left open:
+re-resolving the whitelist on a `NODE_REGISTRY` generation change, which
+needs the hot-load work below.
+
 ---
 
 ## 19. Self-modification -- the agent extends Weave
@@ -1886,7 +1904,9 @@ self-improving loop with no feedback on failure does not improve; it repeats.
 8. Graph authoring (§18, D69–D74): the `MainThreadCall` seam generalised
     from D49, the whitelist widget on the ToolBox node, the six tools, the
     self-modification guard. Strictly after the Phase 2 seam — it is the
-    seam's second user, not its first.
+    seam's second user, not its first. **Done 2026-09-02**
+    (D74's hot-reload re-resolve excepted — it waits on the registry's
+    generation counter).
 9. Self-modification (§19, D75–D81): the three load verbs, the user plugin
     root, the always-approve floor with its diff-carrying request,
     `weave_lint` in the toolchain, `request_relaunch` + the release

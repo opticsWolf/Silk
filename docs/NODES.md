@@ -42,6 +42,17 @@ including ones from earlier sessions and ones compaction dropped (§17,
 D66). It needs the `ledger` extra (`pip install macrame-db`); without it
 the tool registers and says so rather than quietly returning nothing.
 
+The **Placeable Nodes** tree is the graph-authoring grant (§18, D71):
+tick the node classes an agent may place, and the six graph tools
+(`list_placeable_nodes`, `describe_graph`, `place_node`, `connect`,
+`disconnect`, `remove_node`) mount. Leave it empty — the default — and no
+agent fed by this ToolBox can build graph at all. Every edit an agent makes
+goes onto the canvas's own undo stack, so one Ctrl+Z takes back one tool
+call; destructive calls reach only what that run itself placed, and no
+mutation may touch the agent, its tool chain, or anything upstream of it
+(D72, D73). The list travels in the saved graph and in presets: it carries
+no secret and no filesystem authority.
+
 Which backend stores the plan is the environment's business, not the
 node's: `SILK_TASK_BACKEND=ledger` puts it on the Macrame ledger, the
 default keeps the SQLite store, and both answer the same protocol — the

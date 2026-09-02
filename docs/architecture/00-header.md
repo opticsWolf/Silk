@@ -34,4 +34,5 @@ It is the companion to [NODES.md](../NODES.md) (what the graph nodes do) and
 - [Invariants](#invariants)
 - [Design rules](#design-rules)
 - [Where new behaviour goes](#where-new-behaviour-goes)
+- [Graph authoring](#graph-authoring--the-agent-places-nodes)
 
