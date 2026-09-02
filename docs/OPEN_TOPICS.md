@@ -235,13 +235,17 @@ adoption per the `pyproject.toml` comment ("widen `files` as more modules
 gain types"). `nodes/` and `widgets/` are untyped. Tracked here so the
 intentional gap doesn't become an accidental one.
 
-### G10. `EventStart.system_prompt` is never set
+### G10. `EventStart.system_prompt` is never set — *closed*
 
-The field exists on `EventStart`, but the loop constructs the event with
-only `settings` and `input_tokens` — it is always `None`. Either populate
-it (useful for a viewer that shows the model its instructions) or drop
-the field. Still open; the spec carries it as an implementation-time call
-(§5, open question 3), since it is a one-line change either way.
+**Closed (2026-09-02)** by §22 q3, and the answer was neither of the two
+on offer. The field is now populated — `AgentLoop.system_prompt()` reads
+it off the engine, optional on the protocol like `context_length()` — so a
+viewer or hook in the same process can show a run its own instructions.
+But it does not travel the `events` port: `to_wire` drops it as content
+and derives `system_prompt_chars`, exactly as it does for a tool result.
+Dropping the field entirely would have thrown away the useful half;
+shipping the text on the wire would have put the graph author's prompt
+into every log that tails the port.
 
 ### G11. `OpenAIClientMock` is the production client
 

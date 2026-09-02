@@ -89,7 +89,10 @@ class EventStart:
         model: Model identifier (if available).
         settings: Generation settings (temperature, top_p, etc.).
         input_tokens: Estimated input token count.
-        system_prompt: The system prompt being used.
+        system_prompt: The assembled system prompt, for an in-process
+            consumer that wants to see what the model was told. It is
+            *content*, so it does not travel the ``events`` port -- the
+            wire carries ``system_prompt_chars`` instead (§22 q3).
         context_length: The backend's context window, when it is knowable —
             the denominator every context-pressure decision needs, and which
             never used to reach the loop at all (G14c).
@@ -426,6 +429,11 @@ EVENT_TYPES: dict[type, EventType] = {}
 _CONTENT_FIELDS: dict[str, tuple[str, ...]] = {
     "EventToolResult": ("result",),
     "EventDelta": ("cumulative_text",),
+    # The system prompt is content by every measure that matters: it is
+    # assembled from role instructions, capability text and whatever the
+    # graph put in front of them. In-process consumers get it on the typed
+    # event; the wire gets ``system_prompt_chars`` (§22 q3).
+    "EventStart": ("system_prompt",),
 }
 
 
@@ -499,6 +507,8 @@ def to_wire(event: Any, **envelope: Any) -> dict[str, Any]:
         body["chars"] = len(event.result or "")
     if isinstance(event, EventDelta):
         body["chars"] = len(event.delta or "")
+    if isinstance(event, EventStart):
+        body["system_prompt_chars"] = len(event.system_prompt or "")
     return {TYPE_FIELD: member.value, "ts": ts, **body, **envelope}
 
 

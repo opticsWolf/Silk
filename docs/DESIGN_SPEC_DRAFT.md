@@ -212,9 +212,14 @@ anyway; doing it once is cheaper than three times.
   paths (D30).
 - Hook and task events as typed members rather than dicts.
 
-**Open:** whether `EventStart.system_prompt` (G10, always `None`) is
-populated or dropped. Decide during implementation; it is a one-line change
-either way.
+**Closed (§22 q3):** `EventStart.system_prompt` is *populated* on the typed
+event and *withheld* from the wire. `AgentLoop.system_prompt()` reads it off
+the engine the same defensive way `context_length()` does — optional on the
+protocol, `None` when there is nothing — so an in-process consumer can see
+exactly what the model was told. `to_wire` lists it in `_CONTENT_FIELDS` and
+derives `system_prompt_chars` instead, because the `events` port reaches
+logs, files and other people's nodes, and the observability rule does not
+make an exception for the one message the graph author wrote.
 
 ---
 
@@ -1991,7 +1996,7 @@ out of scope.
 
 Untouched by this spec: G5 (dependency declaration), G7
 (`EventUsageLimit` granularity), G8 (mid-batch stops), G9 (type coverage),
-G10 (`EventStart.system_prompt` — noted in §5), G11 (`OpenAIClientMock`
+G11 (`OpenAIClientMock`
 name), T5 (delegation depth), T6 (HTML floor), T7 (durable event sink).
 
 **G12 (version metadata) gains a second reason and stays cheap.** §19 makes
@@ -2043,7 +2048,11 @@ need a `__version__` to name. Still trivial; now load-bearing.
    table in §8 -- `wrap_tool_validate` is now honoured in
    `ToolBox.execute_tool_calls_async`; the four loop/stream wraps are
    deleted, so `UNWIRED_EVENTS` is empty and G3/T2 is closed.
-3. Whether `EventStart.system_prompt` is populated or dropped (§5).
+3. ~~Whether `EventStart.system_prompt` is populated or dropped (§5).~~
+   **Answered (2026-09-02):** populated on the event, dropped from the
+   wire. The field is filled from the engine and `to_wire` replaces it
+   with `system_prompt_chars`, the same treatment a tool result gets.
+   Closes G10.
 4. Spill-file cleanup policy and its lifetime (§12).
 5. Whether the hook-node question returns once per-tool binding exists --
    D12 is a "not yet", not a "never".

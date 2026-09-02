@@ -9,7 +9,7 @@ renders:
 
 | Event | Carries |
 |---|---|
-| `EventStart` | `settings` (gen params), `input_tokens` (also declares `system_prompt`, currently always `None` — see OPEN_TOPICS G10) |
+| `EventStart` | `settings` (gen params), `input_tokens`, `context_length`, `system_prompt` — the last one is read off the engine and stays on the typed event: `to_wire` drops it as content and sends `system_prompt_chars` (§22 q3) |
 | `EventDelta` | `delta`, `total_tokens`, `cumulative_text`, `tps` |
 | `EventToolCall` | `tool_name`, `tool_args` (parsed dict), `call_id` |
 | `EventToolResult` | `tool_name`, `result`, `call_id`, `error`, `error_message` |

@@ -128,6 +128,22 @@ class AgentLoop:
             return None
         return int(value) if value else None
 
+    def system_prompt(self) -> Optional[str]:
+        """What the model was actually told, or ``None`` if nothing was.
+
+        Optional on the AgentEngine protocol for the same reason
+        :meth:`context_length` is: an engine that assembles its
+        instructions elsewhere is still an engine. It reaches the typed
+        ``EventStart`` and stops there -- the wire gets a length, never the
+        text (§22 q3).
+        """
+        try:
+            value = getattr(self.engine, "system_prompt", None)
+        except Exception:      # a property that raises must not fail a run
+            return None
+        text = str(value or "")
+        return text or None
+
     def _emit(self, event: str, **kwargs: Any) -> None:
         """Emit a lifecycle hook via the toolbox's registry, if present.
 
@@ -175,6 +191,7 @@ class AgentLoop:
             yield EventStart(
                 settings=dict(gen_params),
                 input_tokens=engine.count_prompt_tokens(),
+                system_prompt=self.system_prompt(),
                 context_length=self.context_length(),
             )
             self._emit(
