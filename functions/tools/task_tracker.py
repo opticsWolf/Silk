@@ -21,6 +21,7 @@ back as an informational ``conflict`` result, never a silent lost update.
 """
 from __future__ import annotations
 
+from functools import wraps
 from typing import TYPE_CHECKING, Any, Optional
 
 from pydantic import BaseModel, Field, field_validator
@@ -30,7 +31,8 @@ from pydantic import BaseModel, Field, field_validator
 # would be "beyond top-level". Absolute resolution works in both load paths and
 # yields the same module object as a normal import (no duplicate class identity).
 from weave.plugins.silk.functions.task_store import (
-    Conflict, DEFAULT_ACTOR, SqliteTaskStore, plan_to_json, render_markdown,
+    Conflict, DEFAULT_ACTOR, LedgerClosed, SqliteTaskStore, plan_to_json,
+    render_markdown,
 )
 
 if TYPE_CHECKING:
@@ -157,6 +159,11 @@ class PlanResult(BaseModel):
     markdown: Optional[str] = Field(None, description="Rendered plan (plan_view).")
     history: Optional[list] = Field(None, description="Recent ops (plan_history).")
     error: Optional[str] = Field(None, description="Execution error, if any.")
+    retryable: bool = Field(
+        False, description="True when the same call is expected to work "
+                           "shortly (Weave is restarting); re-issue it rather "
+                           "than abandoning the plan.",
+    )
 
 
 # ── helpers ─────────────────────────────────────────────────────────────────
@@ -174,6 +181,25 @@ def _actor(user_session: Optional[dict]) -> str:
     us = user_session or {}
     return str(us.get("agent_id") or us.get("actor") or us.get("user_id")
                or DEFAULT_ACTOR)
+
+
+def _refuses_gracefully(fn):
+    """Turn a closed ledger into a reply instead of an exception.
+
+    A write that arrives while Weave is shutting down is not a bug in
+    the call, and the agent has nowhere to put a traceback.  It is the
+    same shape as a conflict — "not applied, here is why" — with the
+    one addition a conflict does not need: whether asking again will
+    help.  A relaunch is a few seconds and a replacement; a quit is not.
+    """
+    @wraps(fn)
+    def guarded(*args, **kwargs) -> PlanResult:
+        try:
+            return fn(*args, **kwargs)
+        except LedgerClosed as exc:
+            return PlanResult(ok=False, message=str(exc),
+                              retryable=exc.retryable)
+    return guarded
 
 
 def _result(outcome: Any, *, message: str) -> PlanResult:
@@ -216,6 +242,7 @@ def attach_task_tools(toolbox: "ToolBox", sandbox: "FileToolSandbox") -> None:
             "- Reply JSON: ok, revision, message."
         ),
     )
+    @_refuses_gracefully
     def _plan_start(
         db_pool: Any, user_session: dict,
         goal: str, acceptance: Optional[list] = None,
@@ -227,6 +254,8 @@ def attach_task_tools(toolbox: "ToolBox", sandbox: "FileToolSandbox") -> None:
                 tasks=[dict(t) for t in (tasks or [])],
                 actor=_actor(user_session),
             )
+        except LedgerClosed:
+            raise                      # the decorator has the better answer
         except ValueError as e:
             return PlanResult(ok=False, message=str(e))
         return PlanResult(
@@ -283,6 +312,7 @@ def attach_task_tools(toolbox: "ToolBox", sandbox: "FileToolSandbox") -> None:
             "- Reply JSON: ok, revision, message."
         ),
     )
+    @_refuses_gracefully
     def _task_add(
         db_pool: Any, user_session: dict,
         title: str, rationale: str, parent: Optional[str] = None, note: str = "",
@@ -311,6 +341,7 @@ def attach_task_tools(toolbox: "ToolBox", sandbox: "FileToolSandbox") -> None:
             "- Reply JSON: ok, revision, message."
         ),
     )
+    @_refuses_gracefully
     def _task_update(
         db_pool: Any, user_session: dict,
         id: str, status: Optional[str] = None, title: Optional[str] = None,
@@ -335,6 +366,7 @@ def attach_task_tools(toolbox: "ToolBox", sandbox: "FileToolSandbox") -> None:
             "- Reply JSON: ok, revision, message."
         ),
     )
+    @_refuses_gracefully
     def _task_complete(
         db_pool: Any, user_session: dict, id: str, rationale: str,
     ) -> PlanResult:
@@ -357,6 +389,7 @@ def attach_task_tools(toolbox: "ToolBox", sandbox: "FileToolSandbox") -> None:
             "- Reply JSON: ok, revision, message."
         ),
     )
+    @_refuses_gracefully
     def _task_rescope(
         db_pool: Any, user_session: dict,
         id: str, rationale: str, new_title: Optional[str] = None,
@@ -382,6 +415,7 @@ def attach_task_tools(toolbox: "ToolBox", sandbox: "FileToolSandbox") -> None:
             "- Reply JSON: ok, revision, message."
         ),
     )
+    @_refuses_gracefully
     def _goal_revise(
         db_pool: Any, user_session: dict,
         rationale: str, new_text: Optional[str] = None,
@@ -407,6 +441,7 @@ def attach_task_tools(toolbox: "ToolBox", sandbox: "FileToolSandbox") -> None:
             "- Reply JSON: ok, revision, message."
         ),
     )
+    @_refuses_gracefully
     def _task_claim(db_pool: Any, user_session: dict, id: str) -> PlanResult:
         out = store.claim_task(task_id=id, actor=_actor(user_session))
         return _result(out, message="Task claimed.")
@@ -428,6 +463,7 @@ def attach_task_tools(toolbox: "ToolBox", sandbox: "FileToolSandbox") -> None:
             "- Reply JSON: ok, revision, message."
         ),
     )
+    @_refuses_gracefully
     def _request_signoff(
         db_pool: Any, user_session: dict, id: str, summary: str,
     ) -> PlanResult:

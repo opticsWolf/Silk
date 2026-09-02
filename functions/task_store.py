@@ -176,7 +176,19 @@ log = logging.getLogger("SilkTaskStore")   # stdlib only, as the module says
 
 
 class LedgerClosed(ValueError):
-    """Raised when a write is attempted after the ledger was released."""
+    """Raised when a write is attempted after the ledger was released.
+
+    ``retryable`` is the difference between the two shutdowns.  A quit
+    is the end and the caller should stop; a relaunch is a gap of a few
+    seconds with a replacement on the other side, and an agent that
+    reads *that* as a hard failure abandons work it could simply have
+    asked for again.  Nothing was written either way — that part is the
+    same, and is the part the message leads with.
+    """
+
+    def __init__(self, message: str, *, retryable: bool = False) -> None:
+        super().__init__(message)
+        self.retryable = retryable
 
 
 class _LedgerGate:
@@ -199,6 +211,8 @@ class _LedgerGate:
         self._lock = threading.Lock()
         self._closed = False
         self._participant = None
+        self._writing = 0
+        self._retryable = False
 
     def _register(self) -> None:
         if self._participant is not None:
@@ -211,7 +225,7 @@ class _LedgerGate:
             return
         install_shutdown_handlers()
         self._participant = get_shutdown_registry().register(
-            "task ledger", self.release,
+            "task ledger", self.release, busy=self.busy,
         )
 
     @contextmanager
@@ -219,15 +233,36 @@ class _LedgerGate:
         """Hold the gate for one write.  Raises once shutdown has run."""
         self._register()
         if self._closed:
-            raise LedgerClosed(
-                "Weave is shutting down; the plan was not modified."
-            )
+            raise self._closed_error()
         with self._lock:
             if self._closed:
-                raise LedgerClosed(
-                    "Weave is shutting down; the plan was not modified."
-                )
-            yield
+                raise self._closed_error()
+            self._writing += 1
+            try:
+                yield
+            finally:
+                self._writing -= 1
+
+    def _closed_error(self) -> LedgerClosed:
+        """The refusal, in the words the caller can act on."""
+        if self._retryable:
+            return LedgerClosed(
+                "The plan was not modified: Weave is restarting. The same "
+                "call will work once the replacement is up.",
+                retryable=True,
+            )
+        return LedgerClosed(
+            "The plan was not modified: Weave is shutting down."
+        )
+
+    def busy(self) -> Optional[str]:
+        """A description while a write is in flight, else None.
+
+        The relaunch sequence asks before it releases anything, so a
+        transaction is not interrupted by a restart that could just as
+        well have waited a second and asked again.
+        """
+        return "a plan write is in flight" if self._writing else None
 
     def release(self, timeout: float = 5.0) -> bool:
         """Refuse further writes and wait for the one in flight.
@@ -237,6 +272,7 @@ class _LedgerGate:
         WAL recovery is for, and the honest answer to "it did not
         finish" is to say so rather than to make it worse.
         """
+        self._retryable = self._reason_is_relaunch()
         self._closed = True
         acquired = self._lock.acquire(timeout=max(0.0, timeout))
         if acquired:
@@ -245,14 +281,37 @@ class _LedgerGate:
             log.warning("A plan write was still in flight at shutdown")
         return acquired
 
+    @staticmethod
+    def _reason_is_relaunch() -> bool:
+        """Whether a replacement is coming, as far as the host will say."""
+        try:
+            from weave.engine.shutdown import RELAUNCH, shutdown_reason
+        except Exception:  # noqa: BLE001 - a plugin must not need the host
+            return False
+        return shutdown_reason() == RELAUNCH
+
     def reopen(self) -> None:
-        """For tests, and for a child process after a fork."""
+        """A gate with nothing in flight and nobody shutting down.
+
+        For tests, and for a child after a fork: the child inherits the
+        parent's ``_closed`` — a fork *during* a shutdown would hand it
+        a ledger that refuses writes for no reason of its own — and a
+        lock the parent may have been holding, which in the child is
+        held by a thread that does not exist.  Both are replaced rather
+        than reasoned about.
+        """
+        self._lock = threading.Lock()
         self._closed = False
+        self._retryable = False
+        self._writing = 0
         self._participant = None
 
 
 #: The gate every store writes through.
 LEDGER = _LedgerGate()
+
+if hasattr(os, "register_at_fork"):        # POSIX only; a no-op on Windows
+    os.register_at_fork(after_in_child=LEDGER.reopen)
 
 
 # ── Rendering (the one renderer: plan → json / markdown) ─────────────────────
