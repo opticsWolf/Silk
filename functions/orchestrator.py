@@ -83,6 +83,14 @@ _BUDGET_ATTR = "_orchestrator_usage_limits"
 _DEPTH_ATTR = "_delegation_depth"
 _CHAIN_ATTR = "_delegation_chain"
 
+#: How deep delegation may nest, everywhere (spec D55). ``2`` lets the
+#: orchestrator call a worker that itself delegates once; a true cycle is
+#: refused by the chain guard regardless of the number. One constant because
+#: there used to be two -- the runtime defaulted to 1 while the node shipped
+#: 2 -- and a concept with two defaults is re-discovered as a bug about once
+#: a reading.
+DEFAULT_MAX_DEPTH = 2
+
 #: Ceiling on a single fan-out (guards against a runaway assignment list).
 #: Exceeding it is *refused*, never silently trimmed -- a cap that discards
 #: work while reporting success is the D43 failure shape (spec D52.3).
@@ -237,7 +245,8 @@ def _run_one(
 ) -> DelegateResult:
     """Resolve, guard, and run one worker; never raises (packs errors in-band)."""
     roster: dict[str, AgentSpec] = getattr(toolbox, _WORKERS_ATTR, {}) or {}
-    max_depth = int(getattr(toolbox, _DEPTH_CAP_ATTR, 1) or 1)
+    max_depth = int(getattr(toolbox, _DEPTH_CAP_ATTR, DEFAULT_MAX_DEPTH)
+                    or DEFAULT_MAX_DEPTH)
     base_gen = dict(getattr(toolbox, _GEN_ATTR, {}) or {})
     budget = getattr(toolbox, _BUDGET_ATTR, None)
     depth = int(getattr(toolbox, _DEPTH_ATTR, 0) or 0)
@@ -319,7 +328,7 @@ def attach_orchestrator_tools(
     sandbox: "Optional[FileToolSandbox]" = None,
     *,
     workers: Any,
-    max_depth: int = 1,
+    max_depth: int = DEFAULT_MAX_DEPTH,
     gen_params: Optional[dict[str, Any]] = None,
     usage_limits: Optional[Any] = None,
 ) -> None:
@@ -330,8 +339,10 @@ def attach_orchestrator_tools(
         sandbox: Unused (kept for the ``attach_*(toolbox, sandbox)`` shape).
         workers: A list of :class:`AgentSpec` (keyed by ``name``) or a
             ``{name: AgentSpec}`` map — the agents this orchestrator may call.
-        max_depth: How deep delegation may nest. ``1`` lets the orchestrator call
-            workers but stops a worker from sub-delegating.
+        max_depth: How deep delegation may nest (spec D55). ``1`` lets the
+            orchestrator call workers but stops a worker from sub-delegating;
+            the default ``2`` allows one further hop. The Orchestrator node
+            exposes it as an editable ``max_depth`` port, and that value wins.
         gen_params: Generation overrides applied to every worker run (a worker's
             own ``spec.gen_params`` still win per key).
         usage_limits: Optional shared budget threaded into every worker run so a

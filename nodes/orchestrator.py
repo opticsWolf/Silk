@@ -29,6 +29,9 @@ delegation.
 
 from typing import Any, ClassVar, Dict, List, Optional
 
+from PySide6.QtWidgets import QLabel, QSpinBox
+
+from weave.widgetcore import PortRole
 from weave.node import VerticalSizePolicy
 from weave.registry import register_node
 from weave.logger import get_logger
@@ -37,6 +40,7 @@ from .agent import SilkAgentNode
 from .silk_ports import SILK_AGENTS_TYPE  # noqa: F401
 from ..functions.stream_events import EventWorker
 from ..functions.orchestrator import (
+    DEFAULT_MAX_DEPTH,
     attach_orchestrator_tools,
     set_orchestrator_observers,
     set_orchestrator_workers,
@@ -51,8 +55,11 @@ class SilkOrchestratorNode(SilkAgentNode):
 
     #: How deep delegation may nest. ``2`` lets the orchestrator call a worker
     #: that itself delegates once; a true cycle is still refused by the chain
-    #: guard in ``functions/orchestrator.py``.
-    DELEGATION_MAX_DEPTH: ClassVar[int] = 2
+    #: guard in ``functions/orchestrator.py``. This is the *seed* for the
+    #: editable ``max_depth`` port, and the same constant the runtime
+    #: defaults to -- there used to be two values for the one concept, which
+    #: is all D55 is about.
+    DELEGATION_MAX_DEPTH: ClassVar[int] = DEFAULT_MAX_DEPTH
 
     node_name: ClassVar[Optional[str]] = "Silk Orchestrator"
     node_description: ClassVar[Optional[str]] = (
@@ -71,9 +78,53 @@ class SilkOrchestratorNode(SilkAgentNode):
         # Agent Spec nodes). Everything else is inherited from SilkAgentNode.
         self.add_input("workers", datatype="silk_agents")
 
+        # Delegation depth is a graph-visible decision, not a class constant
+        # (D55): a fan-out that may itself fan out is the difference between
+        # a bounded run and a tree, and the person wiring the graph is the
+        # one who should see the number. An upstream connection overrides
+        # the spin box, which is what PortRole.INPUT means here.
+        self.add_input("max_depth", datatype="int")
+
+        self.spin_depth = QSpinBox()
+        self.spin_depth.setRange(1, 8)
+        self.spin_depth.setValue(self.DELEGATION_MAX_DEPTH)
+        self.spin_depth.setToolTip(
+            "How deep delegation may nest. 1 lets this orchestrator call "
+            "workers but stops a worker from sub-delegating; 2 allows one "
+            "further hop. Cycles are refused at any depth."
+        )
+        self._widget_core.register_widget(
+            "max_depth", self.spin_depth, role=PortRole.INPUT,
+            datatype="int", default=self.DELEGATION_MAX_DEPTH,
+            add_to_layout=False,
+        )
+        form = getattr(self, "_form_layout", None)
+        if form is not None:
+            form.addWidget(QLabel("Delegation depth:"))
+            form.addWidget(self.spin_depth)
+
+    def delegation_depth(self, inputs: Dict[str, Any]) -> int:
+        """The depth this run may nest to: the port, else the spin box.
+
+        Clamped rather than validated away -- a depth of zero would disable
+        delegation on a node whose whole purpose is delegating, which is a
+        confusing way to answer a typo upstream.
+        """
+        raw = inputs.get("max_depth", None)
+        try:
+            depth = int(raw) if raw is not None else self.DELEGATION_MAX_DEPTH
+        except (TypeError, ValueError):
+            log.warning(
+                f"Orchestrator max_depth {raw!r} is not a number; using "
+                f"{self.DELEGATION_MAX_DEPTH}."
+            )
+            depth = self.DELEGATION_MAX_DEPTH
+        return max(1, min(8, depth))
+
     def compute(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
         toolset = inputs.get("toolset")
         workers = list(inputs.get("workers") or [])
+        max_depth = self.delegation_depth(inputs)
 
         if workers and toolset is None:
             log.warning(
@@ -87,11 +138,11 @@ class SilkOrchestratorNode(SilkAgentNode):
             # without re-registering the tools (mirrors the task-store handle).
             if "delegate" in getattr(toolset, "tools", {}):
                 set_orchestrator_workers(
-                    toolset, workers, max_depth=self.DELEGATION_MAX_DEPTH,
+                    toolset, workers, max_depth=max_depth,
                 )
             else:
                 attach_orchestrator_tools(
-                    toolset, workers=workers, max_depth=self.DELEGATION_MAX_DEPTH,
+                    toolset, workers=workers, max_depth=max_depth,
                 )
 
         return super().compute(inputs)

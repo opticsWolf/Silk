@@ -13,10 +13,13 @@ registers the delegation tools.
 `_run_one` (never raises — errors are packed in-band) guards three things
 before delegating:
 
-1. **Depth cap** — `depth >= max_depth` (the runtime's fallback default is
-   `1`; the `Silk Orchestrator` node passes its own default of `2` — see
-   OPEN_TOPICS T5) → the agent is told it may not delegate further and to do
-   the work directly.
+1. **Depth cap** — `depth >= max_depth` → the agent is told it may not
+   delegate further and to do the work directly. One default,
+   `DEFAULT_MAX_DEPTH = 2`, shared by the runtime and the node (D55): the
+   runtime used to fall back to `1` while the node shipped `2`, and a
+   concept with two defaults is re-discovered as a bug rather than noticed.
+   The `Silk Orchestrator` node exposes it as an editable `max_depth` port,
+   so the number a graph runs at is visible in the graph.
 2. **Cycle detection** — if the target worker is already in the active
    delegation `chain`, the recursion is refused with the chain shown.
 3. **Unknown worker** → an error listing the available workers.

@@ -124,6 +124,12 @@ plus:
 | Direction | Port | Type |
 |---|---|---|
 | in | `workers` | `silk_agents` |
+| in | `max_depth` | `int` (spin box, default 2) |
+
+`max_depth` is how deep delegation may nest: `1` lets the orchestrator call
+workers but stops a worker from sub-delegating, `2` allows one further hop.
+Cycles are refused at any depth. An upstream connection overrides the spin
+box.
 
 ## Observability & human gates
 

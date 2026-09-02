@@ -259,6 +259,11 @@ class SilkAgentNode(ThreadedManualNode):
             "btn_run", self.btn_run, role=PortRole.INTERNAL, add_to_layout=False,
         )
 
+        # Subclasses add their own rows here (the Orchestrator's delegation
+        # depth, D55). Kept as an attribute rather than rebuilt per subclass
+        # so an added row lands inside the same form as everything else.
+        self._form_layout = form
+
         container = QWidget()
         container.setLayout(layout)
 

@@ -591,10 +591,11 @@ Viewer is the only remaining plan consumer.)
 
 ### T5. Default delegation depth
 
-**Resolved** by spec §15, D55: the node's value wins, becomes an editable
-port so the graph shows it, and the runtime default follows it rather than
-diverging. Recorded chiefly so the divergence stops being re-discovered.
-Stub kept for inbound links.
+**Resolved** by spec §15, D55, and **implemented** (Phase 3 item 0): one
+`DEFAULT_MAX_DEPTH = 2` in `functions/orchestrator.py` for runtime and node
+alike, exposed as the `Silk Orchestrator` node's editable `max_depth` port.
+Recorded chiefly so the divergence stops being re-discovered. Stub kept for
+inbound links.
 
 ### T6. HTML rendering floor
 
