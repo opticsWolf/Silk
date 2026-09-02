@@ -30,14 +30,17 @@ Design (see docs/TASK_TRACKER_PLAN.md):
 from __future__ import annotations
 
 import json
+import logging
 import os
 import secrets
 import sqlite3
+import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Iterator, Optional
 
 # ── Vocabulary ──────────────────────────────────────────────────────────────
 
@@ -167,6 +170,89 @@ class Conflict:
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+log = logging.getLogger("SilkTaskStore")   # stdlib only, as the module says
+
+
+class LedgerClosed(ValueError):
+    """Raised when a write is attempted after the ledger was released."""
+
+
+class _LedgerGate:
+    """The process's one writer, and the shutdown that closes it.
+
+    ``BEGIN IMMEDIATE`` + WAL already serialize writers *between*
+    processes.  What that does not give is a moment when this process
+    can say "no more writes from here, and the one in flight has
+    finished" — which is exactly what a relaunch needs before it spawns
+    a replacement, since the replacement is a second writer and the two
+    would otherwise overlap.
+
+    Process-wide rather than per store, because "one writer per process"
+    is a property of the process: stores are cheap, short-lived objects
+    created per tool call, and registering each would leave the registry
+    holding every one of them for the life of the run.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._closed = False
+        self._participant = None
+
+    def _register(self) -> None:
+        if self._participant is not None:
+            return
+        try:
+            from weave.engine.shutdown import (
+                get_shutdown_registry, install_shutdown_handlers,
+            )
+        except Exception:  # noqa: BLE001 - a plugin must not need the host
+            return
+        install_shutdown_handlers()
+        self._participant = get_shutdown_registry().register(
+            "task ledger", self.release,
+        )
+
+    @contextmanager
+    def writing(self) -> Iterator[None]:
+        """Hold the gate for one write.  Raises once shutdown has run."""
+        self._register()
+        if self._closed:
+            raise LedgerClosed(
+                "Weave is shutting down; the plan was not modified."
+            )
+        with self._lock:
+            if self._closed:
+                raise LedgerClosed(
+                    "Weave is shutting down; the plan was not modified."
+                )
+            yield
+
+    def release(self, timeout: float = 5.0) -> bool:
+        """Refuse further writes and wait for the one in flight.
+
+        Returns whether the ledger went quiet.  There is nothing
+        forceful to escalate to: killing a write mid-transaction is what
+        WAL recovery is for, and the honest answer to "it did not
+        finish" is to say so rather than to make it worse.
+        """
+        self._closed = True
+        acquired = self._lock.acquire(timeout=max(0.0, timeout))
+        if acquired:
+            self._lock.release()
+        else:
+            log.warning("A plan write was still in flight at shutdown")
+        return acquired
+
+    def reopen(self) -> None:
+        """For tests, and for a child process after a fork."""
+        self._closed = False
+        self._participant = None
+
+
+#: The gate every store writes through.
+LEDGER = _LedgerGate()
 
 
 # ── Rendering (the one renderer: plan → json / markdown) ─────────────────────
@@ -555,6 +641,16 @@ class SqliteTaskStore:
         pid = secrets.token_hex(8)
         self._pid = pid
 
+        with LEDGER.writing():
+            self._start_locked(goal, acceptance, tasks, actor, now, pid)
+            plan = self.load()
+            assert plan is not None
+            self._write_projections(plan)
+        return plan
+
+    def _start_locked(self, goal, acceptance, tasks, actor, now, pid) -> None:
+        """The write half of :meth:`start`, run while holding the gate."""
+        assert self._db_path is not None
         con = self._connect(self._db_path)
         try:
             self._schema(con)
@@ -589,11 +685,6 @@ class SqliteTaskStore:
         finally:
             con.close()
 
-        plan = self.load()
-        assert plan is not None
-        self._write_projections(plan)
-        return plan
-
     # -- commit helper ----------------------------------------------------
 
     def _commit(
@@ -610,6 +701,36 @@ class SqliteTaskStore:
         path = self._locate_db()
         if path is None:
             return None
+        with LEDGER.writing():
+            outcome = self._commit_locked(
+                path=path, actor=actor, now=now, op_kind=op_kind,
+                rationale=rationale, work=work,
+            )
+            if outcome is not None:
+                return outcome
+
+            # Inside the gate: the projections beside the DB are part of
+            # the write, and a shutdown that stopped between the commit
+            # and the render would leave the .md disagreeing with the
+            # store of record.
+            plan = self.load()
+            if plan is not None:
+                self._write_projections(plan)
+            return plan
+
+    def _commit_locked(
+        self, *, path: Path, actor: str, now: str, op_kind: str,
+        rationale: Optional[str],
+        work: Callable[[sqlite3.Connection], "dict | Conflict"],
+    ) -> "Conflict | None":
+        """The transaction half of :meth:`_commit`, holding the gate.
+
+        Returns a ``Conflict`` when the transaction rolled back, and
+        ``None`` both when it committed and when there was no plan to
+        commit against -- the caller reloads either way, and a store
+        with no plan reloads as ``None``, which is the answer that case
+        wants.
+        """
         for attempt in range(_WRITE_RETRIES):
             con = self._connect(path)
             try:
@@ -666,11 +787,7 @@ class SqliteTaskStore:
                     con.close()
                 except sqlite3.ProgrammingError:
                     pass
-
-        plan = self.load()
-        if plan is not None:
-            self._write_projections(plan)
-        return plan
+        return None
 
     # -- mutations --------------------------------------------------------
 
