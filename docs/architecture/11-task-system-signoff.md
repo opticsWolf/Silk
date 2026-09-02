@@ -387,6 +387,12 @@ pane — no wires, no graph channel, no rendezvous handle. I12 in one
 sentence: a decision surface may be a node only if the decision happens
 at a turn boundary, and this one does not.
 
+A run with no seam at all refuses every gated call -- and says so **once**:
+the gate logs the first such refusal and counts the rest
+(`headless_refusals(toolbox)`), which the Agent node reports at the end of
+the run. A headless batch that denies forty times in silence is behaving
+correctly and looks hung (§22 q1d).
+
 ### `functions/grants.py` — "don't ask again"
 
 A decision may carry a scope: `once` (no grant at all), `run`, or `always`.

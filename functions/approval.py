@@ -145,6 +145,9 @@ def _refusal(*, target: str, change_type: str, text: str) -> str:
 #: Where a run parks its seam so the already-attached gate can find it.
 _SEAM_ATTR = "_decision_seam"
 
+#: How many calls this run refused for want of anyone to ask (q1d).
+_HEADLESS_ATTR = "_headless_refusals"
+
 
 def bind_run_seam(toolbox: Any, seam: Optional[DecisionSeam]) -> None:
     """Point the gate at this run's seam (or at nothing, to unbind).
@@ -155,8 +158,21 @@ def bind_run_seam(toolbox: Any, seam: Optional[DecisionSeam]) -> None:
     """
     try:
         setattr(toolbox, _SEAM_ATTR, seam)
+        # A new run starts with a clean count: "this run refused 12 calls
+        # with nobody to ask" is a fact about *this* run (q1d).
+        setattr(toolbox, _HEADLESS_ATTR, 0)
     except AttributeError:      # a toolbox that forbids attributes
         log.debug("could not bind the decision seam to %r", toolbox)
+
+
+def headless_refusals(toolbox: Any) -> int:
+    """How many calls this run refused because it had nobody to ask.
+
+    A headless batch whose every gated tool is refused is behaving
+    correctly and looks broken; the count is what lets a caller say so
+    once at the end instead of once per call, or not at all.
+    """
+    return int(getattr(toolbox, _HEADLESS_ATTR, 0) or 0)
 
 
 @contextmanager
@@ -292,6 +308,21 @@ def attach_approval_gate(
         if asker is None:
             # No seam at all is D36's first failure by another route: the
             # gate was configured but the run has nothing to ask with.
+            # Denying is right; denying *silently, forty times* is how a
+            # correct headless batch looks like a hung one, so the first
+            # refusal of a run says so in the log and the rest are counted
+            # rather than repeated (q1d, D53's legibility rule).
+            seen = headless_refusals(toolbox) + 1
+            try:
+                setattr(toolbox, _HEADLESS_ATTR, seen)
+            except AttributeError:
+                pass
+            if seen == 1:
+                log.warning(
+                    f"'{tool_name}' needs approval and this run has no way "
+                    f"to ask: every gated call will be refused. A durable "
+                    f"grant is how to allow one without a human present."
+                )
             return _refusal(
                 target=target, change_type=ctype or tool_name,
                 text=("This call needs the user's approval and this run has no "

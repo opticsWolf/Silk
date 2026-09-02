@@ -50,7 +50,7 @@ from weave.widgets.sync_button import SyncButton
 
 from .silk_ports import GGUF_MODEL_TYPE, SILK_ROLE_TYPE, SILK_TOOLSET_TYPE  # noqa: F401
 from ..functions.agent_loop import AgentLoop, DEFAULT_MAX_ROUNDS
-from ..functions.approval import bind_run_seam
+from ..functions.approval import bind_run_seam, headless_refusals
 from ..functions.graph_author import CanvasBinding, RunScope, bind_canvas
 from ..functions.self_modify import (
     ALWAYS_APPROVE, ChangeSet, attach_change_tracking, bind_changes,
@@ -810,7 +810,18 @@ class SilkAgentNode(ThreadedManualNode):
                 return {"response": f"Error: {run_error}"}
 
             self._last_run_ok = not self.is_compute_cancelled()
-            self.status_changed.emit("Done." if self._last_run_ok else "Cancelled.")
+            refused = (headless_refusals(toolset)
+                       if toolset is not None else 0)
+            if refused and self._last_run_ok:
+                # A headless run refusing every gated call is behaving
+                # correctly and looks broken. Once, at the end, with the
+                # number -- not once per call (§22 q1d, D53).
+                self.status_changed.emit(
+                    f"Done — {refused} call(s) refused: nothing in this "
+                    f"graph could ask you.")
+            else:
+                self.status_changed.emit(
+                    "Done." if self._last_run_ok else "Cancelled.")
 
             agent_name = str(getattr(self, "title", "") or "agent")
             out_kind = "result" if self._last_run_ok else "error"

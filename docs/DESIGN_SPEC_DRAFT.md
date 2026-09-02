@@ -1999,9 +1999,14 @@ need a `__version__` to name. Still trivial; now load-bearing.
    needs a visible surface — an orchestrator fan-out that silently serializes
    is correct but looks hung, and D43 means it already does this today with
    no indication.
-1d. Whether a *headless* run should fail loudly rather than deny quietly
-   (D48): denying is correct, but a batch evaluation whose every gated tool
-   is refused should probably say so once, not once per call.
+1d. ~~Whether a *headless* run should fail loudly rather than deny quietly
+   (D48).~~ **Answered (2026-09-02):** once, with a count. Denying stays
+   the behaviour -- the refusal text each call gets is unchanged, because
+   the model needs it -- but the gate logs the first such refusal of a run
+   and counts the rest (`headless_refusals(toolbox)`), and the Agent node
+   ends the run with "Done — N call(s) refused: nothing in this graph could
+   ask you." Once per call is noise; never is a correct batch that looks
+   hung (D53).
 2. Disposition of the five `WRAP_*` unwired events (§8).
 3. Whether `EventStart.system_prompt` is populated or dropped (§5).
 4. Spill-file cleanup policy and its lifetime (§12).
