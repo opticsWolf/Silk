@@ -149,10 +149,15 @@ client depends on. (There is a runtime probe:
 `server_missing_deps_message()` tells you what to install if the server
 extra is missing.)
 
-**Now forced (2026-08-31):** spec §17 adopts `macrame-db` as an optional
-extra — Silk's first declared *binary* dependency (abi3 wheels on PyPI).
-D66 makes declaring dependencies a precondition of the ledger work, so G5
-stops being deferrable the moment that lands.
+**CLOSED (2026-09-02)** — `pyproject.toml` now carries a `[project]`
+table: a runtime floor (PySide6, pydantic) and four named extras —
+`inference` (`llama-cpp-python[server]`), `render` (`mordant`), `mcp`, and
+`ledger` (`macrame-db`, Silk's first binary dependency, forced by D66).
+The repo still runs in place as a Weave submodule and there is no build
+backend, so `pip install .` is still not the supported path; what changed
+is that "install the extra" is now actionable advice with a name and a
+version, which is what the runtime probes have been telling people to do
+without saying which package.
 
 ### G6. The model pool has no recovery when the server dies
 

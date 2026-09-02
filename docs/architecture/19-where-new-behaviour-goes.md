@@ -16,6 +16,7 @@
 | Rewrite what the model sees | `GraphEngine.replace_history_prefix` — the one non-appending history operation, and it refuses cuts that orphan a tool result (I9) |
 | Cap or shape a run | `UsageLimits` caps, `ReflectionConfig` retries, or an `OutputSchema` + validator on the final answer |
 | Add planning / audit behaviour | `SqliteTaskStore` operations + a `signoff` policy; surface it via the Plan Viewer node |
+| Open a Macrame ledger | `LedgerRegistry.acquire()` in `functions/ledger.py` — never `Database.open`, anywhere else (D62) |
 | Centralise answering N agents' approval prompts | the Decision Inbox dock (`widgets/decision_inbox.py`) over `functions/decision_registry.py` — never a node (D59, D51, I12) |
 | See what N independent agents are doing | a `Silk Task Hub` node fed from `Silk ToolBox.root_paths`; it reads the plan stores, never the agents (D58) |
 | Point agents at a *specific* plan | a `Silk Task` node into the ToolBox node's `plan` input (and the Plan Viewer's `plan_ref`); leave both unwired to keep newest-under-root shared discovery (D23) |

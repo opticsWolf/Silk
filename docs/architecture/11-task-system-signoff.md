@@ -78,6 +78,34 @@ file reported as a row with an `error` rather than raised. It is what the
 Task node's dropdown offers and what the Task Hub scans under D58/D60;
 agents without a reference keep using newest-only discovery.
 
+### `functions/ledger.py` — one handle per ledger file (D62)
+
+The optional Macrame backend (§17) is a bitemporal graph ledger with
+**one Write Actor per open handle**. Two handles on one file is outside
+its contract — and the library does not refuse it: opening the same path
+twice succeeds and leaves two writers racing. So the rule is enforced at
+the only place that can be complete, the single place that opens.
+
+`LedgerRegistry` maps a canonical path (resolved, case-folded on Windows)
+to one refcounted handle. `acquire()` opens once and shares thereafter;
+`release()` gives up a reference but deliberately does *not* close, since
+several agents in one sandbox root share one ledger and Macrame's close
+writes a final snapshot — cheap once, wasteful per run. `close_all()` is
+the owner's call at plugin unload or graph close, which is exactly what
+Macrame means by "close has one owner". A handle closed behind the
+registry's back is reopened rather than handed out dead.
+
+`get()` is the read side, and it is what the D62 amendment to D58/D60(2)
+needs: the Task Hub finds ledger *files* on disk and asks the registry
+whether one is already open here, so a scan never becomes a second open.
+
+`macrame-db` is an optional extra (D66). Absent, `available()` is False,
+`acquire()` raises `LedgerUnavailable` carrying a sentence that names the
+distribution, and the caller falls back to `SqliteTaskStore` — loudly,
+never silently. Edge types are validated by Macrame against `[A-Z0-9]+`,
+so the vocabulary is `CLAIMEDBY` / `SUBTASKOF` / `INRUN`, not the
+underscored names §17 writes prose in.
+
 ### `functions/task_board.py` — the multi-agent projection (D58)
 
 N independent top-level agents share no event port and never will, so

@@ -8,6 +8,36 @@
 # - mypy: scoped to the Qt-free runtime so the output is actionable;
 #   widen `files` as more modules gain types.
 
+# Runtime dependencies (G5). The repo still runs in place as a Weave
+# submodule -- there is no build backend and `pip install .` is not the
+# supported path -- but what Silk needs at runtime, and at which floor, is
+# now written down rather than discoverable only by importing and failing.
+# Spec D66 forced this: `macrame-db` is Silk's first *binary* dependency,
+# and "install the extra" is not actionable advice without a name and a
+# version.
+[project]
+name = "silk"
+version = "0.1.0"
+description = "Local-first agentic runtime as Weave nodes."
+requires-python = ">=3.12"
+dependencies = [
+    "PySide6>=6.7",       # the node layer; functions/ is importable without it
+    "pydantic>=2.7",      # tool arg models, file grants, hook configs
+]
+
+[project.optional-dependencies]
+# Local inference. The pool's HTTP client speaks to llama.cpp's server, so
+# the server extra is the floor for that path, not a nicety.
+inference = ["llama-cpp-python[server]>=0.3.0"]
+# Rendering: plan/chat markdown with emoji shortcodes. Absent, the built-in
+# markdown converter is used and the display degrades in looks only.
+render = ["mordant>=0.2"]
+# MCP servers as node-owned sessions (D19-D22).
+mcp = ["mcp>=1.2"]
+# The bitemporal ledger backend (§17, D62-D66). Optional by design: absent,
+# SqliteTaskStore stays the task store and history stays in the node.
+ledger = ["macrame-db>=0.9"]
+
 [tool.ruff]
 target-version = "py312"
 line-length = 100
