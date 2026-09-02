@@ -53,6 +53,7 @@ from ..functions.agent_loop import AgentLoop, DEFAULT_MAX_ROUNDS
 from ..functions.approval import bind_run_seam
 from ..functions.compaction import Compactor
 from ..functions.file_grants import resolve_grants
+from ..functions.decision_registry import REGISTRY as DECISIONS
 from ..functions.decision_seam import (
     DEFAULT_TIMEOUT_S,
     DecisionRequest,
@@ -329,12 +330,50 @@ class SilkAgentNode(ThreadedManualNode):
         self._pending_decision = request
         self._label_decision.setText(str(request.get("prompt") or "Approve?"))
         self._decision_box.setVisible(True)
+        # The canvas is the "who needs me" dashboard (D59): a blocked node
+        # changes how it pulses, so a graph of ten agents shows which one
+        # is waiting without opening anything.
+        self._enter_waiting_state(True)
+        # ... and the registry is the directory the Decision Inbox reads.
+        # It holds a weak reference to this node and nothing that could
+        # answer for it -- the dock answers by mirroring the widget above.
+        DECISIONS.register(request, node=self,
+                           agent=str(getattr(self, "title", "") or "agent"))
 
     @Slot(str)
-    def _on_decision_settled(self, _decision_id: str) -> None:
+    def _on_decision_settled(self, decision_id: str) -> None:
+        settled = decision_id or str(
+            (self._pending_decision or {}).get("decision_id") or ""
+        )
         self._pending_decision = None
         self._label_decision.setText("")
         self._decision_box.setVisible(False)
+        self._enter_waiting_state(False)
+        if settled:
+            DECISIONS.unregister(settled)
+
+    def _enter_waiting_state(self, waiting: bool) -> None:
+        """Blocked-on-a-human, on the canvas itself (D59).
+
+        Reuses the shipped pulse animation rather than adding a visual
+        vocabulary: the waveform changes to a heartbeat while a node is
+        waiting and goes back to whatever the theme asked for after.
+        """
+        try:
+            if waiting:
+                self._pulse_waveform_before = self.get_pulse_waveform()
+                # Order matters: starting the pulse re-reads the theme's
+                # waveform, so asking for the heartbeat first would be
+                # overwritten by the start.
+                self._start_computing_pulse()
+                self.set_pulse_waveform("heartbeat")
+            else:
+                previous = getattr(self, "_pulse_waveform_before", None)
+                if previous:
+                    self.set_pulse_waveform(previous)
+                    self._pulse_waveform_before = None
+        except AttributeError:      # pragma: no cover - host without the mixin
+            log.debug("Node has no pulse animation; waiting state is silent")
 
     def _answer_decision(self, approved: bool, remember: str) -> None:
         """Deliver the user's answer to the waiting run. **Main thread.**
@@ -423,6 +462,12 @@ class SilkAgentNode(ThreadedManualNode):
 
     def cleanup(self) -> None:
         self.cancel_compute()
+        # A node deleted mid-question leaves a row nobody can answer. The
+        # registry's weak reference would prune it eventually; saying so
+        # now means the dock never offers the dead button at all.
+        pending = self._pending_decision or {}
+        if pending.get("decision_id"):
+            DECISIONS.unregister(str(pending["decision_id"]))
         try:
             self.chunk_streamed.disconnect()
         except (RuntimeError, TypeError):
@@ -483,6 +528,9 @@ class SilkAgentNode(ThreadedManualNode):
         # Set once the per-run event emitter exists (only when a toolset is
         # wired — no toolset, no hook stream). Subclasses observe through it.
         emit_run_event: Optional[Any] = None
+        # Named before the try so the exit path can release this run's
+        # decision rows even when the run never got as far as an id.
+        run_id = ""
         try:
             if toolset is not None:
                 try:
@@ -548,6 +596,9 @@ class SilkAgentNode(ThreadedManualNode):
                         "kind": request.kind,
                         "prompt": request.prompt,
                         "tool_name": request.tool_name,
+                        # Carried so the exit path can release what this
+                        # run asked and never answered (D59).
+                        "run_id": run_id,
                     })
                     self.status_changed.emit("Waiting for your approval\u2026")
 
@@ -764,6 +815,11 @@ class SilkAgentNode(ThreadedManualNode):
                 self._seam = None
             self._emit_event = None
             self.decision_settled.emit("")
+            # A stopped or timed-out run never answers what it asked, and a
+            # row for an agent that is no longer running is a button that
+            # does nothing (D59).
+            if run_id:
+                DECISIONS.clear_run(run_id)
             if toolset is not None:
                 bind_run_seam(toolset, None)
             self._detach_run_observers(toolset)

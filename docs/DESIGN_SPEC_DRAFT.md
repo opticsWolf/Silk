@@ -1307,6 +1307,17 @@ Weave already ships the machinery:
 *Boundary restated:* the hub node (D58) may **count** mid-run requests; only
 the asking node's UI -- or its mirror -- may **answer** one.
 
+**Implemented (2026-09-02).** `functions/decision_registry.py` (weak
+references, run-scoped release, change subscription) and
+`widgets/decision_inbox.py` (`DecisionInboxDock`, one row per waiting
+agent, answering through the asking node's own `_answer_decision`), plus
+the canvas state: a blocked Agent node switches its pulse to `heartbeat`
+and back. The node's prompt is a composite container the NodePanel clone
+strategies do not cover, so rows are built and forward the action -- the
+same thing `wire_action_proxy` does for a mirrored button. Silk has no
+plugin-side hook into the host window, so the dock is attached by the
+host via `DecisionInboxDock.attach(main_window)`.
+
 **D60. Identity plumbing -- what the surfaces above actually require.**
 
 1. **The event envelope gains an `agent` field** (node title + node uuid).

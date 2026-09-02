@@ -212,6 +212,47 @@ rather than with sleeps. The property it exists to pin is **zero effects
 while parked** — a held tool call that ran anyway would satisfy every
 assertion about the decision and still be a disaster.
 
+### `functions/decision_registry.py` + the Decision Inbox dock (D59)
+
+The seam above is per node, which is right — the question is asked from
+inside *that* node's `compute()`. With ten agents on a canvas it is also
+ten places to look. The registry is the directory that fixes finding
+without touching answering:
+
+- A request registers when the Agent node shows it and unregisters when
+  it settles; a run that ends releases whatever it never answered, so a
+  timeout or a Stop does not leave a button behind.
+- Entries hold a **weak** reference to the asking node and nothing that
+  could resolve a decision. Seam lifetime (D49) is unchanged: the
+  registry can never be why a run stays alive, and a deleted node's row
+  disappears the next time anyone looks.
+- `subscribe()` is how the dock hears about changes; a listener that
+  raises is ignored, because a blocked run must not depend on a dock
+  being well behaved.
+
+`widgets/decision_inbox.py` is the surface: a `QDockWidget` with one row
+per waiting agent, the same four answers the node offers (deny first),
+and a *Show node* button that selects the asker on the canvas. Clicking
+an answer calls that node's own `_answer_decision` — same method, same
+seam — which is what a mirrored button does (`wire_action_proxy`); the
+node's prompt is a composite container that NodePanel's clone strategies
+do not cover, so the row is built rather than cloned. Closing the dock
+takes away a shortcut, not the answer.
+
+The canvas carries the same information without any panel open: a node
+blocked on a decision switches its pulse to `heartbeat` and back
+afterwards, so "who needs me" is visible in the graph itself.
+
+Silk has no plugin-side hook into the host window, so
+`DecisionInboxDock.attach(main_window)` is how it gets added.
+
+**Why a dock and not a node.** D51 rejected an approval node: a node
+cannot answer a question asked from inside `compute()`, because inputs
+are gathered before compute runs. A dock is main-thread UI like the log
+pane — no wires, no graph channel, no rendezvous handle. I12 in one
+sentence: a decision surface may be a node only if the decision happens
+at a turn boundary, and this one does not.
+
 ### `functions/grants.py` — "don't ask again"
 
 A decision may carry a scope: `once` (no grant at all), `run`, or `always`.

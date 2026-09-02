@@ -156,6 +156,12 @@ and only this run, and is restored afterwards. The two sources compose by
 narrowing, so adding a wire can only reduce access (I6); a malformed grant
 grants nothing rather than falling back to the wider one.
 
+**A blocked agent also shows on the canvas and in the Decision Inbox**
+(D59): the node switches its pulse to a heartbeat while waiting, and
+`DecisionInboxDock.attach(main_window)` opens a dock listing every waiting
+agent with the same four answers. Answering there calls this node's own
+handler — the dock owns no seam, and closing it strands nothing.
+
 **The approval prompt is part of this node** (spec D48/I12). When a gated
 tool call blocks, the question appears in the node itself — Deny, Allow
 once, Allow this run, Always allow — and the held call resumes with the
