@@ -205,6 +205,13 @@ where no graph channel can reach it; the `decision.request` /
 the way the answer arrives (D59). Stop cancels the seam directly, so a run
 waiting on a decision unwinds at once instead of waiting out the timeout.
 
+**An approved plugin comes back by itself, until it is edited** (§22 q10).
+Approving a `load_suite` pins the SHA-256 of every importable file in that
+suite, and the next start loads it without asking while the digests match.
+Any edit, and the next load asks again with the diff; a suite that crashed
+a start loses its pin entirely and must be approved by hand (§22 q11). The
+pins are listed and revocable in the same dock as the grants.
+
 **"Always allow" can be taken back** (§22 q1). A durable grant lives in
 `~/.weave/silk/grants.json`, keyed by resolved project root, and
 `GrantManagerDock.attach(main_window)` opens a dock that lists every one of

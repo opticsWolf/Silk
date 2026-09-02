@@ -123,3 +123,42 @@ existing static narrowing is what keeps them read-only. No new mechanism.
 **Out of scope in v1, deliberately: Silk improving Silk** (T10). That needs
 review-then-relaunch and has a bootstrapping problem the graph case does not —
 the code that would review the change is the code being changed.
+
+### Approve once, pinned to the bytes (§22 q10, q11)
+
+The floor asks every time an agent asks. Question 10 was what a *start* may
+do with an approval it already has, and the two obvious answers are both
+wrong: asking every session makes "write a node today, use it tomorrow"
+not happen, and approving a *directory* is approving whatever the agent
+puts in it next.
+
+`functions/suite_pins.py` takes the third: an approved load records a
+SHA-256 per importable file, and `weave/bootstrap.py` loads a pinned suite
+at the next start only when every digest still matches. One edited
+character and the pin no longer applies, so the next load goes back
+through the floor with a human looking at the diff. The pin file lives at
+`~/.weave/silk/suite_pins.json`, beside the grants and for D35's exact
+reason — a pin the agent could write is an agent approving its own code —
+and it fails closed like the grant store: unreadable means nothing is
+pinned, which means asking.
+
+Three details the tests pin down. A pin covers only what an import can
+execute (`.py`, `.pyi`, `.pth`, `.pyd`, `.so`, `.dll`, `.json`), so a
+README does not invalidate it and a new module does. A suite over
+`MAX_PINNED_FILES` is not pinned at all rather than pinned expensively — a
+start is not a disk scan. And a shipped suite that appears under a pinned
+name does not inherit the approval (D76): the pin was for agent-authored
+code under the plugin root, not for a name.
+
+**Quarantine breaks the pin** — that is question 11's answer.
+`record_quarantine` unpins, so a suite that took the process down never
+comes back by itself, whatever a human approved before it crashed. The
+agent may still read the traceback out of `list_suites` and try a fix; it
+simply cannot take the last step alone. Auto-load *and* auto-retry is
+precisely the configuration in which a self-improving loop runs
+unattended, which is exactly when it should not.
+
+Both approvals are withdrawable in one place: the Grant Manager dock
+(`widgets/grant_manager.py`) lists pinned suites under the durable grants,
+and revoking one deletes no code — it puts that suite back in front of the
+floor.

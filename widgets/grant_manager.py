@@ -29,6 +29,13 @@ row and on each project. Three properties it keeps:
   shown: they live in a gate closure and die with the run. Listing them
   would invite the user to "revoke" something that is already gone.
 
+It lists the *other* durable approval too: the plugin suites a human
+approved for loading at the next start (§22 q10), each pinned to the
+bytes they approved. Same reasoning -- an approval that imports code by
+itself is the strongest thing a user hands out here, so it must be the
+easiest to find and take back. Revoking one does not delete a file; it
+puts that suite back in front of the floor (D77) next time.
+
 A dock rather than a node, like the Decision Inbox and for the same
 reason (D51/I12): this is a surface over process-wide state, with no
 inputs, no outputs and nothing a graph could wire to it.
@@ -53,6 +60,7 @@ from PySide6.QtWidgets import (
 from weave.logger import get_logger
 
 from ..functions.grants import Grant, GrantStore
+from ..functions.suite_pins import PinStore, SuitePin
 
 log = get_logger("SilkGrantManager")
 
@@ -62,6 +70,12 @@ NO_PROJECT = "(no project root)"
 
 #: What the row says about a grant nobody described.
 DEFAULT_NOTE = "granted from an approval prompt"
+
+#: The other durable approval a user can hold: a plugin suite they let
+#: load by itself at the next start, pinned to its bytes (§22 q10).
+PINS_HEADER = "Plugins approved to load at the next start"
+
+NO_PINS_TEXT = ("No plugin loads by itself. Every load asks.")
 
 
 def _stamp(grant: Grant) -> str:
@@ -87,10 +101,12 @@ class GrantManagerDock(QDockWidget):
     revoked = Signal(int)
 
     def __init__(self, parent: Optional[QWidget] = None, *,
-                 store: Optional[GrantStore] = None) -> None:
+                 store: Optional[GrantStore] = None,
+                 pins: Optional[PinStore] = None) -> None:
         super().__init__("Granted Permissions", parent)
         self.setObjectName("SilkGrantManagerDock")
         self._store = store if store is not None else GrantStore()
+        self._pins = pins if pins is not None else PinStore()
         self._rows: list[QWidget] = []
 
         body = QWidget(self)
@@ -140,6 +156,16 @@ class GrantManagerDock(QDockWidget):
             for grant in grants:
                 self._add(self._grant_row(grant))
 
+        # The other durable approval, and the more dangerous one: a suite
+        # that imports itself at the next start (§22 q10). It belongs in
+        # the same place for the same reason -- authority you cannot find
+        # is authority you cannot withdraw.
+        self._pins.reload()
+        pins = self._pins.all()
+        self._add(self._pin_header(len(pins)))
+        for pin in pins:
+            self._add(self._pin_row(pin))
+
     def _add(self, widget: QWidget) -> None:
         self._entries.addWidget(widget)
         self._rows.append(widget)
@@ -182,6 +208,42 @@ class GrantManagerDock(QDockWidget):
         row.addWidget(button)
         return frame
 
+    def _pin_header(self, count: int) -> QWidget:
+        frame = QFrame()
+        frame.setFrameShape(QFrame.Shape.StyledPanel)
+        row = QHBoxLayout(frame)
+        row.setContentsMargins(6, 4, 6, 4)
+        text = f"<b>{PINS_HEADER}</b> — {count}" if count else NO_PINS_TEXT
+        label = QLabel(text)
+        label.setWordWrap(True)
+        label.setSizePolicy(QSizePolicy.Policy.Expanding,
+                            QSizePolicy.Policy.Preferred)
+        row.addWidget(label)
+        return frame
+
+    def _pin_row(self, pin: SuitePin) -> QWidget:
+        frame = QFrame()
+        row = QHBoxLayout(frame)
+        row.setContentsMargins(18, 2, 6, 2)
+
+        when = _stamp(Grant(tool_name=pin.name, project=pin.path,
+                            granted_at=pin.pinned_at))
+        label = QLabel(f"<b>{pin.name}</b> — {when}, "
+                       f"{len(pin.digests)} file(s) pinned")
+        label.setToolTip(pin.path or pin.note
+                         or "approved from a load prompt")
+        label.setWordWrap(True)
+        label.setSizePolicy(QSizePolicy.Policy.Expanding,
+                            QSizePolicy.Policy.Preferred)
+        row.addWidget(label)
+
+        button = QPushButton("Revoke")
+        button.setToolTip("Stop loading it by itself. It stays on disk; "
+                          "the next load asks you again.")
+        button.clicked.connect(lambda: self.revoke_pin(pin.name))
+        row.addWidget(button)
+        return frame
+
     # ── the two verbs ─────────────────────────────────────────────────
 
     def revoke(self, project: str, tool_name: str) -> bool:
@@ -202,18 +264,28 @@ class GrantManagerDock(QDockWidget):
         self.refresh()
         return count
 
+    def revoke_pin(self, name: str) -> bool:
+        """Stop a suite from loading itself at the next start."""
+        gone = self._pins.unpin(name)
+        if gone:
+            log.info(f"Withdrew the load approval for plugin '{name}'")
+            self.revoked.emit(1)
+        self.refresh()
+        return gone
+
     # ── convenience ───────────────────────────────────────────────────
 
     @classmethod
     def attach(cls, main_window: Any, *,
                area: Qt.DockWidgetArea = Qt.DockWidgetArea.RightDockWidgetArea,
-               store: Optional[GrantStore] = None) -> "GrantManagerDock":
+               store: Optional[GrantStore] = None,
+               pins: Optional[PinStore] = None) -> "GrantManagerDock":
         """Create the dock and add it to *main_window*.
 
         Silk has no plugin-side hook into the host's window, so the host
         (or a user's startup script) calls this -- the same arrangement
         the Decision Inbox uses.
         """
-        dock = cls(main_window, store=store)
+        dock = cls(main_window, store=store, pins=pins)
         main_window.addDockWidget(area, dock)
         return dock

@@ -2052,16 +2052,28 @@ need a `__version__` to name. Still trivial; now load-bearing.
    decision rather than an extension of D69; the likely shape is a narrow
    typed setter over `WidgetCore` bindings, whitelisted per node class the
    way the classes themselves are.
-10. Whether a suite the agent wrote should **auto-load at the next start**
-   once a human has approved it once, or require approval every session. Once
-   is the usable answer and the one that makes D81's quarantine necessary;
-   every-session is the safe answer and makes the loop tedious enough that
-   nobody will use it. The middle -- approve once, pin the file digests, and
-   re-ask when they change -- is probably right and needs a place to store the
-   pins that is not a preset (D35's reasoning applies: this is authority, not
-   configuration).
-11. Whether an agent may read the **quarantine traceback** (D81) and attempt a
-   fix unprompted, or whether a crashed load ends the loop until a human says
-   continue. Related to q10: an agent that can auto-load *and* auto-retry is
-   the configuration in which a self-improving loop runs unattended, which is
-   exactly when it should not.
+10. ~~Whether a suite the agent wrote should **auto-load at the next
+   start** once a human has approved it once, or require approval every
+   session.~~ **Answered (2026-09-02):** the middle, as suspected, and it
+   is built. An approved load records a SHA-256 per importable file in
+   `~/.weave/silk/suite_pins.json` -- beside the grants, outside the
+   plugin root, because D35's reasoning applies exactly: a pin the agent
+   can write is an agent approving its own code. `weave/bootstrap.py`
+   loads a pinned suite at the next start only while every digest still
+   matches; one edited character sends it back through D77's floor with
+   the diff in front of a human. The store fails closed (unreadable means
+   nothing is pinned), a suite too large to digest cheaply is asked about
+   rather than pinned, and a shipped suite appearing under a pinned name
+   does not inherit the approval (D76). Both durable approvals -- grants
+   and pins -- are withdrawable in the Grant Manager dock (q1).
+11. ~~Whether an agent may read the **quarantine traceback** (D81) and
+   attempt a fix unprompted, or whether a crashed load ends the loop until
+   a human says continue.~~ **Answered (2026-09-02):** read yes, reload
+   no. `record_quarantine` **unpins**, so a suite that took the process
+   down never comes back by itself no matter what was approved before it
+   crashed, and the fixed version goes through the floor like any other
+   load. The agent keeps the feedback D81 exists for -- the traceback is
+   in `list_suites` and it may write a fix and ask -- it just cannot take
+   the last step alone. An agent that can auto-load *and* auto-retry is
+   the configuration in which a self-improving loop runs unattended, which
+   is exactly when it should not.

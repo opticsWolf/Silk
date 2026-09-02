@@ -467,6 +467,9 @@ def load_request_detail(name: str, path: str | os.PathLike, *,
     """The payload an approval renders. Code, not a name (D77)."""
     diffs = changes.diffs(path) if changes is not None else []
     return {
+        "next_start": ("Approving also pins these exact bytes: this suite "
+                       "will load by itself at the next start, and any "
+                       "edit to it asks you again."),
         "risk": "high",
         "kind": "suite_load",
         "suite": name,
@@ -491,6 +494,13 @@ def approval_prompt(name: str, changed: int, *, reload: bool = False) -> str:
                 f"code with full process authority.")
     return (f"{verb} the suite '{name}'? Importing runs its code with full "
             f"process authority. This run wrote none of it.")
+
+
+def pin_note(name: str) -> str:
+    """One line about what approving buys beyond this call (§22 q10)."""
+    return (f"Approving pins '{name}' to the bytes you are looking at: it "
+            "loads by itself at the next start until it is edited, and an "
+            "edit asks you again.")
 
 
 # ── the quarantine fact (D81) ────────────────────────────────────────────
@@ -531,6 +541,18 @@ def record_quarantine(names: Sequence[str], *,
         target.write_text(json.dumps(facts, indent=2), encoding="utf-8")
     except OSError as exc:
         log.warning(f"could not record the quarantine fact: {exc}")
+
+    # The approval a human gave was for code that has since crashed a
+    # start; it is not a reason to import the same bytes unattended
+    # (§22 q11). The fix goes back through the floor, with eyes on it.
+    try:
+        from .suite_pins import PinStore
+
+        pins = PinStore()
+        for name in written:
+            pins.unpin(name)
+    except Exception as exc:  # noqa: BLE001 -- never fail a start
+        log.warning(f"could not withdraw the suite pin: {exc}")
 
     if store is not None:
         for name in written:

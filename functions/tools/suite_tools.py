@@ -47,6 +47,9 @@ from weave.plugins.silk.functions.self_modify import (
     capability_for, check_suite, clear_quarantine, find, suites,
     user_plugin_root,
 )
+from weave.plugins.silk.functions.suite_pins import (
+    PinStore, annotate_pins, autoload_plan,
+)
 
 if TYPE_CHECKING:
     from ..tool_box import ToolBox
@@ -120,16 +123,21 @@ def attach_suite_tools(toolbox: "ToolBox", sandbox: "FileToolSandbox",
             "Look before you load.\n"
             "- writable=true means the suite is under your plugin root and "
             "you may load it; shipped suites are not yours to replace.\n"
+            "- next_start says which suites come back by themselves: a "
+            "pin covers the exact bytes a human approved, so any edit "
+            "means the next load asks again.\n"
             "- quarantined=true means a previous start refused it after a "
-            "crash; the note is the traceback. Fix that before reloading."
+            "crash; the note is the traceback, the pin is void, and a "
+            "human must approve the fix. Fix it before reloading."
         ),
     )
     def _list_suites(db_pool: Any, user_session: dict) -> SuiteResult:
-        rows = annotate(suites())
+        rows = annotate_pins(annotate(suites()))
         return SuiteResult(ok=True, op=OP_LIST_SUITES, result={
             "suites": rows,
             "plugin_root": str(user_plugin_root()),
             "writable": [r["name"] for r in rows if r.get("writable")],
+            "next_start": autoload_plan(rows),
         })
 
     # ── the load verbs (always approved -- see functions/load_floor.py) ──
@@ -172,6 +180,13 @@ def attach_suite_tools(toolbox: "ToolBox", sandbox: "FileToolSandbox",
             # It loads again, so the old failure is no longer a fact
             # about it (D81).
             clear_quarantine(name)
+            # The human just approved *these bytes*; the pin is what lets
+            # the next start load them without asking again, and what
+            # makes any later edit ask (§22 q10).
+            pin = PinStore().pin(name, info.get("path", ""),
+                                 pinned_by="approval",
+                                 note=f"approved for {op}")
+            value["pinned"] = pin is not None
         value.setdefault("path", info.get("path", ""))
         return SuiteResult(ok=bool(value.get("ok", True)), op=op,
                            result=value,
