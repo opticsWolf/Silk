@@ -8,7 +8,7 @@ Based on Pydantic AI's capability architecture with adaptations for silk.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterable, Awaitable, Callable
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, overload
 
 if TYPE_CHECKING:
@@ -515,26 +515,6 @@ class BaseCapability(ABC):
 
     # â”€â”€ Middleware hooks â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-    async def wrap_model_request(
-        self,
-        ctx: RunContext,
-        handler: Callable[[], Awaitable[Any]],
-    ) -> Any:
-        """Wraps the model request. handler() calls the model.
-
-        Override to inspect or modify the request before execution,
-        inspect or modify the response after execution, or short-circuit
-        by returning a result without calling handler().
-
-        Args:
-            ctx: The run context.
-            handler: A callable that executes the model request.
-
-        Returns:
-            The model response or a short-circuit result.
-        """
-        return await handler()
-
     async def on_model_request_error(
         self,
         ctx: RunContext,
@@ -636,24 +616,6 @@ class BaseCapability(ABC):
         """
         raise error
 
-    async def wrap_output_validate(
-        self,
-        ctx: RunContext,
-        output: Any,
-        handler: Callable[[Any], Awaitable[Any]],
-    ) -> Any:
-        """Wraps output validation. handler() performs the validation.
-
-        Args:
-            ctx: The run context.
-            output: The raw output from the model.
-            handler: A callable that validates the output.
-
-        Returns:
-            The validated output.
-        """
-        return await handler(output)
-
     async def on_output_validate_error(
         self,
         ctx: RunContext,
@@ -675,24 +637,6 @@ class BaseCapability(ABC):
         """
         raise error
 
-    async def wrap_output_process(
-        self,
-        ctx: RunContext,
-        output: Any,
-        handler: Callable[[Any], Awaitable[Any]],
-    ) -> Any:
-        """Wraps output processing. handler() processes the output.
-
-        Args:
-            ctx: The run context.
-            output: The validated output.
-            handler: A callable that processes the output.
-
-        Returns:
-            The processed output.
-        """
-        return await handler(output)
-
     async def on_output_process_error(
         self,
         ctx: RunContext,
@@ -713,23 +657,6 @@ class BaseCapability(ABC):
             A default output, or raise to propagate.
         """
         raise error
-
-    async def wrap_run_event_stream(
-        self,
-        ctx: RunContext,
-        stream: AsyncIterable,
-    ) -> AsyncIterable:
-        """Wraps the event stream for streamed runs.
-
-        Args:
-            ctx: The run context.
-            stream: The event stream to wrap.
-
-        Yields:
-            The wrapped event stream events.
-        """
-        async for event in stream:
-            yield event
 
     # NOTE: a previous "legacy hooks" block re-declared before/after_tool_execute
     # here with no-op bodies, silently overriding the richer modify-args/

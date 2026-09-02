@@ -27,17 +27,10 @@ if TYPE_CHECKING:
     from .capabilities import BaseCapability as _BaseCapability  # noqa: F401
 
     # Wrap handler type aliases (matching Pydantic AI's naming)
-    class WrapModelRequestHandler(Protocol):
-        """Handler type for wrap_model_request middleware."""
-        def __call__(self, **kwargs) -> Awaitable[Any]: ...
-
     class WrapToolExecuteHandler(Protocol):
         """Handler type for wrap_tool_execute middleware."""
         def __call__(self, tool_name: str, tool_args: dict, **kwargs) -> Awaitable[str]: ...
 
-    class WrapOutputValidateHandler(Protocol):
-        """Handler type for wrap_output_validate middleware."""
-        def __call__(self, output: Any, **kwargs) -> Awaitable[Any]: ...
 
 
 # â”€â”€ Hook Events â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -58,9 +51,6 @@ Audit/logging surface; the denied call never reaches the executable."""
 HOOK_AFTER_MODEL_REQUEST = "after_model_request"
 
 # New middleware events
-HOOK_WRAP_MODEL_REQUEST = "wrap_model_request"
-"""Wraps model request execution. Handler() calls the model."""
-
 HOOK_ON_MODEL_REQUEST_ERROR = "on_model_request_error"
 """Called when a model request fails with an exception."""
 
@@ -76,20 +66,11 @@ HOOK_WRAP_TOOL_EXECUTE = "wrap_tool_execute"
 HOOK_ON_TOOL_EXECUTE_ERROR = "on_tool_execute_error"
 """Called when tool execution fails with an exception."""
 
-HOOK_WRAP_OUTPUT_VALIDATE = "wrap_output_validate"
-"""Wraps output validation."""
-
 HOOK_ON_OUTPUT_VALIDATE_ERROR = "on_output_validate_error"
 """Called when output validation fails."""
 
-HOOK_WRAP_OUTPUT_PROCESS = "wrap_output_process"
-"""Wraps output processing."""
-
 HOOK_ON_OUTPUT_PROCESS_ERROR = "on_output_process_error"
 """Called when output processing fails."""
-
-HOOK_WRAP_RUN_EVENT_STREAM = "wrap_run_event_stream"
-"""Wraps the event stream for streamed nodes."""
 
 
 #: Every event name this module declares. Registration checks membership,
@@ -102,9 +83,7 @@ KNOWN_EVENTS = frozenset({
     HOOK_ON_TOOL_VALIDATE_ERROR, HOOK_ON_TOOL_EXECUTE_ERROR,
     HOOK_ON_OUTPUT_VALIDATE_ERROR, HOOK_ON_OUTPUT_PROCESS_ERROR,
     HOOK_BEFORE_RUN, HOOK_AFTER_RUN,
-    HOOK_WRAP_MODEL_REQUEST, HOOK_WRAP_TOOL_VALIDATE, HOOK_WRAP_TOOL_EXECUTE,
-    HOOK_WRAP_OUTPUT_VALIDATE, HOOK_WRAP_OUTPUT_PROCESS,
-    HOOK_WRAP_RUN_EVENT_STREAM,
+    HOOK_WRAP_TOOL_VALIDATE, HOOK_WRAP_TOOL_EXECUTE,
 })
 
 #: The events something actually emits. A hook registered on anything else
@@ -112,9 +91,10 @@ KNOWN_EVENTS = frozenset({
 #: error, because the hook's *absence* is what you have to notice (G3/D15).
 #: So registration on a declared-but-unwired event raises.
 #:
-#: The five ``WRAP_*`` names below are deliberately absent: their
-#: disposition is still open (spec T2, open question 2), and until each one
-#: either fires or is deleted, asking to be called by it must fail loudly.
+#: This set is now every event this module declares: §22 q2 closed the five
+#: open ``WRAP_*`` names by wiring one and deleting four. The guard stays --
+#: it is what catches a typo -- but it currently has nothing but misspellings
+#: to catch, which is the state it was built to reach.
 WIRED_EVENTS = frozenset({
     HOOK_BEFORE_MODEL_REQUEST, HOOK_AFTER_MODEL_REQUEST,
     HOOK_AFTER_MODEL_RESPONSE, HOOK_ON_MODEL_REQUEST_ERROR,
@@ -122,7 +102,7 @@ WIRED_EVENTS = frozenset({
     HOOK_ON_TOOL_VALIDATE_ERROR, HOOK_ON_TOOL_EXECUTE_ERROR,
     HOOK_ON_OUTPUT_VALIDATE_ERROR, HOOK_ON_OUTPUT_PROCESS_ERROR,
     HOOK_BEFORE_RUN, HOOK_AFTER_RUN,
-    HOOK_WRAP_TOOL_EXECUTE,
+    HOOK_WRAP_TOOL_VALIDATE, HOOK_WRAP_TOOL_EXECUTE,
 })
 
 #: Names that are unwired *and* known, precomputed for the message.
@@ -639,13 +619,6 @@ class HookRegistry:
 # â”€â”€ Middleware Hook Decorators â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 
-def wrap_model_request(func: Callable) -> Callable:
-    """Decorator to register a wrap_model_request middleware."""
-    func._hook_event = HOOK_WRAP_MODEL_REQUEST  # type: ignore[attr-defined]
-    func._is_middleware = True  # type: ignore[attr-defined]
-    return func
-
-
 def on_model_request_error(func: Callable) -> Callable:
     """Decorator to register an on_model_request_error handler."""
     func._hook_event = HOOK_ON_MODEL_REQUEST_ERROR  # type: ignore[attr-defined]
@@ -678,36 +651,15 @@ def on_tool_execute_error(func: Callable) -> Callable:
     return func
 
 
-def wrap_output_validate(func: Callable) -> Callable:
-    """Decorator to register a wrap_output_validate middleware."""
-    func._hook_event = HOOK_WRAP_OUTPUT_VALIDATE  # type: ignore[attr-defined]
-    func._is_middleware = True  # type: ignore[attr-defined]
-    return func
-
-
 def on_output_validate_error(func: Callable) -> Callable:
     """Decorator to register an on_output_validate_error handler."""
     func._hook_event = HOOK_ON_OUTPUT_VALIDATE_ERROR  # type: ignore[attr-defined]
     return func
 
 
-def wrap_output_process(func: Callable) -> Callable:
-    """Decorator to register a wrap_output_process middleware."""
-    func._hook_event = HOOK_WRAP_OUTPUT_PROCESS  # type: ignore[attr-defined]
-    func._is_middleware = True  # type: ignore[attr-defined]
-    return func
-
-
 def on_output_process_error(func: Callable) -> Callable:
     """Decorator to register an on_output_process_error handler."""
     func._hook_event = HOOK_ON_OUTPUT_PROCESS_ERROR  # type: ignore[attr-defined]
-    return func
-
-
-def wrap_run_event_stream(func: Callable) -> Callable:
-    """Decorator to register a wrap_run_event_stream middleware."""
-    func._hook_event = HOOK_WRAP_RUN_EVENT_STREAM  # type: ignore[attr-defined]
-    func._is_middleware = True  # type: ignore[attr-defined]
     return func
 
 
@@ -726,7 +678,6 @@ class HookContext:
         tool_args: The tool arguments (for before/after_tool_execute).
         tool_result: The tool result (for after_tool_execute).
         error: The error (for on_*_error hooks).
-        event_stream: The event stream (for wrap_run_event_stream).
     """
 
     def __init__(
@@ -811,17 +762,6 @@ class Hooks:
         """
         return ""
 
-    async def wrap_model_request(
-        self,
-        ctx: RunContext,
-        handler: Callable[[], Awaitable[Any]],
-    ) -> Any:
-        """Wraps the model request via registered middleware."""
-        return await self._registry.emit_middleware(
-            HOOK_WRAP_MODEL_REQUEST,
-            default_result=await handler(),
-        )
-
     async def on_model_request_error(
         self,
         ctx: RunContext,
@@ -870,18 +810,6 @@ class Hooks:
                 raise e
         raise error
 
-    async def wrap_output_validate(
-        self,
-        ctx: RunContext,
-        output: Any,
-        handler: Callable[[Any], Awaitable[Any]],
-    ) -> Any:
-        """Wraps output validation via registered middleware."""
-        return await self._registry.emit_middleware(
-            HOOK_WRAP_OUTPUT_VALIDATE,
-            default_result=await handler(output),
-        )
-
     async def on_output_validate_error(
         self,
         ctx: RunContext,
@@ -900,18 +828,6 @@ class Hooks:
                 raise e
         raise error
 
-    async def wrap_output_process(
-        self,
-        ctx: RunContext,
-        output: Any,
-        handler: Callable[[Any], Awaitable[Any]],
-    ) -> Any:
-        """Wraps output processing via registered middleware."""
-        return await self._registry.emit_middleware(
-            HOOK_WRAP_OUTPUT_PROCESS,
-            default_result=await handler(output),
-        )
-
     async def on_output_process_error(
         self,
         ctx: RunContext,
@@ -929,24 +845,6 @@ class Hooks:
             except Exception as e:
                 raise e
         raise error
-
-    async def wrap_run_event_stream(
-        self,
-        ctx: RunContext,
-        stream: AsyncIterable,
-    ) -> AsyncIterable:
-        """Wraps the event stream for streamed runs via registered middleware."""
-        # Use the middleware chain if any handlers are registered
-        handlers = self._registry._middleware.get(HOOK_WRAP_RUN_EVENT_STREAM, [])
-        if not handlers:
-            async for event in stream:
-                yield event
-            return
-
-        # For simplicity, just yield events directly when middleware is registered
-        # (async generator middleware chains are complex to implement correctly)
-        async for event in stream:
-            yield event
 
     def emit(self, event: str, **kwargs) -> None:
         """Emit an event to registered callbacks."""
@@ -983,19 +881,6 @@ class _HooksOn:
         """Register an after_model_response hook."""
         func._hook_event = HOOK_AFTER_MODEL_RESPONSE
         self._registry.register(HOOK_AFTER_MODEL_RESPONSE, func)
-        return func
-
-    def model_request(self, func: Callable) -> Callable:
-        """Register a wrap_model_request (middleware) hook.
-
-        Note: this event is declared but nothing emits it yet, so
-        registration raises :class:`UnwiredHookEvent` (spec D15/T2).
-        The decorator stays so the surface is visible while its
-        disposition is decided -- wire it, or delete it.
-        """
-        func._hook_event = HOOK_WRAP_MODEL_REQUEST
-        func._is_middleware = True
-        self._registry.register_middleware(HOOK_WRAP_MODEL_REQUEST, func)
         return func
 
     def on_model_request_error(self, func: Callable) -> Callable:
@@ -1041,36 +926,10 @@ class _HooksOn:
         self._registry.register(HOOK_AFTER_RUN, func)
         return func
 
-    def wrap_output_validate(self, func: Callable) -> Callable:
-        """Register a wrap_output_validate (middleware) hook.
-
-        Note: this event is declared but nothing emits it yet, so
-        registration raises :class:`UnwiredHookEvent` (spec D15/T2).
-        The decorator stays so the surface is visible while its
-        disposition is decided -- wire it, or delete it.
-        """
-        func._hook_event = HOOK_WRAP_OUTPUT_VALIDATE
-        func._is_middleware = True
-        self._registry.register_middleware(HOOK_WRAP_OUTPUT_VALIDATE, func)
-        return func
-
     def on_output_validate_error(self, func: Callable) -> Callable:
         """Register an on_output_validate_error handler."""
         func._hook_event = HOOK_ON_OUTPUT_VALIDATE_ERROR
         self._registry.register(HOOK_ON_OUTPUT_VALIDATE_ERROR, func)
-        return func
-
-    def wrap_output_process(self, func: Callable) -> Callable:
-        """Register a wrap_output_process (middleware) hook.
-
-        Note: this event is declared but nothing emits it yet, so
-        registration raises :class:`UnwiredHookEvent` (spec D15/T2).
-        The decorator stays so the surface is visible while its
-        disposition is decided -- wire it, or delete it.
-        """
-        func._hook_event = HOOK_WRAP_OUTPUT_PROCESS
-        func._is_middleware = True
-        self._registry.register_middleware(HOOK_WRAP_OUTPUT_PROCESS, func)
         return func
 
     def on_output_process_error(self, func: Callable) -> Callable:
@@ -1079,18 +938,6 @@ class _HooksOn:
         self._registry.register(HOOK_ON_OUTPUT_PROCESS_ERROR, func)
         return func
 
-    def wrap_run_event_stream(self, func: Callable) -> Callable:
-        """Register a wrap_run_event_stream (middleware) hook.
-
-        Note: this event is declared but nothing emits it yet, so
-        registration raises :class:`UnwiredHookEvent` (spec D15/T2).
-        The decorator stays so the surface is visible while its
-        disposition is decided -- wire it, or delete it.
-        """
-        func._hook_event = HOOK_WRAP_RUN_EVENT_STREAM
-        func._is_middleware = True
-        self._registry.register_middleware(HOOK_WRAP_RUN_EVENT_STREAM, func)
-        return func
 
 
 # ── Hook-map registration helpers ─────────────────────────────────────────

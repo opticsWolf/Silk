@@ -353,30 +353,45 @@ The `Hooks` facade exposes ergonomic decorator registration:
 `.after_run(...)`, etc., plus `get_tools()` / `get_instructions()` /
 `emit(...)`.
 
-**The event vocabulary** (19 constants in `hooks.py`; the first eight are
-emitted today, the rest are defined but not yet wired):
+**The event vocabulary** (15 constants in `hooks.py`) — every one of them
+fires. `UNWIRED_EVENTS` is empty, which is where §8's review table ended up
+(§22 q2):
 
-| Event | Kind | Wired | Fires / intended |
+| Event | Kind | Emitted by | Fires |
 |---|---|---|---|
 | `HOOK_BEFORE_RUN` / `HOOK_AFTER_RUN` | event | `agent_loop` | around a whole agent run (`after` carries `final_text`, `rounds`, `elapsed_s`) |
 | `HOOK_BEFORE_MODEL_REQUEST` | event | `agent_loop` | before each model request |
+| `HOOK_AFTER_MODEL_REQUEST` | event | `agent_loop` | after a request, distinct from the response |
 | `HOOK_AFTER_MODEL_RESPONSE` | event | `agent_loop` | after each response (carries `finish_reason`) |
+| `HOOK_ON_MODEL_REQUEST_ERROR` | event | `agent_loop` | a model request failed (carries the classification) |
+| `HOOK_WRAP_TOOL_VALIDATE` | middleware | `tool_box` | wraps argument parsing — repair or refuse before the tool is reached |
+| `HOOK_ON_TOOL_VALIDATE_ERROR` | event | `tool_box` | arguments did not survive validation |
 | `HOOK_BEFORE_TOOL_EXECUTE` / `HOOK_AFTER_TOOL_EXECUTE` | event | `tool_box` | around each tool call |
 | `HOOK_WRAP_TOOL_EXECUTE` | middleware | `tool_box` | wraps tool execution (deny/redact/retry) |
+| `HOOK_ON_TOOL_EXECUTE_ERROR` | event | `tool_box` | a tool raised or timed out |
 | `HOOK_TOOL_DENIED` | event | `tool_box` | when a role denies a tool |
-| `HOOK_AFTER_MODEL_REQUEST` | event | — | after a request (distinct from the response) |
-| `HOOK_WRAP_MODEL_REQUEST` | middleware | — | wrap a model request |
-| `HOOK_ON_MODEL_REQUEST_ERROR` | event | — | on a model-request failure |
-| `HOOK_WRAP_TOOL_VALIDATE` | middleware | — | wrap argument validation |
-| `HOOK_ON_TOOL_VALIDATE_ERROR` | event | — | on a validation failure |
-| `HOOK_ON_TOOL_EXECUTE_ERROR` | event | — | on a tool-execution failure |
-| `HOOK_WRAP_OUTPUT_VALIDATE` / `HOOK_ON_OUTPUT_VALIDATE_ERROR` | middleware/event | — | wrap final-output schema validation |
-| `HOOK_WRAP_OUTPUT_PROCESS` / `HOOK_ON_OUTPUT_PROCESS_ERROR` | middleware/event | — | wrap post-processing of the final output |
-| `HOOK_WRAP_RUN_EVENT_STREAM` | middleware | — | wrap the run's event stream itself |
+| `HOOK_ON_OUTPUT_VALIDATE_ERROR` | event | `agent_loop` | the final answer failed its schema |
+| `HOOK_ON_OUTPUT_PROCESS_ERROR` | event | `agent_loop` | post-processing the final answer raised |
 
-Rows marked `—` are defined but nothing emits them yet, so registering on
-one **raises `UnwiredHookEvent`** rather than registering cleanly and never
-firing (D15) — see [Open Topics](../OPEN_TOPICS.md).
+Registering on a name that is not in this list **raises
+`UnwiredHookEvent`** rather than registering cleanly and never firing (D15).
+That check used to guard a backlog; now it only guards typos.
+
+**Why only one `wrap_*` around the model side survived.** Four names —
+`wrap_model_request`, `wrap_output_validate`, `wrap_output_process`,
+`wrap_run_event_stream` — were deleted rather than wired (§22 q2). They sat
+in `agent_loop.py`'s synchronous generator and streaming paths, which async
+middleware cannot express without turning the loop inside out, and
+`Hooks.wrap_run_event_stream` had shipped as a stub that accepted
+registrations and ignored them: the precise failure D15 exists to prevent.
+`wrap_tool_validate` was kept because it could be honoured honestly — it
+sits at an `await` in `ToolBox.execute_tool_calls_async`, it knows the tool
+name (so `tools=` / `categories=` filtering means something), and it wraps
+a call that returns a value. A middleware may hand the inner handler
+different `raw_args` (repairing a quoted number the model got slightly
+wrong, instead of spending a round on a validation error) or raise, which
+ends that one call as an ordinary tool-result error the model can read —
+never the run.
 
 ### Hook catalog
 

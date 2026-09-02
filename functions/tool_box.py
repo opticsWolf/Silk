@@ -23,6 +23,7 @@ from .hooks import (
     HOOK_AFTER_TOOL_EXECUTE,
     HOOK_ON_TOOL_EXECUTE_ERROR,
     HOOK_ON_TOOL_VALIDATE_ERROR,
+    HOOK_WRAP_TOOL_VALIDATE,
     HOOK_TOOL_DENIED,
     HOOK_WRAP_TOOL_EXECUTE,
     register_hook_map,
@@ -760,7 +761,7 @@ class ToolBox:
                 continue
 
             try:
-                args = self._parse_args(meta["args_model"], tc.function.arguments)
+                args = await self._validate_args(name, meta, tc.function.arguments)
             except ValidationError as e:
                 details = [
                     f"{'.'.join(str(p) for p in err['loc'])}: {err['msg']}"
@@ -793,6 +794,24 @@ class ToolBox:
                     )
                 )
                 continue
+            except Exception as e:      # noqa: BLE001
+                # A wrap_tool_validate middleware refused (or broke). It is
+                # a refusal of one call, not a failure of the run: the
+                # model gets a result it can read, the same as every other
+                # validation outcome.
+                self.hooks.emit(
+                    HOOK_ON_TOOL_VALIDATE_ERROR,
+                    tool_name=name, error=str(e), details=[],
+                )
+                results.append(
+                    self._error(
+                        tc.id,
+                        name,
+                        f"Arguments for '{name}' were refused before the "
+                        f"tool ran: {e}",
+                    )
+                )
+                continue
 
             # Separate sequential and parallel tasks
             if meta.get("sequential"):
@@ -815,6 +834,36 @@ class ToolBox:
                 results.append(result)
 
         return results
+
+    async def _validate_args(self, name: str, meta: dict,
+                             raw: Optional[str]) -> dict:
+        """Parse and validate one call's arguments, wrappable (§22 q2).
+
+        `wrap_tool_validate` is the one of the five open ``WRAP_*`` events
+        with a shape middleware can actually express: it is async, it is
+        per-call, it knows the tool name (so `tools=` / `categories=`
+        filtering works), and the thing it wraps returns a value. A
+        middleware here can repair arguments a model got slightly wrong,
+        or refuse a call before the executable is reached -- and raising
+        `ValidationError` lands in the same self-correction path the
+        model already knows how to read.
+        """
+        def _parse(**kw: Any) -> dict:
+            return self._parse_args(meta["args_model"],
+                                    kw.get("raw_args", raw))
+
+        if not self.hooks.has_middleware(HOOK_WRAP_TOOL_VALIDATE, name):
+            return _parse()
+
+        async def _innermost(**kw: Any) -> dict:
+            return _parse(**kw)
+
+        return await self.hooks.emit_middleware(
+            HOOK_WRAP_TOOL_VALIDATE,
+            innermost=_innermost,
+            tool_name=name,
+            raw_args=raw,
+        )
 
     @staticmethod
     def _parse_args(args_model: Optional[Type[BaseModel]], raw: Optional[str]) -> dict:

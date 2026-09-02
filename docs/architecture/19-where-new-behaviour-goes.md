@@ -28,6 +28,7 @@
 | Centralise answering N agents' approval prompts | the Decision Inbox dock (`widgets/decision_inbox.py`) over `functions/decision_registry.py` — never a node (D59, D51, I12) |
 | See what N independent agents are doing | a `Silk Task Hub` node fed from `Silk ToolBox.root_paths`; it reads the plan stores, never the agents (D58) |
 | Point agents at a *specific* plan | a `Silk Task` node into the ToolBox node's `plan` input (and the Plan Viewer's `plan_ref`); leave both unwired to keep newest-under-root shared discovery (D23) |
+| Repair or refuse a model's tool arguments before the tool runs | a `wrap_tool_validate` middleware — the one surviving `wrap_*` on the model side; it may re-supply `raw_args` or raise, and raising ends the call, not the run (§22 q2) |
 | Require a human before a tool runs | the `tool_approval` catalog hook (risk band or tool names) — the same middleware the `signoff` policy uses |
 | Let a user say "don't ask again" | a `remember` scope on the decision: run-scoped in the gate closure, or a durable grant in `~/.weave/silk/grants.json` |
 | Give agents the tools of an MCP server | a `Silk MCP Server` node per server (it owns the session), optionally a `Silk MCP Aggregator` to switch individual tools off, into the ToolBox node's `mcp` input (D19–D22) |

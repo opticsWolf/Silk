@@ -91,6 +91,26 @@ default and the fallback. The third arm is not foreclosed — a ledger-backed
 strategy would slot in beside these as another `strategy` value — but it is
 no longer needed to make discovery honest.
 
+### G3. 11 of the 19 hook events are defined but never emitted — *closed*
+
+**Closed (2026-09-02).** `functions/hooks.py` now declares 15 constants and
+every one of them fires; `UNWIRED_EVENTS` is empty. The `*_ERROR` family
+and `HOOK_AFTER_MODEL_REQUEST` were wired by D15, and §22 q2 finished the
+job: `HOOK_WRAP_TOOL_VALIDATE` is honoured in
+`ToolBox.execute_tool_calls_async` (a middleware may re-supply `raw_args`
+to repair a mistake, or raise to refuse the call), and
+`HOOK_WRAP_MODEL_REQUEST`, `HOOK_WRAP_OUTPUT_VALIDATE`,
+`HOOK_WRAP_OUTPUT_PROCESS` and `HOOK_WRAP_RUN_EVENT_STREAM` are deleted —
+they lived in `agent_loop.py`'s sync generator and streaming paths, which
+async middleware cannot express, and the last of them had shipped as a stub
+that accepted registrations and ignored them.
+
+The problem this entry recorded was that a hook could register cleanly and
+then silently never fire. It cannot now: an unknown name raises
+`UnwiredHookEvent`, and there is no longer any known-but-dead name to hit.
+
+*Original text follows for the record.*
+
 ### G3. 11 of the 19 hook events are defined but never emitted
 
 `functions/hooks.py` declares 19 event constants; only 8 are actually
@@ -556,16 +576,14 @@ implementation gap is **G1**.
 
 ### T2. Hook vocabulary: wire it up or prune it (closes G3)
 
-Narrowed by D15. The six event-family members are decided (**wire**). What
-remains open is the disposition of the five middleware events —
-`HOOK_WRAP_MODEL_REQUEST`, `HOOK_WRAP_TOOL_VALIDATE`,
-`HOOK_WRAP_OUTPUT_VALIDATE`, `HOOK_WRAP_OUTPUT_PROCESS`,
-`HOOK_WRAP_RUN_EVENT_STREAM` — one decision per event, against the review
-table in spec §8. Pruning is safe as long as no hook map references the
-constant (the bundled catalog hooks only use wired events). Note that
-`HOOK_WRAP_TOOL_EXECUTE`, the one middleware event that *is* wired, is what
-both the sign-off gate and the future approval gate hang off — so the class
-is proven useful, and "prune the rest" is not the obvious default.
+**Resolved** by D15 and spec §22 q2: the six event-family members were
+wired, `HOOK_WRAP_TOOL_VALIDATE` was wired, and the other four `WRAP_*`
+names were deleted. `UNWIRED_EVENTS` is empty, so G3 is closed. The
+disposition of each event is recorded in the review table in spec §8, and
+the reasoning is in [the tool system section](architecture/08-tool-system.md#hooks-and-middleware).
+`HOOK_WRAP_TOOL_EXECUTE` remains what the sign-off and approval gates hang
+off; `HOOK_WRAP_TOOL_VALIDATE` joins it as the other middleware seam that
+can refuse a call before it happens.
 
 ### T3. Multi-agent budgeting
 

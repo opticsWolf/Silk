@@ -569,11 +569,29 @@ cleanly and never fire.
 | `HOOK_ON_TOOL_EXECUTE_ERROR` | event | tool execution failure | **wire** |
 | `HOOK_ON_OUTPUT_VALIDATE_ERROR` | event | final-output validation failure | **wire** |
 | `HOOK_ON_OUTPUT_PROCESS_ERROR` | event | output post-processing failure | **wire** |
-| `HOOK_WRAP_MODEL_REQUEST` | middleware | wrap a model request | review |
-| `HOOK_WRAP_TOOL_VALIDATE` | middleware | wrap argument validation | review |
-| `HOOK_WRAP_OUTPUT_VALIDATE` | middleware | wrap output validation | review |
-| `HOOK_WRAP_OUTPUT_PROCESS` | middleware | wrap output post-processing | review |
-| `HOOK_WRAP_RUN_EVENT_STREAM` | middleware | wrap the run's event stream | review |
+| `HOOK_WRAP_TOOL_VALIDATE` | middleware | wrap argument validation | **wired** (§22 q2) |
+| `HOOK_WRAP_MODEL_REQUEST` | middleware | wrap a model request | **deleted** (§22 q2) |
+| `HOOK_WRAP_OUTPUT_VALIDATE` | middleware | wrap output validation | **deleted** (§22 q2) |
+| `HOOK_WRAP_OUTPUT_PROCESS` | middleware | wrap output post-processing | **deleted** (§22 q2) |
+| `HOOK_WRAP_RUN_EVENT_STREAM` | middleware | wrap the run's event stream | **deleted** (§22 q2) |
+
+The review is finished, and `UNWIRED_EVENTS` is now empty: every name in
+`KNOWN_EVENTS` fires. One `WRAP_*` survived because one of them could be
+honoured. `wrap_tool_validate` sits at an `await` in
+`ToolBox.execute_tool_calls_async`, knows the tool name (so `tools=` and
+`categories=` filtering means something), and wraps a call that returns a
+value -- so a middleware can repair arguments a model got slightly wrong
+instead of spending a round on a validation error, or refuse a call before
+the procedure sees it. A refusal there ends one call, not the run: it comes
+back as an ordinary tool-result error the model can read.
+
+The other four sat in `agent_loop.py`'s synchronous generator and streaming
+paths, which async middleware cannot express without rewriting the loop
+around them. `Hooks.wrap_run_event_stream` was already a stub that accepted
+registrations and ignored them -- exactly the "looks installed and is not"
+failure D15 exists to prevent -- so they are gone from the vocabulary
+rather than left as a promise. Registering one now fails loudly, which is
+the point of D15's last paragraph.
 
 ---
 
@@ -1956,7 +1974,7 @@ selects it as soon as the graph shape changes.
 | Item | Closed by |
 |---|---|
 | G1 — approval gate is a no-op | §7 |
-| G3 / T2 — unwired hook events | §8 (partial: error family wired, rest reviewed) |
+| G3 / T2 — unwired hook events | §8 (closed: error family wired, one wrap wired, four deleted) |
 | G4 — no test suite | §14 |
 | G13 — `max_rounds` error silently dropped | §5 (`outcome`) |
 | G14 / T8 — compaction absent | §12 |
@@ -2020,7 +2038,11 @@ need a `__version__` to name. Still trivial; now load-bearing.
    ends the run with "Done — N call(s) refused: nothing in this graph could
    ask you." Once per call is noise; never is a correct batch that looks
    hung (D53).
-2. Disposition of the five `WRAP_*` unwired events (§8).
+2. ~~Disposition of the five `WRAP_*` unwired events (§8).~~
+   **Answered (2026-09-02):** wire one, delete four. See the review
+   table in §8 -- `wrap_tool_validate` is now honoured in
+   `ToolBox.execute_tool_calls_async`; the four loop/stream wraps are
+   deleted, so `UNWIRED_EVENTS` is empty and G3/T2 is closed.
 3. Whether `EventStart.system_prompt` is populated or dropped (§5).
 4. Spill-file cleanup policy and its lifetime (§12).
 5. Whether the hook-node question returns once per-tool binding exists --
