@@ -484,19 +484,83 @@ class PlanSchemaVersionError(RuntimeError):
         )
 
 
+@dataclass(frozen=True)
+class PlanRef:
+    """Which plan, and where it lives (spec D23).
+
+    Discovery-by-mtime is what this replaces. Picking the newest
+    ``plan-*.db`` under a root is fine while one plan exists there and
+    silently wrong the moment two do: two agents in one directory
+    cross-discover each other's plans, and which one they land on depends
+    on file timestamps. A reference names the file.
+
+    ``db_path`` empty means "the newest plan under *root*" -- the old
+    behaviour, kept because an agent given no Task node must still be able
+    to plan, and because several agents sharing one root is a legitimate
+    way to share a plan.
+    """
+
+    root: str = ""
+    db_path: str = ""
+    plan_id: str = ""
+    label: str = ""
+
+    @property
+    def is_explicit(self) -> bool:
+        return bool(self.db_path)
+
+    def to_dict(self) -> dict:
+        return {"root": self.root, "db_path": self.db_path,
+                "plan_id": self.plan_id, "label": self.label}
+
+    @classmethod
+    def coerce(cls, value: Any) -> Optional["PlanRef"]:
+        if isinstance(value, PlanRef):
+            return value
+        if not value:
+            return None
+        if isinstance(value, (str, os.PathLike)):
+            return cls(root=str(value))
+        if isinstance(value, dict):
+            return cls(root=str(value.get("root") or ""),
+                       db_path=str(value.get("db_path") or ""),
+                       plan_id=str(value.get("plan_id") or ""),
+                       label=str(value.get("label") or ""))
+        return None
+
+    def store(self, **kwargs: Any) -> "SqliteTaskStore":
+        """The store this reference names."""
+        return SqliteTaskStore(self.root or ".", db_path=self.db_path or None,
+                               **kwargs)
+
+    def __str__(self) -> str:      # pragma: no cover - labels only
+        if self.label:
+            return self.label
+        if self.db_path:
+            return Path(self.db_path).stem
+        return f"newest plan under {self.root or '.'}"
+
+
 class SqliteTaskStore:
     """One plan's store of record, anchored at a working-directory *root*.
 
     The DB + projections live at ``<dir>/<stem>.db|.md|.json`` where *dir* is the
-    root if writable, else ``<root>/.silk/plan/`` (fallback). A ``.silk``-level
-    pointer is not needed: agents locate the active plan by newest ``plan-*.db``
-    in the candidate dirs, which is what lets several agents share one plan.
+    root if writable, else ``<root>/.silk/plan/`` (fallback).
+
+    Which plan is *this* store's is answered two ways. Given ``db_path``
+    (a Task node's explicit identity, D23) it is that file and no other.
+    Without one, the store falls back to the newest ``plan-*.db`` in the
+    candidate dirs -- shared-plan discovery, which is what lets several
+    agents in one root work on one plan, and what makes two unrelated
+    plans in one root cross-discover.
     """
 
-    def __init__(self, root: str | os.PathLike, *, direct_write: bool = True) -> None:
+    def __init__(self, root: str | os.PathLike, *, direct_write: bool = True,
+                 db_path: str | os.PathLike | None = None) -> None:
         self.root = Path(root).resolve()
         self.direct_write = direct_write
-        self._db_path: Optional[Path] = None
+        self._db_path: Optional[Path] = Path(db_path).resolve() if db_path else None
+        self._explicit = self._db_path is not None
         self._pid: Optional[str] = None
 
     # -- location ---------------------------------------------------------
@@ -521,7 +585,14 @@ class SqliteTaskStore:
         return fallback
 
     def _locate_db(self) -> Optional[Path]:
-        """Newest ``plan-*.db`` across the candidate dirs (shared-plan discovery)."""
+        """This store's plan file, or ``None`` if there is not one yet.
+
+        An explicit path is used even when the file does not exist yet:
+        naming a plan that has not been created is how a Task node says
+        *this* is where the next plan goes (D23).
+        """
+        if self._explicit:
+            return self._db_path if self._db_path.exists() else None
         if self._db_path is not None and self._db_path.exists():
             return self._db_path
         found: list[Path] = []
@@ -538,6 +609,43 @@ class SqliteTaskStore:
     def _new_stem() -> str:
         ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         return f"plan-{ts}-{secrets.token_hex(3)}"
+
+    @classmethod
+    def scan_all(cls, root: str | os.PathLike) -> list[dict]:
+        """Every plan under *root*, as plain rows -- newest first.
+
+        Additive and read-only: it opens each file, reads the header, and
+        closes it. This is what a Task node offers in its dropdown, and
+        what the Task Hub (D58/D60) scans; agents without an explicit
+        reference keep using newest-only discovery.
+        """
+        base = Path(root).resolve()
+        rows: list[dict] = []
+        for directory in (base, base / ".silk" / "plan"):
+            if not directory.is_dir():
+                continue
+            for path in sorted(directory.glob("plan-*.db")):
+                row = {"db_path": str(path), "root": str(base),
+                       "label": path.stem, "plan_id": "", "goal": "",
+                       "updated_at": "", "open_tasks": 0, "tasks": 0,
+                       "mtime": path.stat().st_mtime}
+                try:
+                    plan = cls(base, db_path=path).load()
+                except Exception as exc:      # noqa: BLE001 - a bad file is a row
+                    row["error"] = str(exc)
+                    rows.append(row)
+                    continue
+                if plan is not None:
+                    row.update(
+                        plan_id=plan.plan_id,
+                        goal=plan.goal.text if plan.goal else "",
+                        updated_at=plan.updated_at,
+                        tasks=len(plan.tasks),
+                        open_tasks=len(open_task_ids(plan)),
+                    )
+                rows.append(row)
+        rows.sort(key=lambda r: r["mtime"], reverse=True)
+        return rows
 
     # -- connection -------------------------------------------------------
 
@@ -701,8 +809,12 @@ class SqliteTaskStore:
             )
         now = now or _now_iso()
         acceptance = list(acceptance or [])
-        stem = self._new_stem()
-        self._db_path = self._target_dir() / f"{stem}.db"
+        if self._explicit:
+            # A Task node named this file (D23); the plan goes where the
+            # graph says it goes, not into a freshly minted stem.
+            self._db_path.parent.mkdir(parents=True, exist_ok=True)
+        else:
+            self._db_path = self._target_dir() / f"{self._new_stem()}.db"
         pid = secrets.token_hex(8)
         self._pid = pid
 

@@ -35,6 +35,49 @@ audit row. `plan_changed_event(store, last_revision)` returns a
 re-streams. The Agent node calls this after each tool batch to push live
 updates to a `Plan Viewer`.
 
+### Which plan: explicit identity (D23)
+
+The store answers "which plan is this?" two ways, and the difference is
+the whole of T4.
+
+Given an explicit `db_path`, `SqliteTaskStore(root, db_path=...)` opens
+that file and no other — including when the file does not exist yet, which
+is how a graph says *this is where the next plan goes*. Without one, it
+falls back to the newest `plan-*.db` across `root` and `root/.silk/plan`.
+
+That fallback is kept on purpose: it is also the mechanism by which
+several agents rooted in one directory share one plan, and an agent with
+no Task node wired in must still be able to plan. What it cannot do is
+tell two *unrelated* plans in one root apart — whichever was written last
+wins, so which plan an agent lands on depends on file timestamps.
+
+`PlanRef` is the identity that removes the guess:
+
+```python
+@dataclass(frozen=True)
+class PlanRef:
+    root: str = ""       # where to look
+    db_path: str = ""    # which file  (empty -> newest under root)
+    plan_id: str = ""    # which plan  (label/diagnostics)
+    label: str = ""
+```
+
+`coerce()` accepts a `PlanRef`, a plain dict (so it survives graph
+save/load), a path string (root only), or `None`; `store()` builds the
+store it names; `is_explicit` distinguishes a named plan from shared
+discovery. It travels the graph as the `silk_plan` port type: the
+`Silk Task` node emits it, the ToolBox node forwards it to
+`attach_task_tools(plan=ref)` **through its build recipe** — so a derived
+ToolSet replays the same reference rather than re-discovering — and the
+Plan Viewer's `plan_ref` input outranks its `root`.
+
+`SqliteTaskStore.scan_all(root)` is the read-only complement: every plan
+under a root as plain rows (`db_path`, `label`, `plan_id`, `goal`,
+`updated_at`, `tasks`, `open_tasks`, `mtime`), newest first, an unreadable
+file reported as a row with an `error` rather than raised. It is what the
+Task node's dropdown offers and what the Task Hub scans under D58/D60;
+agents without a reference keep using newest-only discovery.
+
 ### `functions/signoff.py` — the user sign-off gate
 
 A **policy** maps each *change type* to who may sign it:

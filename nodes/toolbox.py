@@ -81,6 +81,11 @@ class SilkToolBoxNode(ActiveNode):
         # arrives is a connection that is already open, so the recipe
         # entry below registers tools without touching a server.
         self.add_input("mcp", datatype="mcp_servers")
+        # Which plan the task tools work on (D23). Unwired, the store
+        # falls back to the newest plan under the sandbox root -- shared
+        # discovery, which is also how two unrelated plans in one root
+        # used to find each other.
+        self.add_input("plan", datatype="silk_plan")
         self.add_output("toolbox", datatype="silk_toolbox")
         self.add_output("root_paths", datatype="dirpath_list")
 
@@ -287,7 +292,12 @@ class SilkToolBoxNode(ActiveNode):
         # wires it with the store attach_task_tools put on the box, so task_tracker
         # must precede the hooks recipe entry.
         if inputs.get("enable_planning", False):
-            recipe.append(("task_tracker", attach_task_tools))
+            plan_ref = inputs.get("plan")
+            recipe.append((
+                "task_tracker",
+                partial(attach_task_tools, plan=plan_ref)
+                if plan_ref is not None else attach_task_tools,
+            ))
 
         toolchains = tuple(inputs.get("toolchains") or ())
         if toolchains:

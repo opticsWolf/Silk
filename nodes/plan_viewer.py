@@ -37,7 +37,8 @@ from weave.widgets.markdown_widget import MarkdownWidget
 from weave.widgets.sync_button import SyncButton
 
 from ..functions.task_store import (
-    SqliteTaskStore, Plan, plan_from_json, plan_to_json, render_markdown,
+    PlanRef, SqliteTaskStore, Plan, plan_from_json, plan_to_json,
+    render_markdown,
 )
 from ..functions.plan_render import markdown_to_html
 from ..functions.stream_events import EventType
@@ -73,6 +74,9 @@ class SilkPlanViewerNode(ThreadedNode):
 
         # ── Ports ──
         self.add_input("root", datatype="string")
+        # The Task node's identity (D23). Given one, this viewer stops
+        # guessing which plan a root means.
+        self.add_input("plan_ref", datatype="silk_plan")
         self.add_input("plan", datatype="dict")
         self.add_input("event", datatype="dict")
         self.add_output("plan_json", datatype="dict")
@@ -117,12 +121,26 @@ class SilkPlanViewerNode(ThreadedNode):
         md = render_markdown(plan)
         return plan_to_json(plan), md, markdown_to_html(md)
 
-    def _resolve_plan(self, *, plan_dict: Any = None, root: Any = None) -> Optional[Plan]:
-        """First source that yields a plan wins: explicit dict, then a root DB."""
+    def _resolve_plan(self, *, plan_dict: Any = None, root: Any = None,
+                      ref: Any = None) -> Optional[Plan]:
+        """First source that yields a plan wins.
+
+        An explicit snapshot, then the Task node's reference (D23), then a
+        bare root. The reference outranks the root because that is the
+        point of it: a root only says *where* to look, and looking picks
+        the newest plan there, which is the wrong plan as soon as a second
+        one exists.
+        """
         if isinstance(plan_dict, dict) and (
             plan_dict.get("goal") or plan_dict.get("tasks") or plan_dict.get("plan_id")
         ):
             return plan_from_json(plan_dict)
+        reference = PlanRef.coerce(ref)
+        if reference is not None and (reference.is_explicit or reference.root):
+            try:
+                return reference.store().load()
+            except Exception as exc:  # noqa: BLE001 - a bad ref must not crash eval
+                log.debug("Plan load from %s failed: %s", reference, exc)
         if root:
             try:
                 return SqliteTaskStore(root=str(root)).load()
@@ -155,7 +173,8 @@ class SilkPlanViewerNode(ThreadedNode):
             if value.get("type") not in (None, EventType.PLAN.value):
                 return
             plan_dict = value.get("plan")
-            plan = self._resolve_plan(plan_dict=plan_dict, root=self._root)
+            plan = self._resolve_plan(plan_dict=plan_dict, root=self._root,
+                                      ref=getattr(self, "_plan_ref", None))
             if plan is not None:
                 pj, md, html = self._render(plan)
                 self._apply_display(md, html)
@@ -174,7 +193,11 @@ class SilkPlanViewerNode(ThreadedNode):
         root = inputs.get("root")
         if root:
             self._root = str(root)
-        plan = self._resolve_plan(plan_dict=inputs.get("plan"), root=self._root)
+        ref = inputs.get("plan_ref")
+        if ref is not None:
+            self._plan_ref = ref
+        plan = self._resolve_plan(plan_dict=inputs.get("plan"), root=self._root,
+                                  ref=getattr(self, "_plan_ref", None))
 
         if plan is None:
             self._pending_md, self._pending_html = _PLACEHOLDER, None

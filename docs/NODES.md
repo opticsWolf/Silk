@@ -27,8 +27,14 @@ ceiling), toolchain packs, category overview and per-tool details.
 | in | `sandbox_roots` | `dirpath_list` |
 | in | `toolchains` | `toolchains` |
 | in | `mcp` | `mcp_servers` |
+| in | `plan` | `silk_plan` |
 | out | `toolbox` | `silk_toolbox` |
 | out | `root_paths` | `dirpath_list` |
+
+Wiring a `Silk Task` node into `plan` names the plan the task tools work
+on. Left unwired, they discover the newest plan under the sandbox root —
+which is how several agents share one plan, and why two unrelated plans in
+one root used to find each other (D23).
 
 ### Silk ToolSet — `nodes/toolset.py`
 Selects a subset of ToolBox tools for an agent, with optional per-toolset
@@ -70,6 +76,20 @@ not cost a handshake.
 |---|---|---|
 | in | `mcp_in` | `mcp_servers` |
 | out | `mcp` | `mcp_servers` |
+
+### Silk Task — `nodes/task.py` *(AI / Agents)*
+Names the plan agents work on, so the store never has to guess which plan a
+root means (D23). Lists the plans that already exist under the root with
+their goal and open-task count; `(new plan)` plus a name creates one at a
+path you can find again, `(newest under root)` keeps shared discovery.
+
+| Direction | Port | Type |
+|---|---|---|
+| in | `root` | `string` |
+| in | `root_paths` | `dirpath_list` (the ToolBox's sandbox ceiling) |
+| in | `plan_choice` | `string` |
+| in | `plan_name` | `string` |
+| out | `plan` | `silk_plan` |
 
 ### Toolchain — `nodes/toolchain.py`
 Configures a set of external toolchains — Python interpreters/venvs, ruff,
@@ -192,11 +212,16 @@ markdown style.
 | Direction | Port | Type |
 |---|---|---|
 | in | `root` | `string` |
+| in | `plan_ref` | `silk_plan` |
 | in | `plan` | `dict` |
 | in | `event` | `dict` |
 | out | `plan_json` | `dict` |
 | out | `plan_text` | `string` |
 | out | `plan_html` | `string` |
+
+Sources are tried in order: an explicit `plan` snapshot, then `plan_ref`,
+then `root`. The reference outranks the root because a root only says
+*where* to look, and looking picks the newest plan there.
 
 ### Chat Log Display — `nodes/chat_display.py` *(Display / Chat)*
 Sink that continuously appends chat turns to a running log, rendering the
@@ -220,6 +245,8 @@ agent's `done` port to `refresh` for updates without polling.
 
 ```
 [Silk MCP Server] ─mcp─▶ [Silk MCP Aggregator] ─mcp─┐
+                                                    ▼
+[Silk Task] ─plan──────────────────────────────────┐
                                                     ▼
 [Toolchain] ─toolchains─▶ [Silk ToolBox] ◀──sandbox_roots (dirpath_list)
                               │ silk_toolbox

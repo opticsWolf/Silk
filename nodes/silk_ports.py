@@ -18,6 +18,8 @@ Types:
     toolchains        list of ToolchainEnv handles (configured executables)
     mcp_servers       an MCPBundle: live MCP sessions plus the tools the
                       Aggregator switched off (D19-D21)
+    silk_plan         a PlanRef: which plan file, named outright rather
+                      than discovered by mtime (D23)
 """
 from __future__ import annotations
 
@@ -208,6 +210,22 @@ if "mcp_servers" not in PortRegistry._by_name:
         casts_to={},
     )
 
+# Which plan, and where it lives (D23). A PlanRef -- naming the plan file
+# rather than letting the store pick the newest one under a root, which is
+# how two unrelated plans in one directory used to cross-discover.
+if "silk_plan" not in PortRegistry._by_name:
+    PortRegistry.register(
+        name="silk_plan",
+        python_type=object,
+        color_index=178,
+        type_id=None,
+        default=lambda: None,
+        validator=lambda v: v is None or hasattr(v, "is_explicit")
+                            or isinstance(v, dict),
+        formatter=lambda v: f"<Plan {v}>" if v is not None else "<no plan>",
+        casts_to={},
+    )
+
 GGUF_MODEL_TYPE = PortRegistry._by_name["gguf_model"]
 SILK_TOOLBOX_TYPE = PortRegistry._by_name["silk_toolbox"]
 SILK_TOOLSET_TYPE = PortRegistry._by_name["silk_toolset"]
@@ -218,3 +236,4 @@ TOOLCHAINS_TYPE = PortRegistry._by_name["toolchains"]
 AGENT_MESSAGE_TYPE = PortRegistry._by_name["agent_message"]
 SILK_AGENTS_TYPE = PortRegistry._by_name["silk_agents"]
 MCP_SERVERS_TYPE = PortRegistry._by_name["mcp_servers"]
+SILK_PLAN_TYPE = PortRegistry._by_name["silk_plan"]

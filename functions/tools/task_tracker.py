@@ -31,7 +31,7 @@ from pydantic import BaseModel, Field, field_validator
 # would be "beyond top-level". Absolute resolution works in both load paths and
 # yields the same module object as a normal import (no duplicate class identity).
 from weave.plugins.silk.functions.task_store import (
-    Conflict, DEFAULT_ACTOR, LedgerClosed, SqliteTaskStore, plan_to_json,
+    Conflict, DEFAULT_ACTOR, LedgerClosed, PlanRef, SqliteTaskStore, plan_to_json,
     render_markdown,
 )
 
@@ -210,10 +210,21 @@ def _result(outcome: Any, *, message: str) -> PlanResult:
 
 # ── registration ────────────────────────────────────────────────────────────
 
-def attach_task_tools(toolbox: "ToolBox", sandbox: "FileToolSandbox") -> None:
-    """Mount the task planning/tracking tools, backed by a store rooted at the
-    sandbox's working directory."""
-    store = SqliteTaskStore(root=getattr(sandbox, "root_dir", "."))
+def attach_task_tools(toolbox: "ToolBox", sandbox: "FileToolSandbox",
+                      plan: Any = None) -> None:
+    """Mount the task planning/tracking tools.
+
+    Without *plan* the store is rooted at the sandbox working directory and
+    finds the newest plan there -- shared-plan discovery, which is how
+    several agents in one root work on one plan. With a `PlanRef` from a
+    Task node the plan is named outright (D23), so two unrelated plans in
+    one directory cannot cross-discover by file timestamp.
+    """
+    ref = PlanRef.coerce(plan)
+    if ref is not None and (ref.is_explicit or ref.root):
+        store = ref.store()
+    else:
+        store = SqliteTaskStore(root=getattr(sandbox, "root_dir", "."))
     toolbox._task_store = store  # type: ignore[attr-defined]
 
     @toolbox.register(

@@ -596,11 +596,23 @@ policy T4 settles on must keep both readers coherent.
 process). `scan_all` stays as specified for the SQLite fallback.
 
 
-**Resolved** by spec §11, D23: a `Task Node` carries explicit plan identity
-(plan id + store location) and feeds the ToolBox, so the Plan Viewer takes
-that identity instead of guessing. Stub kept for inbound links. Until it
-ships, the store still picks the *newest* `plan-*.db` by mtime across `root`
-and `root/.silk/plan`, so concurrent plans in one root can cross-discover.
+**CLOSED (2026-09-02)** — spec §11, D23, implemented. A `PlanRef` (root,
+db file, plan id, label) is the plan's identity; `SqliteTaskStore` takes an
+explicit `db_path` and, given one, opens that file and no other. The new
+`Silk Task` node (`nodes/task.py`) emits the reference, the ToolBox node
+passes it to `attach_task_tools(plan=...)` through its build recipe (so
+derived ToolSets keep the same plan), and the Plan Viewer's `plan_ref`
+input outranks a bare `root`.
+
+Newest-by-mtime discovery is *kept* as the unnamed case, deliberately: it
+is also the mechanism by which several agents in one root share one plan,
+and an agent with no Task node must still be able to plan. What changed is
+that it is no longer the only answer, so two unrelated plans in one root
+stop cross-discovering. `SqliteTaskStore.scan_all()` (additive, read-only)
+lists every plan under a root with its goal and open-task count — the Task
+node's dropdown today, the Task Hub's scan under D58/D60 next.
+
+Tests: `tests/test_silk_plan_identity.py`, `tests/test_silk_task_node.py`.
 (The `Sign-Off` node named in the original entry is deleted by D32; the Plan
 Viewer is the only remaining plan consumer.)
 
