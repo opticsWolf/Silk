@@ -5,7 +5,7 @@ The human end of the task sign-off gate. Lists tasks the agent parked as
 ``awaiting_signoff`` (with the agent's summary), and lets the user **Approve** or
 **Reject** them — the only action that can advance a gated task to ``done``.
 
-Wire ``Silk Agent.plan_events`` → ``event`` to auto-refresh the pending list as
+Wire ``Silk Agent.events`` → ``event`` to auto-refresh the pending list as
 the agent parks tasks, and set ``root`` to the sandbox working dir (or leave it —
 it is learned from the plan events). On a decision the node pulses ``signed`` (to
 re-trigger the Agent's ``run`` and continue) and re-emits the updated ``plan_json``.
@@ -31,6 +31,7 @@ from weave.logger import get_logger
 from weave.widgets.sync_button import SyncButton
 
 from ..functions.task_store import Conflict, SqliteTaskStore, plan_to_json
+from ..functions.stream_events import EventType
 
 log = get_logger("SilkSignOff")
 
@@ -195,6 +196,12 @@ class SilkSignOffNode(ThreadedNode):
 
     def on_upstream_stream(self, port_name: str, value: Any) -> None:
         if port_name == "event":
+            # The agent's one `events` port carries every type (D2/D3); a
+            # pending list only ever changes when the plan does.
+            if isinstance(value, dict) and value.get("type") not in (
+                None, EventType.PLAN.value,
+            ):
+                return
             if self._root:
                 self._refresh_pending(SqliteTaskStore(root=self._root).pending_signoffs())
             elif isinstance(value, dict) and isinstance(value.get("plan"), dict):

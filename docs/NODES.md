@@ -85,11 +85,14 @@ Qt-free `AgentLoop`. Exec `run`/`done` ports let agents chain into networks.
 | in | `run` | `exec` |
 | in | `inference_settings` | `dict` |
 | out | `response` | `string` |
-| out | `chat_turn` | `dict` |
 | out | `outbox` | `agent_message` |
-| out | `tool_events` | `dict` |
-| out | `plan_events` | `dict` |
+| out | `events` | `dict` |
 | out | `done` | `exec` |
+
+`events` is the one typed stream (spec D2/D3): run lifecycle, model rounds,
+tool calls and results, denials, plan snapshots, chat turns and decisions,
+each carrying `type`, `ts`, `run_id`, `seq` and the agent identity.
+Consumers filter by `type`.
 
 ### Silk Agent Spec — `nodes/agent_spec.py`
 A named worker bundle (model + toolset + role) for the Orchestrator; chain
@@ -116,8 +119,8 @@ plus:
 ## Observability & human gates
 
 ### Hook Monitor — `nodes/hook_monitor.py` *(Display / Agents)*
-Graph-native observability sink for the Agent's `tool_events` stream: rolling
-log of run / model / tool events with per-kind and per-tool counters.
+Graph-native observability sink for the Agent's `events` stream: rolling log
+of everything a run says, with per-type and per-tool counters.
 
 | Direction | Port | Type |
 |---|---|---|
@@ -156,7 +159,7 @@ thread as markdown/HTML.
 
 | Direction | Port | Type |
 |---|---|---|
-| in | `chat_turn` | `dict` |
+| in | `event` | `dict` | (the Agent's `events` stream; keeps `chat.turn`) |
 
 ### Pool Monitor — `nodes/pool_monitor.py` *(AI / Monitor)*
 Live snapshot of GGUF pool state (active/idle instances, capacity). Wire any
@@ -183,8 +186,8 @@ agent's `done` port to `refresh` for updates without polling.
                      ▼                        │
   [GGUF Loader] ─gguf_model─▶ [Silk Agent] ───┘
        │                        │
-       └─ pool_info             ├─ tool_events ─▶ [Hook Monitor]
-                                ├─ chat_turn   ─▶ [Chat Log Display]
-                                ├─ plan_events ─▶ [Plan Viewer] / [Sign-Off]
+       └─ pool_info             ├─ events ─┬─▶ [Hook Monitor]
+                                │          ├─▶ [Chat Log Display]
+                                │          └─▶ [Plan Viewer] / [Sign-Off]
                                 └─ done (exec) ─▶ [Pool Monitor] .refresh
 ```

@@ -15,8 +15,8 @@ and the agent's other connections:
 GGUF Loader ─(gguf_model)─────────────► Silk Agent
 Inference Settings ─(dict)─────────────► Silk Agent
 Silk Agent.outbox (agent_message) ───► (another) Silk Agent.inbox
-Silk Agent.plan_events (dict) ───────► Plan Viewer / Sign-Off
-Silk Agent.tool_events (dict) ───────► Hook Monitor
+Silk Agent.events (dict) ────────────► Hook Monitor / Plan Viewer /
+                                       Chat Log / Sign-Off
 ```
 
 Full per-node port tables are in [NODES.md](../NODES.md); the custom port
@@ -47,10 +47,13 @@ pieces:
   Inputs: `model_obj` (`gguf_model`), `toolset` (`silk_toolset`), `role`
   (`silk_role`), `system_prompt`, `user_prompt`, `inbox`
   (`agent_message`), `run` (`exec` pulse), `inference_settings`
-  (`dict`). Outputs: `response` (`string`), `chat_turn` (`dict`),
-  `outbox` (`agent_message`), `tool_events` (`dict` — one per tool
-  call/result/denial, fed by toolbox hooks), `plan_events` (`dict` —
-  `plan_summary` snapshots), and `done` (`exec`).
+  (`dict`). Outputs: `response` (`string`), `outbox` (`agent_message`),
+  `events` (`dict` — the one typed event stream: run lifecycle, model
+  rounds, tool calls and results, denials, plan snapshots, chat turns,
+  decisions; every line carries `type`, `ts`, `run_id`, `seq` and the
+  agent identity), and `done` (`exec`). The vocabulary is
+  `functions/stream_events.py`; consumers filter by `type` rather than by
+  port, and a monitor that does not recognise a type still logs it.
 - `GGUF Loader` (`nodes/gguf_loader.py`) loads a `.gguf` into the shared
   model pool (thread-safe; ejects the previous model on re-run) and emits a
   `gguf_model` handle (`{"backend": "gguf", "pool": <pool>}`) plus live

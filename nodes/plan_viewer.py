@@ -16,7 +16,8 @@ sole source of truth; everything here is a projection.
 
 Data reaches the node three ways (first that yields a plan wins):
 1. an explicit ``plan`` dict on the input port (e.g. routed from a plan snapshot);
-2. the ``event`` stream (plan events from the audit hook, carrying ``plan``);
+2. the ``event`` stream (the agent's ``events`` port: ``plan.summary``
+   events carry the snapshot; every other type is ignored);
 3. a ``root`` working-directory path — the node loads the newest plan DB there
    (and the Refresh button re-reads it out-of-band).
 """
@@ -39,6 +40,7 @@ from ..functions.task_store import (
     SqliteTaskStore, Plan, plan_from_json, plan_to_json, render_markdown,
 )
 from ..functions.plan_render import markdown_to_html
+from ..functions.stream_events import EventType
 
 log = get_logger("SilkPlanViewer")
 
@@ -144,7 +146,15 @@ class SilkPlanViewerNode(ThreadedNode):
         The event may carry a ``plan`` snapshot directly, or just signal a change
         (we then re-read the cached ``root``)."""
         if port_name == "event":
-            plan_dict = value.get("plan") if isinstance(value, dict) else None
+            # One port carries every event now (spec D2/D3), so the viewer
+            # picks its own out rather than assuming everything arriving is
+            # a plan. Anything else is not a change of plan and must not
+            # trigger a re-render.
+            if not isinstance(value, dict):
+                return
+            if value.get("type") not in (None, EventType.PLAN.value):
+                return
+            plan_dict = value.get("plan")
             plan = self._resolve_plan(plan_dict=plan_dict, root=self._root)
             if plan is not None:
                 pj, md, html = self._render(plan)

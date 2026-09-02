@@ -35,6 +35,7 @@ from weave.logger import get_logger
 
 from .agent import SilkAgentNode
 from .silk_ports import SILK_AGENTS_TYPE  # noqa: F401
+from ..functions.stream_events import EventWorker
 from ..functions.orchestrator import (
     attach_orchestrator_tools,
     set_orchestrator_observers,
@@ -116,14 +117,11 @@ class SilkOrchestratorNode(SilkAgentNode):
         def _on_worker_event(worker: str, event: Any) -> None:
             if emit_event is None:
                 return
-            emit_event(
-                "worker_event",
+            emit_event(EventWorker(
                 worker=worker,
-                # Not 'kind': the emitter's own first argument is named
-                # kind, and a worker's event type is a different thing.
                 event_type=type(event).__name__,
-                text=_event_digest(event),
-            )
+                digest=_event_digest(event),
+            ))
 
         set_orchestrator_observers(
             toolset,

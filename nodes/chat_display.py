@@ -4,7 +4,10 @@ Chat Display Node
 
 A sink node that continuously appends chat turns to a running log,
 rendering the entire thread beautifully as HTML using MarkdownConverter.
-Designed to receive `chat_turn` dicts from the Silk Agent node.
+
+Wire ``Silk Agent.events`` → ``event``. The agent emits one typed stream
+(spec D2/D3); this node keeps the ``chat.turn`` events and ignores the
+rest, so the same wire that feeds a monitor feeds the log.
 """
 
 import time
@@ -22,6 +25,8 @@ from weave.node.threaded import ThreadedNode
 from weave.registry import register_node
 from weave.widgetcore import WidgetCore, PortRole
 from weave.node import VerticalSizePolicy
+
+from ..functions.stream_events import EventType
 
 
 #: Tool-result bodies (file contents, etc.) can be large; cap what the log
@@ -49,7 +54,7 @@ def _format_tool_result(body: str) -> str:
 
 
 def _format_turn(turn: dict) -> str:
-    """Render one ``chat_turn`` dict to markdown, including tool turns.
+    """Render one ``chat.turn`` event to markdown, including tool turns.
 
     Backward compatible: a turn without a ``turns`` list renders exactly the
     old user/AI pair. Tool calls and results are interleaved between the user
@@ -110,7 +115,7 @@ class ChatDisplayNode(ThreadedNode):
         self._pending_html: Optional[str] = None
 
         # Ports
-        self.add_input("chat_turn", datatype="dict")
+        self.add_input("event", datatype="dict")
 
         # Layout
         form = QFormLayout()
@@ -147,35 +152,70 @@ class ChatDisplayNode(ThreadedNode):
         self._last_turn_id = None
         self._widget_core.push_display("display", "<i>Chat log cleared.</i>")
 
+    # ── Event handling ────────────────────────────────────────────────
+
+    def _append_turn(self, event: Any) -> bool:
+        """Append one ``chat.turn`` event to the log. True if it was new.
+
+        Pure state mutation, no widget writes, so it is safe from either
+        the stream hook (main thread) or ``compute`` (worker thread).
+        """
+        if not isinstance(event, dict):
+            return False
+        kind = event.get("type")
+        # `None` keeps a hand-wired plain dict working; anything else on the
+        # one shared events port is somebody else's event.
+        if kind not in (None, EventType.CHAT_TURN.value):
+            return False
+        turn_id = event.get("turn_id")
+        # Dedup: spurious re-evaluations and re-delivered previews.
+        if turn_id and turn_id == self._last_turn_id:
+            return False
+        self._last_turn_id = turn_id
+        self._chat_log_md += _format_turn(event)
+        return True
+
+    def _render_log(self) -> str:
+        if not self._chat_log_md:
+            return "<i>Waiting for chat data...</i>"
+        if self._converter is None:
+            return self._chat_log_md
+        try:
+            return self._converter.convert(self._chat_log_md)
+        except Exception as exc:  # noqa: BLE001 - a render must not kill the node
+            log.error("Markdown conversion failed: %s", exc_info=exc)
+            return "<p style='color:#d32f2f; font-weight:bold;'>Conversion Error</p>"
+
+    def on_upstream_stream(self, port_name: str, value: Any) -> None:
+        """Consume the agent's ``events`` stream.
+
+        Stream previews bypass the dataflow cache and never call
+        ``compute()``, so a turn read there would never arrive. Conversion
+        happens on the main thread here, which is the cost of live
+        rendering; a turn is one exchange, not a token, so it is paid once
+        per turn rather than once per delta.
+        """
+        if port_name == "event":
+            if self._append_turn(value):
+                self._widget_core.push_display("display", self._render_log())
+                sb = self._display_widget._text_edit.verticalScrollBar()
+                sb.setValue(sb.maximum())
+            return
+        super().on_upstream_stream(port_name, value)
+
     def compute(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
         """Processes incoming chat turns without blocking the UI."""
         if self.is_compute_cancelled():
             return {}
 
-        turn = inputs.get("chat_turn")
+        # Fallback for a plain dict wired into `event`; the agent's own
+        # turns arrive as stream previews, which never run compute() (see
+        # on_upstream_stream below).
+        self._append_turn(inputs.get("event"))
 
-        if isinstance(turn, dict):
-            t_id = turn.get("turn_id")
-
-            # Check if this is a newly generated turn to avoid duplicate
-            # appends on spurious re-evaluations
-            if t_id and t_id != self._last_turn_id:
-                self._last_turn_id = t_id
-                self._chat_log_md += _format_turn(turn)
-
-        # Convert the accumulated markdown string to HTML off-thread (R9.3)
-        html_output = ""
-        if self._chat_log_md and self._converter:
-            try:
-                html_output = self._converter.convert(self._chat_log_md)
-            except Exception as e:
-                log.error("Markdown conversion failed in worker thread: %s", exc_info=e)
-                html_output = "<p style='color:#d32f2f; font-weight:bold;'>Conversion Error</p>"
-        elif not self._chat_log_md:
-             html_output = "<i>Waiting for chat data...</i>"
-
-        # Store result for main-thread application (R9.5 sink node returns {})
-        self._pending_html = html_output
+        # Convert the accumulated markdown string to HTML off-thread (R9.3),
+        # then store it for main-thread application (R9.5: a sink returns {}).
+        self._pending_html = self._render_log()
         return {}
 
     def on_evaluate_finished(self) -> None:

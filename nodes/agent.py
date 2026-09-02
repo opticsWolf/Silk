@@ -26,7 +26,6 @@ reach the UI via a queued Qt signal and downstream nodes via
 
 import copy
 import itertools
-import time
 import uuid
 from typing import Any, ClassVar, Dict, List, Optional
 
@@ -56,19 +55,25 @@ from ..functions.hooks import (
     HOOK_AFTER_TOOL_EXECUTE,
     HOOK_BEFORE_MODEL_REQUEST,
     HOOK_BEFORE_RUN,
-    HOOK_BEFORE_TOOL_EXECUTE,
     HOOK_TOOL_DENIED,
 )
 from ..functions.messaging import AgentMessage
 from ..functions.role import DEFAULT_ROLE, RoleBinding
 from ..functions.task_store import plan_changed_event  # Qt-free
 from ..functions.stream_events import (
+    EventChatTurn,
     EventDelta,
     EventError,
+    EventModelRequest,
+    EventModelResponse,
+    EventPlan,
     EventReflection,
+    EventRunFinished,
     EventRunResult,
     EventToolCall,
+    EventToolDenied,
     EventToolResult,
+    to_wire,
 )
 from ..functions.subagent import compose_system_prompt
 
@@ -120,16 +125,16 @@ class SilkAgentNode(ThreadedManualNode):
         )  # optional gen_params dict from an Inference Settings node
 
         self.add_output("response", datatype="string")
-        self.add_output("chat_turn", datatype="dict")
         # Clean A2A: the reply wrapped as a self-describing AgentMessage
         # (sender = this agent, correlation echoing any inbound message).
         self.add_output("outbox", datatype="agent_message")
-        # Hook-fed observability stream: one dict per tool call / result /
-        # denial, for graph-native monitors, counters, log displays.
-        self.add_output("tool_events", datatype="dict")
-        # Plan-tracking stream: a `plan_summary` dict (with the snapshot) each
-        # time the agent's task plan advances, for the Plan Viewer's `event` port.
-        self.add_output("plan_events", datatype="dict")
+        # One typed vocabulary, one port (spec D2/D3). Everything the run
+        # says -- lifecycle, model rounds, tool calls, plan advances, chat
+        # turns, decisions -- arrives here as a dict carrying `type`, plus
+        # the run identity every consumer needs to merge streams. The old
+        # `tool_events`, `plan_events` and `chat_turn` ports are gone; a
+        # saved graph wired to them must be re-wired (a hard break, D3).
+        self.add_output("events", datatype="dict")
         self.add_output("done", datatype="exec")  # pulses when a run finishes
 
         # ── Layout & WidgetCore ──
@@ -368,17 +373,24 @@ class SilkAgentNode(ThreadedManualNode):
                     "agent_id": str(getattr(self, "unique_id", "") or ""),
                 }
 
-                def _stream_event(kind: str, **fields: Any) -> None:
+                def _emit_event(event: Any, **extra: Any) -> None:
+                    """Put one typed event on the `events` port.
+
+                    The envelope is applied here and nowhere else: run_id +
+                    seq are the dedup key across graph re-evaluations, and
+                    the identity pair says which node produced the line once
+                    two streams are merged (spec D60.1).
+                    """
                     self.emit_stream(
-                        "tool_events",
-                        {"event": kind, "ts": time.time(), "run_id": run_id,
-                         "seq": next(seq), **identity, **fields},
+                        "events",
+                        to_wire(event, run_id=run_id, seq=next(seq),
+                                **identity, **extra),
                         throttle_ms=0,
                     )
 
                 # Handed to subclasses (the Orchestrator node) so a worker's
                 # events can be re-emitted on this node's own stream.
-                emit_run_event = _stream_event
+                emit_run_event = _emit_event
 
                 def _emit_plan_if_changed() -> None:
                     # Live plan updates for the Plan Viewer. No-op when the
@@ -391,12 +403,8 @@ class SilkAgentNode(ThreadedManualNode):
                     )
                     if event is not None:
                         plan_rev["n"] = event["revision"]
-                        self.emit_stream(
-                            "plan_events",
-                            {**event, "ts": time.time(), "run_id": run_id,
-                             "seq": next(seq), **identity},
-                            throttle_ms=0,
-                        )
+                        _emit_event(EventPlan(revision=event["revision"],
+                                              plan=event["plan"]))
                         # A task parked for sign-off — or a held goal revision —
                         # ends the turn (turn-boundary pause): control returns to
                         # the user to approve/reject.
@@ -407,42 +415,47 @@ class SilkAgentNode(ThreadedManualNode):
                         ):
                             signoff_hold["pending"] = True
 
+                # The hook path. Each of these types has exactly one
+                # producer (spec D2): the loop yields run.start, tool.call,
+                # tool.result and the rest from its generator, so nothing
+                # here re-announces them. What is left is what the loop
+                # cannot say -- the per-round model events, a denial the
+                # loop never sees, and run.finished, which invariant I2
+                # guarantees on every exit path including the ones where no
+                # EventRunResult is ever yielded.
                 def _on_run_started(**_kw: Any) -> None:
-                    _stream_event("run_started")
                     _emit_plan_if_changed()  # show an existing/resumed plan
 
                 def _on_run_finished(final_text: str = "", rounds: int = 0,
                                      elapsed_s: float = 0.0, **_kw: Any) -> None:
-                    _stream_event("run_finished", rounds=rounds,
-                                  elapsed_s=elapsed_s,
-                                  chars=len(final_text or ""))
+                    _emit_event(EventRunFinished(
+                        rounds=rounds, elapsed_s=elapsed_s,
+                        chars=len(final_text or ""),
+                    ))
 
                 def _on_model_request(round_index: int = 0, **_kw: Any) -> None:
-                    _stream_event("model_request", round=round_index + 1)
+                    _emit_event(EventModelRequest(round=round_index + 1))
 
                 def _on_model_response(text: str = "", round_index: int = 0,
+                                       finish_reason: Any = None,
                                        **_kw: Any) -> None:
-                    _stream_event("model_response", round=round_index + 1,
-                                  chars=len(text or ""))
+                    _emit_event(EventModelResponse(
+                        round=round_index + 1, chars=len(text or ""),
+                        finish_reason=finish_reason,
+                    ))
 
-                def _on_before(tool_name: str = "", tool_args: Any = None, **_kw: Any) -> None:
-                    _stream_event("tool_call", tool=tool_name,
-                                  args=dict(tool_args or {}))
-
-                def _on_after(tool_name: str = "", tool_result: str = "", **_kw: Any) -> None:
-                    _stream_event("tool_result", tool=tool_name,
-                                  chars=len(tool_result or ""))
+                def _on_after(tool_name: str = "", tool_result: str = "",
+                              **_kw: Any) -> None:
                     _emit_plan_if_changed()  # a plan mutation bumps the revision
 
                 def _on_denied(tool_name: str = "", **_kw: Any) -> None:
-                    _stream_event("tool_denied", tool=tool_name)
+                    _emit_event(EventToolDenied(tool_name=tool_name))
 
                 for event_name, callback in (
                     (HOOK_BEFORE_RUN, _on_run_started),
                     (HOOK_AFTER_RUN, _on_run_finished),
                     (HOOK_BEFORE_MODEL_REQUEST, _on_model_request),
                     (HOOK_AFTER_MODEL_RESPONSE, _on_model_response),
-                    (HOOK_BEFORE_TOOL_EXECUTE, _on_before),
                     (HOOK_AFTER_TOOL_EXECUTE, _on_after),
                     (HOOK_TOOL_DENIED, _on_denied),
                 ):
@@ -501,6 +514,15 @@ class SilkAgentNode(ThreadedManualNode):
                     # next round boundary (the current round drains normally).
                     engine.request_stop()
 
+                # Every loop event is part of the one vocabulary, so it
+                # goes out the one port -- content-light by the wire format,
+                # which is where that rule is enforced rather than at each
+                # emit site. Deltas are the exception to *emitting*: one
+                # event per token would flood the graph, and `response`
+                # already carries the text.
+                if emit_run_event is not None and not isinstance(event, EventDelta):
+                    emit_run_event(event)
+
                 if isinstance(event, EventDelta):
                     self.chunk_streamed.emit(event.cumulative_text)
                     self.emit_stream("response", event.cumulative_text, throttle_ms=50)
@@ -546,17 +568,20 @@ class SilkAgentNode(ThreadedManualNode):
                 else AgentMessage(content=final_text, sender=agent_name,
                                   kind=out_kind)
             )
+            # The chat turn is an event now, not a port (D3). It is one of
+            # the two deliberately content-carrying members of the
+            # vocabulary: a chat log that cannot show what was said is not a
+            # chat log.
+            if emit_run_event is not None:
+                emit_run_event(EventChatTurn(
+                    turn_id=str(uuid.uuid4()),
+                    user=prompt or "",
+                    ai=final_text,
+                    turns=tool_turns,
+                ))
+
             return {
                 "response": final_text,
-                "chat_turn": {
-                    "turn_id": str(uuid.uuid4()),
-                    "timestamp": time.time(),
-                    "user": prompt,
-                    "ai": final_text,
-                    # Ordered tool calls/results for the Chat Log's tool role;
-                    # omitted-friendly (empty list on a pure chat turn).
-                    "turns": tool_turns,
-                },
                 "outbox": outbox.to_dict(),
             }
         except Exception as exc:  # never let the worker die silently
@@ -581,11 +606,11 @@ class SilkAgentNode(ThreadedManualNode):
 
         Args:
             toolset: the ToolBox this run executes on (may be ``None``).
-            emit_event: ``emit_event(kind, **fields)`` — the same emitter the
-                node's own hook callbacks use, so anything an override
-                forwards lands on ``tool_events`` already stamped with the
-                run id, sequence number and agent identity. ``None`` when no
-                toolset is wired.
+            emit_event: ``emit_event(event)`` — the same emitter the node's
+                own hook callbacks use, taking a typed event from the
+                vocabulary, so anything an override forwards lands on
+                ``events`` already stamped with the run id, sequence number
+                and agent identity. ``None`` when no toolset is wired.
         """
 
     def _detach_run_observers(self, toolset: Any) -> None:

@@ -1,14 +1,17 @@
 # -*- coding: utf-8 -*-
 """Silk Hook Monitor Node.
 
-Graph-native observability sink for the Agent node's ``tool_events``
-stream: a rolling log of run / model / tool events with per-kind and
-per-tool counters. Everything it shows is fed by the hook system — this
-node is the "events out as ports" half of the hook design (behavior in
-is configured on the ToolBox/Role nodes; it never flows through ports).
+Graph-native observability sink for the Agent node's ``events`` stream:
+a rolling log of every event the run produces — lifecycle, model rounds,
+tool calls, plan advances, decisions — with per-type and per-tool
+counters. This node is the "events out as ports" half of the hook design
+(behavior in is configured on the ToolBox/Role nodes; it never flows
+through ports).
 
-Wire ``Silk Agent.tool_events`` → ``event``. The ``counts`` output
-re-emits the counter state as a dict for further graph reactions.
+Wire ``Silk Agent.events`` → ``event``. One vocabulary on one port now
+(spec D2/D3), so the monitor sees everything rather than the tool subset
+it used to get, and a chat turn is skipped here because it is content
+and this is a monitor.
 """
 
 from collections import deque
@@ -26,6 +29,7 @@ from weave.widgets.markdown_widget import MarkdownWidget
 from weave.widgets.sync_button import SyncButton
 
 from ..functions.event_format import EventCounter, event_key, format_event
+from ..functions.stream_events import EventType
 
 log = get_logger("SilkHookMonitor")
 
@@ -41,8 +45,8 @@ class SilkHookMonitorNode(ThreadedNode):
     node_subclass: ClassVar[str] = "Agents"
     node_name: ClassVar[Optional[str]] = "Hook Monitor"
     node_description: ClassVar[Optional[str]] = (
-        "Displays an agent's tool_events stream: rolling event log with "
-        "per-kind and per-tool counters."
+        "Displays an agent's events stream: rolling event log with "
+        "per-type and per-tool counters."
     )
     node_tags: ClassVar[Optional[List[str]]] = [
         "silk", "agent", "hooks", "events", "monitor", "display",
@@ -120,7 +124,12 @@ class SilkHookMonitorNode(ThreadedNode):
         safe from either the stream hook (main thread) or ``compute``
         (worker thread), and unit-testable without the display.
         """
-        if not (isinstance(event, dict) and event.get("event")):
+        if not (isinstance(event, dict) and event.get("type")):
+            return False
+        # A chat turn carries the conversation itself. It travels the same
+        # port because there is one port, but a monitor showing prompt and
+        # answer in full is a chat log, not a monitor.
+        if event.get("type") == EventType.CHAT_TURN.value:
             return False
         key = event_key(event)
         # Dedup: spurious re-evaluations / re-delivered previews.

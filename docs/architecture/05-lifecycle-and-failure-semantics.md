@@ -6,7 +6,8 @@ model request → tool calls → results, above).
 
 **A run is atomic.** New user input is admitted only *between* runs: the
 `Silk Agent` node consumes its `inbox` when the run starts and emits
-`response` / `chat_turn` / `outbox` when it ends. There is no mid-run
+`response` / `outbox` when it ends (and a `chat.turn` event on the
+`events` stream). There is no mid-run
 steering or injection — the only in-run influences are `loop.stop()` (below)
 and the sign-off park, where the agent *ends its own run* so control returns
 to the user ([Task system and sign-off](11-task-system-signoff.md#task-system-and-sign-off)). This is

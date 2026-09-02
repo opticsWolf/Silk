@@ -27,16 +27,45 @@ from typing import Any
 # â”€â”€ Event Types â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class EventType(Enum):
-    """Enum of all streaming event types."""
-    START = "start"
-    DELTA = "delta"
-    TOOL_CALL = "tool_call"
-    TOOL_RESULT = "tool_result"
-    FINAL_RESULT = "final_result"
-    RUN_RESULT = "run_result"
-    ERROR = "error"
-    USAGE_LIMIT = "usage_limit"
+    """Every event Silk emits, on either emission path (spec D2).
+
+    Three vocabularies used to exist: typed dataclasses from the loop,
+    untyped hook/tool dicts on ``tool_events``, and plan snapshots on
+    ``plan_events``. They are one vocabulary now, and the value of each
+    member is the ``type`` field on the wire.
+
+    Two *emission paths* remain, and must (spec D30): the loop yields events
+    from its generator, while hook callbacks emit from inside a tool batch --
+    where the generator is mid-``next()`` and cannot yield at all. An
+    approval request has to travel the second path, so the vocabulary spans
+    both. Each member has exactly one producer, so nothing is announced
+    twice.
+    """
+
+    # -- yielded by AgentLoop.run ------------------------------------------
+    RUN_START = "run.start"
+    DELTA = "model.delta"
+    TOOL_CALL = "tool.call"
+    TOOL_RESULT = "tool.result"
     REFLECTION = "reflection"
+    USAGE_LIMIT = "usage_limit"
+    ERROR = "error"
+    RUN_RESULT = "run.result"
+    FINAL_RESULT = "final_result"
+
+    # -- emitted from hook callbacks ---------------------------------------
+    RUN_FINISHED = "run.finished"
+    MODEL_REQUEST = "model.request"
+    MODEL_RESPONSE = "model.response"
+    TOOL_DENIED = "tool.denied"
+    PLAN = "plan.summary"
+    COMPACTION = "compaction"
+    DECISION_REQUEST = "decision.request"
+    DECISION_RESPONSE = "decision.response"
+
+    # -- emitted by the node ------------------------------------------------
+    CHAT_TURN = "chat.turn"
+    WORKER = "worker.event"
 
 
 #: How a run ended, on ``EventRunResult.outcome``. A consumer must key off
@@ -237,6 +266,242 @@ class EventReflection:
     max_retries: int = 3
     error_type: str = ""
     error_message: str = ""
+
+
+# â”€â”€ Hook-path Events â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+#
+# Typed members of the same vocabulary, emitted from hook callbacks rather
+# than yielded (spec D2/D30). They were untyped dicts assembled at the emit
+# site, which is why nothing downstream could rely on their shape.
+
+
+@dataclass
+class EventRunFinished:
+    """The run ended -- on *any* exit path.
+
+    Distinct from :class:`EventRunResult`, which is yielded and therefore
+    absent when a run dies mid-generator. This one rides ``after_run``,
+    which invariant I2 guarantees fires exactly once however the run ends,
+    so it is the terminator a consumer can actually count on.
+    """
+    timestamp: datetime = field(default_factory=datetime.now)
+    rounds: int = 0
+    elapsed_s: float = 0.0
+    chars: int = 0
+
+
+@dataclass
+class EventModelRequest:
+    """A model request is about to go out (1-based round)."""
+    timestamp: datetime = field(default_factory=datetime.now)
+    round: int = 0
+
+
+@dataclass
+class EventModelResponse:
+    """A model response arrived. Content-light: length, not text."""
+    timestamp: datetime = field(default_factory=datetime.now)
+    round: int = 0
+    chars: int = 0
+    finish_reason: str | None = None
+
+
+@dataclass
+class EventToolDenied:
+    """The role gate refused a call before it reached the executable."""
+    timestamp: datetime = field(default_factory=datetime.now)
+    tool_name: str = ""
+    reason: str = "role_denied"
+
+
+@dataclass
+class EventPlan:
+    """The task plan advanced. Carries the snapshot the viewers render.
+
+    Deliberately content-carrying: a plan *is* the content here, and the
+    dedup-by-revision rule (invariant I5) means this only ever appears when
+    something genuinely changed.
+    """
+    timestamp: datetime = field(default_factory=datetime.now)
+    revision: int = 0
+    plan: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class EventCompaction:
+    """History was compacted (spec §12, closes G14(d)).
+
+    Reports the *cost*, not only what was dropped: re-prefilling the
+    surviving context is the most expensive thing compaction does, and
+    leaving it out is how it stays invisible.
+    """
+    timestamp: datetime = field(default_factory=datetime.now)
+    turns_dropped: int = 0
+    tokens_before: int | None = None
+    tokens_after: int | None = None
+    #: Where the summary that replaced the dropped turns can be read.
+    summary_ref: str = ""
+
+
+@dataclass
+class EventDecisionRequest:
+    """A decision is needed and the run is blocked until it arrives (D30).
+
+    One pair for every question rather than one pair per question type:
+    ``kind`` distinguishes tool approval from "acknowledge before I compact"
+    from "release this paused step", so a new question reuses the seam
+    instead of growing another one (D48).
+    """
+    timestamp: datetime = field(default_factory=datetime.now)
+    decision_id: str = ""
+    #: ``approval`` | ``acknowledge`` | ``release``
+    kind: str = "approval"
+    prompt: str = ""
+    tool_name: str = ""
+    tool_args: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class EventDecisionResponse:
+    """The answer to an :class:`EventDecisionRequest`, on the same channel."""
+    timestamp: datetime = field(default_factory=datetime.now)
+    decision_id: str = ""
+    kind: str = "approval"
+    approved: bool = False
+    reason: str = ""
+    actor: str = ""
+
+
+@dataclass
+class EventChatTurn:
+    """One complete exchange, for a chat log.
+
+    The one deliberately content-carrying event besides the plan: a chat log
+    that cannot show what was said is not a chat log. Monitors ignore it.
+    """
+    timestamp: datetime = field(default_factory=datetime.now)
+    turn_id: str = ""
+    user: str = ""
+    ai: str = ""
+    #: Ordered tool calls/results between the prompt and the answer.
+    turns: list[dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass
+class EventWorker:
+    """A delegated worker's event, re-emitted on the orchestrator's stream.
+
+    Content-light by construction: ``digest`` is a short rendering of the
+    worker's event, never its text (spec D60.1).
+    """
+    timestamp: datetime = field(default_factory=datetime.now)
+    worker: str = ""
+    event_type: str = ""
+    digest: str = ""
+
+
+# â”€â”€ The wire format â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+#
+# Qt streams carry dicts, so a typed event reaches the graph as one. The
+# translation lives here -- one place -- so "the vocabulary" means the same
+# thing to the loop, to a hook callback and to a monitor node.
+
+#: The discriminator field on every wire event.
+TYPE_FIELD = "type"
+
+#: Which :class:`EventType` each class is. A class with no entry cannot be
+#: put on the wire, which is the intended failure: an event nobody named is
+#: an event nobody can consume.
+EVENT_TYPES: dict[type, EventType] = {}
+
+#: Fields never put on the wire. The observability rule (spec §16): events
+#: report that something happened and how much, not what was said. The two
+#: exceptions -- the plan snapshot and the chat turn -- are content *by
+#: definition*, and are declared as such above.
+_CONTENT_FIELDS: dict[str, tuple[str, ...]] = {
+    "EventToolResult": ("result",),
+    "EventDelta": ("cumulative_text",),
+}
+
+
+def _register_types() -> None:
+    mapping = {
+        "EventStart": EventType.RUN_START,
+        "EventDelta": EventType.DELTA,
+        "EventToolCall": EventType.TOOL_CALL,
+        "EventToolResult": EventType.TOOL_RESULT,
+        "EventReflection": EventType.REFLECTION,
+        "EventUsageLimit": EventType.USAGE_LIMIT,
+        "EventError": EventType.ERROR,
+        "EventRunResult": EventType.RUN_RESULT,
+        "EventFinalResult": EventType.FINAL_RESULT,
+        "EventRunFinished": EventType.RUN_FINISHED,
+        "EventModelRequest": EventType.MODEL_REQUEST,
+        "EventModelResponse": EventType.MODEL_RESPONSE,
+        "EventToolDenied": EventType.TOOL_DENIED,
+        "EventPlan": EventType.PLAN,
+        "EventCompaction": EventType.COMPACTION,
+        "EventDecisionRequest": EventType.DECISION_REQUEST,
+        "EventDecisionResponse": EventType.DECISION_RESPONSE,
+        "EventChatTurn": EventType.CHAT_TURN,
+        "EventWorker": EventType.WORKER,
+    }
+    for name, member in mapping.items():
+        EVENT_TYPES[globals()[name]] = member
+
+
+_register_types()
+
+
+class UnknownEvent(TypeError):
+    """Raised for an object that is not part of the vocabulary (D2)."""
+
+
+def event_type(event: Any) -> EventType:
+    """The :class:`EventType` of *event*, or raise :class:`UnknownEvent`."""
+    member = EVENT_TYPES.get(type(event))
+    if member is None:
+        raise UnknownEvent(
+            f"{type(event).__name__} is not part of the event vocabulary; "
+            "add it to EventType and EVENT_TYPES, or it cannot be emitted."
+        )
+    return member
+
+
+def to_wire(event: Any, **envelope: Any) -> dict[str, Any]:
+    """One typed event as the dict that travels the ``events`` port.
+
+    *envelope* is the run-scoped identity a consumer needs to merge streams
+    -- ``run_id``, ``seq``, ``agent``, ``agent_id`` and, for a delegated
+    run, ``worker``. It is applied last so an event can never overwrite the
+    identity of the run that produced it.
+
+    ``timestamp`` becomes ``ts`` (a float): downstream is a Qt graph and a
+    JSON log, neither of which wants a ``datetime``.
+    """
+    member = event_type(event)
+    body: dict[str, Any] = {}
+    dropped = _CONTENT_FIELDS.get(type(event).__name__, ())
+    for key, value in vars(event).items():
+        if key in dropped or key.startswith("_"):
+            continue
+        body[key] = value
+    stamp = body.pop("timestamp", None)
+    ts = stamp.timestamp() if isinstance(stamp, datetime) else float(stamp or 0.0)
+    # A tool result says how much came back, never what -- but a consumer
+    # still needs the size, so it is derived here rather than dropped.
+    if isinstance(event, EventToolResult):
+        body["chars"] = len(event.result or "")
+    if isinstance(event, EventDelta):
+        body["chars"] = len(event.delta or "")
+    return {TYPE_FIELD: member.value, "ts": ts, **body, **envelope}
+
+
+def wire_kind(wire: dict[str, Any]) -> str:
+    """The type of a wire event, or ``""`` for something that is not one."""
+    if not isinstance(wire, dict):
+        return ""
+    return str(wire.get(TYPE_FIELD) or "")
 
 
 # â”€â”€ Event Builder â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
