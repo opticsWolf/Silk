@@ -1,11 +1,22 @@
 """Usage limits for runs.
 
 Prevents runaway costs by limiting output tokens, requests, and tool calls.
+
+**Thread safety.** One ``UsageLimits`` is threaded into every worker of an
+orchestrator fan-out so the whole fan-out respects a single cap. That makes
+the counters shared mutable state, and the check/record pair a
+check-then-act race: several workers can pass the same check and then all
+record, collectively overrunning the limit the object exists to enforce
+(spec D52.4). Every counter access therefore happens under one lock, and
+the ``reserve_*`` methods do the check **and** the record inside it -- those
+are what callers on the hot path use. ``check_*`` / ``record_*`` remain for
+callers that genuinely need the two halves apart.
 """
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     pass
@@ -36,11 +47,19 @@ class UsageLimits:
     _request_count: int = field(default=0, repr=False)
     _tool_call_count: int = field(default=0, repr=False)
 
+    #: Guards every counter read and write. Reentrant so a ``reserve_*``
+    #: can be written in terms of the ``check_*`` it already owns.
+    _lock: Any = field(
+        default_factory=threading.RLock, repr=False, compare=False,
+    )
+
     # â”€â”€ Checkers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     def check_output_tokens(self, tokens: int) -> None:
         """Raise ``UsageLimitExceeded`` if *tokens* would exceed the limit."""
-        if self.output_tokens_limit is not None:
+        with self._lock:
+            if self.output_tokens_limit is None:
+                return
             if self._output_tokens_used + tokens > self.output_tokens_limit:
                 raise UsageLimitExceeded(
                     f"output_tokens_limit of {self.output_tokens_limit} "
@@ -50,7 +69,9 @@ class UsageLimits:
 
     def check_input_tokens(self, tokens: int) -> None:
         """Raise ``UsageLimitExceeded`` if *tokens* would exceed the limit."""
-        if self.input_tokens_limit is not None:
+        with self._lock:
+            if self.input_tokens_limit is None:
+                return
             if self._input_tokens_used + tokens > self.input_tokens_limit:
                 raise UsageLimitExceeded(
                     f"input_tokens_limit of {self.input_tokens_limit} "
@@ -60,7 +81,9 @@ class UsageLimits:
 
     def check_request(self) -> None:
         """Raise ``UsageLimitExceeded`` if this would be the Nth request."""
-        if self.request_limit is not None:
+        with self._lock:
+            if self.request_limit is None:
+                return
             if self._request_count >= self.request_limit:
                 raise UsageLimitExceeded(
                     f"request_limit of {self.request_limit} "
@@ -69,7 +92,9 @@ class UsageLimits:
 
     def check_tool_calls(self, count: int = 1) -> None:
         """Raise ``UsageLimitExceeded`` if *count* tool calls would exceed the limit."""
-        if self.tool_calls_limit is not None:
+        with self._lock:
+            if self.tool_calls_limit is None:
+                return
             if self._tool_call_count + count > self.tool_calls_limit:
                 raise UsageLimitExceeded(
                     f"tool_calls_limit of {self.tool_calls_limit} "
@@ -81,25 +106,62 @@ class UsageLimits:
 
     def record_output_tokens(self, tokens: int) -> None:
         """Record *tokens* of output."""
-        self._output_tokens_used += tokens
+        with self._lock:
+            self._output_tokens_used += tokens
 
     def record_input_tokens(self, tokens: int) -> None:
         """Record *tokens* of input."""
-        self._input_tokens_used += tokens
+        with self._lock:
+            self._input_tokens_used += tokens
 
     def record_request(self) -> None:
         """Record a model request."""
-        self._request_count += 1
+        with self._lock:
+            self._request_count += 1
 
     def record_tool_calls(self, count: int = 1) -> None:
         """Record *count* successful tool executions."""
-        self._tool_call_count += count
+        with self._lock:
+            self._tool_call_count += count
+
+    # -- Reservations (check + record, atomically) ---------------------------
+
+    def reserve_request(self) -> None:
+        """Claim one model request, or raise without claiming it.
+
+        The atomic form of ``check_request`` + ``record_request``. A shared
+        budget must be claimed in one step, or two workers both pass the
+        check before either records (spec D52.4).
+        """
+        with self._lock:
+            self.check_request()
+            self.record_request()
+
+    def reserve_tool_calls(self, count: int = 1) -> None:
+        """Claim *count* tool executions, or raise without claiming them."""
+        with self._lock:
+            self.check_tool_calls(count)
+            self.record_tool_calls(count)
+
+    def reserve_output_tokens(self, tokens: int) -> None:
+        """Claim *tokens* of output, or raise without claiming them."""
+        with self._lock:
+            self.check_output_tokens(tokens)
+            self.record_output_tokens(tokens)
+
+    def reserve_input_tokens(self, tokens: int) -> None:
+        """Claim *tokens* of input, or raise without claiming them."""
+        with self._lock:
+            self.check_input_tokens(tokens)
+            self.record_input_tokens(tokens)
+
 
     # â”€â”€ Snapshot / restore â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     def snapshot(self) -> dict:
         """Return a serialisable snapshot of current counters."""
-        return {
+        with self._lock:
+            return {
             "_output_tokens_used": self._output_tokens_used,
             "_input_tokens_used": self._input_tokens_used,
             "_request_count": self._request_count,
@@ -108,10 +170,11 @@ class UsageLimits:
 
     def restore(self, snapshot: dict) -> None:
         """Restore counters from a snapshot."""
-        self._output_tokens_used = snapshot.get("_output_tokens_used", 0)
-        self._input_tokens_used = snapshot.get("_input_tokens_used", 0)
-        self._request_count = snapshot.get("_request_count", 0)
-        self._tool_call_count = snapshot.get("_tool_call_count", 0)
+        with self._lock:
+            self._output_tokens_used = snapshot.get("_output_tokens_used", 0)
+            self._input_tokens_used = snapshot.get("_input_tokens_used", 0)
+            self._request_count = snapshot.get("_request_count", 0)
+            self._tool_call_count = snapshot.get("_tool_call_count", 0)
 
 
 class UsageLimitExceeded(Exception):

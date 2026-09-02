@@ -37,6 +37,7 @@ from .agent import SilkAgentNode
 from .silk_ports import SILK_AGENTS_TYPE  # noqa: F401
 from ..functions.orchestrator import (
     attach_orchestrator_tools,
+    set_orchestrator_observers,
     set_orchestrator_workers,
 )
 
@@ -93,3 +94,63 @@ class SilkOrchestratorNode(SilkAgentNode):
                 )
 
         return super().compute(inputs)
+
+    # -- D54: a fan-out you can watch, and stop ------------------------------
+
+    def _attach_run_observers(self, toolset: Any, emit_event: Any) -> None:
+        """Re-emit worker events on this node's stream, and forward Stop.
+
+        Both parameters have always existed on ``run_subagent``; the
+        orchestrator passed neither, so a long fan-out showed one
+        ``delegate`` call and then nothing for minutes, and Stop set the
+        orchestrator's own engine flag while the workers ran to completion
+        inside the fan-out (spec D54, the most severe instance of G8).
+
+        Worker events arrive tagged with the worker's name, so a nested line
+        is attributable — the ``worker`` half of the identity pair whose
+        top-level half is the ``agent`` field (D60.1).
+        """
+        if toolset is None or "delegate" not in getattr(toolset, "tools", {}):
+            return
+
+        def _on_worker_event(worker: str, event: Any) -> None:
+            if emit_event is None:
+                return
+            emit_event(
+                "worker_event",
+                worker=worker,
+                # Not 'kind': the emitter's own first argument is named
+                # kind, and a worker's event type is a different thing.
+                event_type=type(event).__name__,
+                text=_event_digest(event),
+            )
+
+        set_orchestrator_observers(
+            toolset,
+            on_event=_on_worker_event,
+            should_stop=self.is_compute_cancelled,
+        )
+
+    def _detach_run_observers(self, toolset: Any) -> None:
+        """Drop the run-scoped observers; they close over this run only."""
+        if toolset is not None and "delegate" in getattr(toolset, "tools", {}):
+            set_orchestrator_observers(toolset, on_event=None, should_stop=None)
+
+
+def _event_digest(event: Any) -> str:
+    """A short, content-light description of a worker's event.
+
+    The stream is previews, never truth (ARCHITECTURE_REVIEW R1), and a
+    worker's full deltas would drown the orchestrator's own trace — so this
+    reports the shape of what happened, not the text of it.
+    """
+    name = getattr(event, "tool_name", "")
+    if name:
+        return name
+    text = getattr(event, "text", None)
+    if isinstance(text, str) and text:
+        return f"{len(text)} chars"
+    error = getattr(event, "error", None)
+    if isinstance(error, str) and error:
+        return error[:200]
+    return ""

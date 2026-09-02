@@ -194,7 +194,10 @@ class GraphEngine:
     def stream_response(self, gen_params: dict[str, Any]) -> Iterator[str]:
         """Yield text deltas for exactly one model request."""
         self.last_stats = {}
-        self.usage_limits.check_request()
+        # Claimed, not merely checked: one budget is shared by every worker
+        # of a fan-out, so check-then-record lets several of them pass the
+        # same check and collectively overrun the cap (spec D52.4).
+        self.usage_limits.reserve_request()
 
         model, pool = self._checkout()
         full_text = ""
@@ -217,7 +220,6 @@ class GraphEngine:
                 stream=True,
                 **params,
             )
-            self.usage_limits.record_request()
 
             tool_frags: dict[int, dict[str, str]] = {}
             for chunk in stream:
@@ -237,8 +239,7 @@ class GraphEngine:
                 if not text:
                     continue
                 token_count += 1
-                self.usage_limits.check_output_tokens(1)
-                self.usage_limits.record_output_tokens(1)
+                self.usage_limits.reserve_output_tokens(1)
                 full_text += text
                 yield text
 

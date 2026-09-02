@@ -47,11 +47,20 @@ Why sync: ``delegate`` / ``delegate_parallel`` are registered **synchronous** on
 purpose. The ToolBox offloads sync tools via ``asyncio.to_thread``, giving the
 nested :class:`AgentLoop` (which itself calls ``asyncio.run``) a clean event loop
 on its own thread. An async tool would raise "asyncio.run() from a running loop".
+
+Why ``delegate_parallel`` is not parallel (spec D53): one ``llama_cpp.server``
+serialises every request through its own lock, so the thread pool this used to
+run bought no model throughput. What it did buy was interleaving -- which
+truncates in-flight streams (D43) and drives prefix reuse to zero (D47). The
+assignments therefore run one after another, for identical results at no
+measurable cost. The name stays because the *contract* is what matters to the
+model (these sub-tasks are independent, none needs another's output), and it
+becomes genuinely concurrent again when there is more than one backend to be
+concurrent across.
 """
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -74,8 +83,16 @@ _BUDGET_ATTR = "_orchestrator_usage_limits"
 _DEPTH_ATTR = "_delegation_depth"
 _CHAIN_ATTR = "_delegation_chain"
 
-#: Ceiling on a single parallel fan-out (guards against a runaway assignment list).
+#: Ceiling on a single fan-out (guards against a runaway assignment list).
+#: Exceeding it is *refused*, never silently trimmed -- a cap that discards
+#: work while reporting success is the D43 failure shape (spec D52.3).
 _MAX_PARALLEL = 8
+
+#: ToolBox attributes carrying the run-scoped observability hooks the node
+#: installs: a sink for worker events and a stop predicate (spec D54). Read
+#: at call time, like the roster, so a re-run can refresh them.
+_ON_EVENT_ATTR = "_orchestrator_on_event"
+_SHOULD_STOP_ATTR = "_orchestrator_should_stop"
 
 
 def _non_blank(v: str) -> str:
@@ -119,6 +136,32 @@ def set_orchestrator_workers(
         setattr(toolbox, _GEN_ATTR, dict(gen_params))
     if usage_limits is not None:
         setattr(toolbox, _BUDGET_ATTR, usage_limits)
+
+
+def set_orchestrator_observers(
+    toolbox: "ToolBox",
+    *,
+    on_event: Optional[Callable[[str, Any], None]] = None,
+    should_stop: Optional[Callable[[], bool]] = None,
+) -> None:
+    """Install the run-scoped worker-event sink and stop predicate.
+
+    ``run_subagent`` has accepted both since it was written and the
+    orchestrator passed neither, so a fan-out showed one ``delegate`` call
+    and then nothing for minutes, and Stop reached the orchestrator's engine
+    while the workers ran on regardless (spec D54). The node sets these at
+    run start and clears them at run end; passing ``None`` clears.
+
+    Args:
+        toolbox: the orchestrator's own ToolBox.
+        on_event: called as ``on_event(worker_name, event)`` for every typed
+            event a worker emits, so the orchestrator can re-emit it on its
+            own stream tagged with whose it was.
+        should_stop: polled per worker event; True asks the worker to stop
+            at its next round boundary.
+    """
+    setattr(toolbox, _ON_EVENT_ATTR, on_event)
+    setattr(toolbox, _SHOULD_STOP_ATTR, should_stop)
 
 
 # ── request / response schemas ───────────────────────────────────────────────
@@ -228,16 +271,35 @@ def _run_one(
 
     # Push depth + chain onto the child toolset so a worker-that-is-an-
     # orchestrator sees them on its own toolbox and stops in time.
+    #
+    # These are *run*-scoped values written onto a *graph*-scoped object, so
+    # they have to come back off again: without the finally below, a worker's
+    # toolset keeps `_delegation_depth = 1` after the run and starts its next
+    # one pre-charged -- and a worker later used as a top-level orchestrator
+    # refuses to delegate at all (spec D52.2).
     child_toolset = spec.toolset
+    had_depth = hasattr(child_toolset, _DEPTH_ATTR) if child_toolset is not None else False
+    had_chain = hasattr(child_toolset, _CHAIN_ATTR) if child_toolset is not None else False
+    prev_depth = getattr(child_toolset, _DEPTH_ATTR, None)
+    prev_chain = getattr(child_toolset, _CHAIN_ATTR, None)
     if child_toolset is not None:
         setattr(child_toolset, _DEPTH_ATTR, depth + 1)
         setattr(child_toolset, _CHAIN_ATTR, chain + [worker])
 
-    result = run_subagent(
-        spec, request.content,
-        gen_params={**base_gen, **(spec.gen_params or {})},
-        usage_limits=budget,
-    )
+    on_event = getattr(toolbox, _ON_EVENT_ATTR, None)
+    should_stop = getattr(toolbox, _SHOULD_STOP_ATTR, None)
+    try:
+        result = run_subagent(
+            spec, request.content,
+            gen_params={**base_gen, **(spec.gen_params or {})},
+            usage_limits=budget,
+            on_event=(lambda ev: on_event(worker, ev)) if on_event else None,
+            should_stop=should_stop,
+        )
+    finally:
+        if child_toolset is not None:
+            _restore(child_toolset, _DEPTH_ATTR, had_depth, prev_depth)
+            _restore(child_toolset, _CHAIN_ATTR, had_chain, prev_chain)
 
     reply = request.reply(result.text, sender=worker,
                           kind="result" if result.ok else "error")
@@ -332,18 +394,19 @@ def attach_orchestrator_tools(
         name="delegate_parallel",
         tags=("orchestration",), category="orchestration", risk="medium",
         description=(
-            "Delegate several INDEPENDENT sub-tasks to workers at once and get "
-            "all answers back. Use only when the sub-tasks do not depend on each "
-            "other's output; otherwise call delegate sequentially."
+            "Delegate several INDEPENDENT sub-tasks to workers in one call and "
+            "get all answers back. Use only when the sub-tasks do not depend on "
+            "each other's output. Each worker may appear once per call."
         ),
         args_model=DelegateParallelArgs,
         procedure=(
-            "Fan out independent sub-tasks concurrently.\n"
+            "Fan out independent sub-tasks in one call.\n"
             "- assignments: a list of {worker, task, context?}; each task must be "
-            "self-contained.\n"
+            "self-contained, and no worker may appear twice.\n"
+            "- At most 8 per call; more is refused outright, not trimmed.\n"
             "- Reply JSON: ok (all succeeded), results (one per assignment, in "
-            "order). Runs in parallel; do NOT use for a pipeline where one task "
-            "needs another's output."
+            "order). Do NOT use for a pipeline where one task needs another's "
+            "output."
         ),
     )
     def _delegate_parallel(
@@ -353,23 +416,74 @@ def attach_orchestrator_tools(
         items = [
             (a.get("worker", ""), a.get("task", ""), a.get("context", ""))
             for a in (assignments or [])
-        ][:_MAX_PARALLEL]
+        ]
         if not items:
             return DelegateParallelResult(ok=False, message="No assignments given.")
 
-        # Each _run_one → run_subagent uses asyncio.run internally, so it must run
-        # on its own thread (never the caller's loop). A thread pool gives each
-        # one an isolated event loop; workers with distinct toolsets don't clash.
-        with ThreadPoolExecutor(max_workers=len(items)) as pool:
-            results = list(pool.map(
-                lambda it: _run_one(toolbox, it[0], it[1], it[2], actor), items,
-            ))
+        # Refuse, never trim. The old code sliced the list to _MAX_PARALLEL
+        # and then reported "8/8 delegations succeeded" -- the model was told
+        # everything ran (spec D52.3).
+        if len(items) > _MAX_PARALLEL:
+            return DelegateParallelResult(
+                ok=False,
+                message=(
+                    f"{len(items)} assignments exceeds the fan-out limit of "
+                    f"{_MAX_PARALLEL}. Nothing was delegated. Split the work "
+                    f"into batches of at most {_MAX_PARALLEL} and call "
+                    "delegate_parallel once per batch."
+                ),
+            )
+
+        # One worker cannot run two assignments at once: the depth/chain are
+        # written onto the worker's own (shared, live) toolset and its
+        # RoleBinding refuses a second activation. Say so, with the fix,
+        # instead of letting the second assignment fail obscurely (D52.1).
+        seen: set[str] = set()
+        duplicates = sorted({w for w, _t, _c in items if w in seen or seen.add(w)})
+        if duplicates:
+            return DelegateParallelResult(
+                ok=False,
+                message=(
+                    f"Worker(s) {', '.join(duplicates)} appear more than once "
+                    "in this fan-out. One worker runs one task at a time — its "
+                    "toolset is a single live object. Nothing was delegated: "
+                    "give each assignment a different worker, or call delegate "
+                    "sequentially for the repeats."
+                ),
+            )
+
+        # Sequential, deliberately (spec D53). llama_cpp.server serialises
+        # every request through its own lock, so a thread pool bought no
+        # model throughput — only the interleaving that truncates streams
+        # (D43) and destroys prefix reuse (D47). This becomes concurrent
+        # again when there is more than one backend to be concurrent across.
+        results: list[DelegateResult] = []
+        stop = getattr(toolbox, _SHOULD_STOP_ATTR, None)
+        for worker, task, context in items:
+            if stop is not None and stop():
+                results.append(DelegateResult(
+                    ok=False, worker=worker,
+                    error="Stopped before this delegation ran.",
+                ))
+                continue
+            results.append(_run_one(toolbox, worker, task, context, actor))
         ok = all(r.ok for r in results)
         done = sum(1 for r in results if r.ok)
         return DelegateParallelResult(
             ok=ok, results=results,
             message=f"{done}/{len(results)} delegations succeeded.",
         )
+
+
+def _restore(obj: Any, attr: str, existed: bool, previous: Any) -> None:
+    """Put *attr* back exactly as it was before the delegation touched it."""
+    if existed:
+        setattr(obj, attr, previous)
+    else:
+        try:
+            delattr(obj, attr)
+        except AttributeError:
+            pass
 
 
 def _actor(user_session: Optional[dict]) -> str:

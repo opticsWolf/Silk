@@ -238,7 +238,9 @@ class AgentLoop:
                 break
 
             try:
-                engine.usage_limits.check_tool_calls(len(calls))
+                # Claim the whole batch before dispatching any of it: the
+                # budget may be shared with sibling workers (spec D52.4).
+                engine.usage_limits.reserve_tool_calls(len(calls))
             except UsageLimitExceeded as exc:
                 yield EventUsageLimit(limit_type="tool_calls")
                 yield EventError(error=str(exc), context="usage_limits", recoverable=False)
@@ -260,7 +262,6 @@ class AgentLoop:
                     "content": tool_calling.tool_result_content(
                         c.function.name, f"Error: {exc}"),
                 } for c in calls]
-            engine.usage_limits.record_tool_calls(len(results))
 
             # Feed EVERY result back in the normal slot — the model sees the
             # actual tool output (or error), the UI gets an EventToolResult,

@@ -338,6 +338,9 @@ class SilkAgentNode(ThreadedManualNode):
 
         binding: Optional[RoleBinding] = None
         event_hooks: list = []
+        # Set once the per-run event emitter exists (only when a toolset is
+        # wired — no toolset, no hook stream). Subclasses observe through it.
+        emit_run_event: Optional[Any] = None
         signoff_hold = {"pending": False}  # a task parked for sign-off → end turn
         try:
             if toolset is not None:
@@ -355,14 +358,27 @@ class SilkAgentNode(ThreadedManualNode):
                 run_id = str(uuid.uuid4())
                 seq = itertools.count()
                 plan_rev = {"n": None}  # last plan revision streamed (dedup)
+                # Who this is. A run_id alone identifies a *run*; once two
+                # agents' streams are merged anywhere -- a Hook Monitor, the
+                # Task Hub, an orchestrator re-emitting its workers -- there
+                # is no way back to which node produced a line (spec D60.1).
+                # Title for a human, uuid because titles are not unique.
+                identity = {
+                    "agent": str(getattr(self, "title", "") or "agent"),
+                    "agent_id": str(getattr(self, "unique_id", "") or ""),
+                }
 
                 def _stream_event(kind: str, **fields: Any) -> None:
                     self.emit_stream(
                         "tool_events",
                         {"event": kind, "ts": time.time(), "run_id": run_id,
-                         "seq": next(seq), **fields},
+                         "seq": next(seq), **identity, **fields},
                         throttle_ms=0,
                     )
+
+                # Handed to subclasses (the Orchestrator node) so a worker's
+                # events can be re-emitted on this node's own stream.
+                emit_run_event = _stream_event
 
                 def _emit_plan_if_changed() -> None:
                     # Live plan updates for the Plan Viewer. No-op when the
@@ -378,7 +394,7 @@ class SilkAgentNode(ThreadedManualNode):
                         self.emit_stream(
                             "plan_events",
                             {**event, "ts": time.time(), "run_id": run_id,
-                             "seq": next(seq)},
+                             "seq": next(seq), **identity},
                             throttle_ms=0,
                         )
                         # A task parked for sign-off — or a held goal revision —
@@ -469,6 +485,11 @@ class SilkAgentNode(ThreadedManualNode):
 
             self.status_changed.emit(f"Role '{role.id}' active — thinking…")
 
+            # Subclass hook: everything the run needs is now built, and the
+            # loop has not started. The Orchestrator node uses this to make
+            # its workers observable and interruptible (spec D54).
+            self._attach_run_observers(toolset, emit_run_event)
+
             final_text = ""
             run_error: Optional[str] = None
             # Ordered tool turns between the user prompt and the AI answer,
@@ -543,11 +564,32 @@ class SilkAgentNode(ThreadedManualNode):
             self.compute_error.emit(str(exc))
             return {"response": f"Error: {exc}"}
         finally:
+            self._detach_run_observers(toolset)
             if toolset is not None:
                 for event_name, callback in event_hooks:
                     toolset.hooks.unregister(event_name, callback)
             if binding is not None:
                 binding.deactivate()
+
+    # -- run-scoped observers (subclass seam) --------------------------------
+
+    def _attach_run_observers(self, toolset: Any, emit_event: Any) -> None:
+        """Install anything that must watch this run. No-op for a plain agent.
+
+        Called after the engine, loop and role binding exist and before the
+        first event is pulled, so an override sees a fully built run.
+
+        Args:
+            toolset: the ToolBox this run executes on (may be ``None``).
+            emit_event: ``emit_event(kind, **fields)`` — the same emitter the
+                node's own hook callbacks use, so anything an override
+                forwards lands on ``tool_events`` already stamped with the
+                run id, sequence number and agent identity. ``None`` when no
+                toolset is wired.
+        """
+
+    def _detach_run_observers(self, toolset: Any) -> None:
+        """Remove what :meth:`_attach_run_observers` installed. No-op here."""
 
     @staticmethod
     def _compose_system_prompt(base: str, role: Any, toolset: Any) -> str:
