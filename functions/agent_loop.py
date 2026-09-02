@@ -22,7 +22,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from collections.abc import Iterator
+from collections.abc import Generator, Iterator
 from typing import Any, Optional
 
 from . import tool_calling
@@ -36,7 +36,8 @@ from .hooks import (
     HOOK_ON_OUTPUT_PROCESS_ERROR,
     HOOK_ON_OUTPUT_VALIDATE_ERROR,
 )
-from .model_errors import classify_model_error
+from .compaction import REASON_OVERFLOW, REASON_PRESSURE
+from .model_errors import OVERFLOW, classify_model_error
 from .protocols import AgentEngine, ToolRegistry
 from .reflection import is_retryable_tool_error, parse_tool_error
 from .stream_events import (
@@ -73,6 +74,10 @@ class AgentLoop:
         output_validator: Optional object with
             ``validate_with_reflection(text, max_retries=...)`` returning
             ``(is_valid, result, retries)`` (see ``output_schema.py``).
+        compactor: Optional :class:`~.compaction.Compactor`. Without one the
+            loop behaves exactly as it did before compaction existed: the
+            pre-request seam fails the run when the context is full. With
+            one, that seam shrinks and retries instead (spec D24/D25).
         max_rounds: Model requests allowed per run.
     """
 
@@ -82,15 +87,22 @@ class AgentLoop:
         toolbox: Optional[ToolRegistry] = None,
         output_validator: Any = None,
         max_rounds: int = DEFAULT_MAX_ROUNDS,
+        compactor: Any = None,
     ) -> None:
         self.engine = engine
         self.toolbox = toolbox
         self.output_validator = output_validator
+        self.compactor = compactor
         self.max_rounds = max_rounds
         # Run bookkeeping surfaced to the after_run hook (set defensively
         # here: the finally in run() may fire before the first round).
         self._final_text = ""
         self._rounds_used = 0
+        # D24's second trigger fires at most once per run: if the backend
+        # still says the prompt does not fit after we compacted for it,
+        # compacting again would spend two more prefills to be told the
+        # same thing.
+        self._overflow_compacted = False
         # Chosen per run() by select_transport; fence is the safe default so
         # a direct _run_rounds call (tests) never hits an unset transport.
         self._transport: ToolTransport = FenceTransport()
@@ -203,6 +215,54 @@ class AgentLoop:
             kind=verdict.kind,
         )
 
+    def _maybe_compact(
+        self, *, reason: str, force: bool = False,
+    ) -> Generator[AgentEvent, None, bool]:
+        """Compact if the compactor agrees; yield the event if it happened.
+
+        Returns whether the history actually changed, so the caller can
+        tell "shrunk, try again" from "nothing to shrink". A compactor that
+        raises is a compactor that did not compact -- the run continues on
+        the untouched history and meets whatever limit it was heading for,
+        which is the behaviour of having no compactor at all (D25).
+        """
+        if self.compactor is None:
+            return False
+        try:
+            event = self.compactor.maybe_compact(
+                self.engine, reason=reason, force=force,
+                context_length=self.context_length(),
+            )
+        except Exception:      # noqa: BLE001 - compaction never kills a run
+            return False
+        if event is None:
+            return False
+        yield event
+        return True
+
+    def _recover_or_stop(
+        self, event: EventError, round_index: int,
+    ) -> Generator[AgentEvent, None, bool]:
+        """Report a failed model request; say whether to retry the round.
+
+        Only a *classified* overflow is retried (D40). Every other stream
+        failure -- a dead server above all -- ends the run here, because
+        answering it with a summarization request against the same backend
+        spends a prefill to fail twice.
+        """
+        yield event
+        if event.kind != OVERFLOW or self._overflow_compacted:
+            return False
+        # force: the backend has already measured the prompt against its own
+        # window and rejected it, which outranks our estimate of the same
+        # thing.
+        if not (yield from self._maybe_compact(
+            reason=REASON_OVERFLOW, force=True,
+        )):
+            return False
+        self._overflow_compacted = True
+        return True
+
     def _run_rounds(
         self,
         gen_params: dict[str, Any],
@@ -220,6 +280,12 @@ class AgentLoop:
         outcome = OUTCOME_COMPLETED
 
         for _round in range(self.max_rounds):
+            # 0. Context pressure, before the gate rather than after it
+            #    fails: the seam below used to be where a full context
+            #    ended the run, and D24 makes it the place where the run
+            #    makes room and carries on. A no-op without a compactor.
+            yield from self._maybe_compact(reason=REASON_PRESSURE)
+
             # 1. Usage gates before each request.
             try:
                 engine.usage_limits.check_request()
@@ -249,7 +315,10 @@ class AgentLoop:
                 yield EventError(error=str(exc), context="usage_limits", recoverable=False)
                 return
             except Exception as exc:
-                yield self._model_failed(exc, _round)
+                if (yield from self._recover_or_stop(
+                    self._model_failed(exc, _round), _round,
+                )):
+                    continue
                 return
 
             stats = engine.last_stats or {}
@@ -265,7 +334,10 @@ class AgentLoop:
                 finish_reason=stats.get("finish_reason"),
             )
             if stats.get("error"):
-                yield self._model_failed(stats["error"], _round)
+                if (yield from self._recover_or_stop(
+                    self._model_failed(stats["error"], _round), _round,
+                )):
+                    continue
                 return
             if stats.get("truncated"):
                 # The request succeeded and the answer was cut off anyway:

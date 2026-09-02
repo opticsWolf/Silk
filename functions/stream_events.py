@@ -339,6 +339,11 @@ class EventCompaction:
     turns_dropped: int = 0
     tokens_before: int | None = None
     tokens_after: int | None = None
+    #: Tokens the compaction costs in prefill: the summarization request
+    #: plus the rebuilt context, which is D41's double prefill. Reported
+    #: because it is the expensive half and otherwise invisible -- it looks
+    #: exactly like the model being slow.
+    prefill_tokens: int | None = None
     #: Where the summary that replaced the dropped turns can be read.
     summary_ref: str = ""
 

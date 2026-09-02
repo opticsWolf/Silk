@@ -54,6 +54,21 @@ class AgentEngine(Protocol):
     # def context_length(self) -> Optional[int]:
     #     """The backend's context window, or None when unknown."""
 
+    # Optional, and the only operation that rewrites history rather than
+    # appending to it. An engine without it simply cannot be compacted:
+    # the Compactor checks for it and degrades to doing nothing, which is
+    # the behaviour of every engine before spec D24 (G14(a)).
+    #
+    # def replace_history_prefix(self, count: int, summary: str) -> int:
+    #     """Replace the first `count` turns with one summary turn."""
+    #
+    # Optional companion to it: a second engine over the same model and
+    # pool session, which is how D25 gets a summarization request without
+    # a second model resident.
+    #
+    # def sibling(self, *, system_prompt: str = "") -> "AgentEngine":
+    #     """An engine over the same backend with its own history."""
+
 
 @runtime_checkable
 class ToolRegistry(Protocol):

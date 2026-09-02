@@ -68,9 +68,12 @@ def format_event(event: dict[str, Any]) -> str:
     elif kind == EventType.PLAN.value:
         body = f"◆ plan revision {event.get('revision', '?')}"
     elif kind == EventType.COMPACTION.value:
+        prefill = event.get("prefill_tokens")
+        cost = f", ~{prefill} to re-prefill" if prefill else ""
         body = (
             f"⇲ compacted {event.get('turns_dropped', 0)} turn(s): "
             f"{event.get('tokens_before', '?')} → {event.get('tokens_after', '?')}"
+            f"{cost}"
         )
     elif kind == EventType.DECISION_REQUEST.value:
         body = f"? {event.get('kind', 'approval')} needed — {event.get('prompt', '')}"

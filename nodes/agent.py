@@ -50,6 +50,7 @@ from weave.widgets.sync_button import SyncButton
 from .silk_ports import GGUF_MODEL_TYPE, SILK_ROLE_TYPE, SILK_TOOLSET_TYPE  # noqa: F401
 from ..functions.agent_loop import AgentLoop, DEFAULT_MAX_ROUNDS
 from ..functions.approval import bind_run_seam
+from ..functions.compaction import Compactor
 from ..functions.decision_seam import (
     DEFAULT_TIMEOUT_S,
     DecisionRequest,
@@ -70,6 +71,7 @@ from ..functions.role import DEFAULT_ROLE, RoleBinding
 from ..functions.task_store import plan_changed_event  # Qt-free
 from ..functions.stream_events import (
     EventChatTurn,
+    EventCompaction,
     EventDecisionRequest,
     EventDecisionResponse,
     EventDelta,
@@ -607,6 +609,12 @@ class SilkAgentNode(ThreadedManualNode):
                 engine,
                 toolset,
                 max_rounds=role.max_rounds or DEFAULT_MAX_ROUNDS,
+                # A full context stops being the end of the run (D24). The
+                # compactor is inert until there is pressure to answer --
+                # and stays inert when the backend does not report a
+                # context window, because there is then no pressure to
+                # measure and compacting on a hunch costs two prefills.
+                compactor=Compactor(),
             )
 
             # Build gen_params from internal defaults (no limit on tokens).
@@ -672,6 +680,10 @@ class SilkAgentNode(ThreadedManualNode):
                         "result": event.result,
                         "error": bool(event.error),
                     })
+                elif isinstance(event, EventCompaction):
+                    self.status_changed.emit(
+                        f"Compacted {event.turns_dropped} turns to free context…"
+                    )
                 elif isinstance(event, EventReflection):
                     self.status_changed.emit(
                         f"Reflection retry {event.retry_count + 1}/{event.max_retries}…"

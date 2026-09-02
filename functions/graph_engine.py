@@ -145,6 +145,71 @@ class GraphEngine:
             "content": content if isinstance(content, str) else str(content),
         })
 
+    # -- AgentEngine: compaction (optional operation) ------------------------
+
+    def replace_history_prefix(
+        self, count: int, summary: str, *, role: str = "user",
+    ) -> int:
+        """Replace the first *count* turns with one summary turn (D24/D25).
+
+        The one rewrite operation on an otherwise append-only history, and
+        the reason it exists at all: compaction has to shrink the *head* of
+        the context, and there was no way to say that (G14(a)).
+
+        The list is mutated in place rather than rebound -- the Agent node
+        owns it and holds the same object, so a rebind would leave the node
+        showing the pre-compaction conversation forever.
+
+        Refuses a cut that would orphan a tool result (I9). The compactor
+        already plans its cuts on round boundaries; this is the check that
+        makes the invariant a property of the operation rather than of one
+        caller, so a future second caller cannot quietly break it.
+
+        Returns the number of turns dropped.
+        """
+        if count <= 0 or count > len(self.history):
+            raise ValueError(
+                f"cannot replace {count} of {len(self.history)} history turns"
+            )
+        if count < len(self.history) and self.history[count].get("role") == "tool":
+            raise ValueError(
+                "that cut would drop an assistant turn and keep its tool "
+                "results (invariant I9); cut on a round boundary instead"
+            )
+        # The guard would otherwise report this as a history break on the
+        # next request. It is the single deliberate one (I11).
+        self.prefix_guard.note_compaction()
+        self.history[:count] = [{"role": role, "content": summary}]
+        return count
+
+    def sibling(
+        self,
+        *,
+        system_prompt: str = "",
+        history: Optional[list[dict[str, Any]]] = None,
+    ) -> "GraphEngine":
+        """A second engine over the same model, pool session and budget.
+
+        What D25 means by "the agent's own model and pool session does the
+        summarizing": no second model resident, no new port, and the
+        summarization request is metered against the same
+        :class:`UsageLimits` as every other request of the run -- it is a
+        real request and costs real time.
+
+        Its history is its own, so the summarization prompt never touches
+        the run's. Note that the request does clobber the backend's
+        resident prefix (D41): that is the first of compaction's two
+        prefills, and it is why compaction is meant to be rare.
+        """
+        return GraphEngine(
+            self._handle,
+            system_prompt=system_prompt,
+            history=list(history or []),
+            usage_limits=self.usage_limits,
+            reflection_config=self.reflection_config,
+            session_id=self.session_id,
+        )
+
     def build_messages(self) -> list[dict[str, str]]:
         """Chat-completion messages for the current state.
 

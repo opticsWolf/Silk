@@ -248,11 +248,17 @@ than off the presence of a final text. One field, four assignments; it also
 makes a user-stopped run distinguishable from a finished one, and it is a
 precondition for telling a compacted run from a clean one (G14(e)).
 
-### G14. Compaction is not implemented (required mechanism)
+### G14. Compaction is not implemented (required mechanism) — CLOSED
 
-The declaration here is the requirement, not the code — unlike G1–G13
-(machinery declared, implementation missing), compaction is not declared
-anywhere in the codebase; it is entirely absent. The requirement is on
+**Closed 2026-09-02** by `functions/compaction.py`,
+`GraphEngine.replace_history_prefix` / `.sibling`, and the optional
+`compactor` on `AgentLoop` (Phase 2 item 6). The gap statement below is kept
+as the record of what was missing and why; the checklist now carries where
+each piece landed.
+
+The declaration here was the requirement, not the code — unlike G1–G13
+(machinery declared, implementation missing), compaction was not declared
+anywhere in the codebase; it was entirely absent. The requirement is on
 record: decision 2026-07-25 — long-running runs are a product goal, so
 compaction **will be needed as a mechanism**.
 
@@ -277,13 +283,13 @@ compaction degrades to no compaction and never kills a run.
 
 | # | Piece | Status |
 |---|---|---|
-| (a) | Engine operation to replace the model-visible history prefix | spec §12; built and swapped in only after the summary succeeds (atomic) |
-| (b) | Compactor seam in the loop | optional `compactor` on `AgentLoop`, like the existing optional `output_validator` |
-| (c) | Context-budget number at loop level | spec Phase 1 item 4 — plumb `GGUFMeta.context_length` (`gguf_meta.py:42`) to the loop |
-| (d) | Event type for compaction | `EventCompaction`, content-free per the observability rule (spec §5) |
-| (e) | Observability preconditions | G13 lands in Phase 1. **T7 (durable sink) is still undecided** — the spec recommends it for debugging the dropped range but does not schedule it |
-| (f) | Prefill accounting | `EventCompaction` reports the KV-prefill cost, not only tokens dropped — otherwise the most expensive thing compaction does is invisible (**G15**, spec D41) |
-| (g) | Error classification | compact only on classified overflow, never on a generic stream error (spec D40, **G6**) |
+| (a) | Engine operation to replace the model-visible history prefix | **done** — `GraphEngine.replace_history_prefix`; the summary is produced first and swapped in only if it arrived, and the operation itself refuses a cut that would orphan a tool result (I9) |
+| (b) | Compactor seam in the loop | **done** — optional `compactor` on `AgentLoop`, like the existing optional `output_validator`; without one the loop behaves exactly as before |
+| (c) | Context-budget number at loop level | **done** in Phase 1 (`AgentLoop.context_length`), and it is the denominator the trigger uses. An engine that does not report one is never compacted rather than compacted on a guess |
+| (d) | Event type for compaction | **done** — `EventCompaction`, content-free; the dropped transcript goes to a file and the event carries `summary_ref` |
+| (e) | Observability preconditions | G13 landed in Phase 1. **T7 (durable sink) is still undecided** — with a `SpillWriter` the compactor archives the dropped range under `.silk/spill/`, which covers debugging without deciding T7 |
+| (f) | Prefill accounting | **done** — `EventCompaction.prefill_tokens` carries both halves of D41's double prefill (the summarization request plus the rebuilt context) |
+| (g) | Error classification | **done** — `functions/model_errors.py` (Phase 1); the loop retries only `kind == "overflow"`, at most once per run |
 
 **Option A is not merely the cheap first step — it is the cache-safe one.**
 Spill rewrites a tool result *before* it is appended, so history stays
@@ -291,11 +297,11 @@ append-only and the KV prefix survives. Summarization rewrites the head and
 destroys it (**G15**). That reorders the two: spill should carry as much load
 as it can before compaction is triggered at all.
 
-**Interim invariant until compaction lands.** Whenever `max_rounds` is
-raised for a role, also set `UsageLimits.input_tokens`: for long autonomy the
-token cap, not the round cap, is the safety bound. The spill hook covers only
-the dominant growth term — verbatim tool results — and needs a cleanup policy
-tied to the run/plan root, which is also still open.
+**Still true after the close.** Setting `UsageLimits.input_tokens` alongside
+a raised `max_rounds` remains the right habit: compaction answers the context
+window, not the budget, and the two caps protect different things. And the
+spill directory still has no cleanup policy tied to the run/plan root — that
+is open, and compaction now writes into the same place.
 
 ### G15. Prompt-prefix reuse is unconfigured and unmeasured
 

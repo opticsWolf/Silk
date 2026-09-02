@@ -49,16 +49,14 @@ crosses the loop boundary as an exception:
 | Tool exception / timeout | `EventToolResult` with structured error | yes | reflection nudge; the model retries or works around |
 | Batch-level failure (the executor itself raised) | per-call error results for the whole batch | yes | same as above |
 | Usage limit | `EventUsageLimit` + `EventError` | no | the user: lower a cap, or re-run |
-| Model stream error | `EventError(context="stream_response")` | no | the user: re-run |
+| Model stream error, classified `overflow` (D40), with a compactor | `EventError` + `EventCompaction`, then the round is retried once | no | itself: the context is shrunk and the request re-sent |
+| Model stream error, any other kind | `EventError(context="stream_response")` | no | the user: re-run |
 | `max_rounds` exhausted | `EventError(context="agent_loop", recoverable=True)` mid-stream, then a normal-looking `EventRunResult` with the last round's text | flagged recoverable | nobody today — both consumers drop it (OPEN_TOPICS G13); more autonomy is a config change |
 | Output validation failure | `EventError(context="output_validation")` | no | the user: re-run |
 
 **Deliberately out of scope** (relative to larger harness designs): no
 durable session log / resume / forking — the graph is the persistence
-boundary and a run's trace is its `EventRunResult`; no compaction **yet** —
-it is a required mechanism (OPEN_TOPICS G14, options and sequencing in
-T8); until it lands, autonomy is bounded by `max_rounds` and `UsageLimits`;
-one-shot subagents only — no durable or continuable children (there is no
+boundary and a run's trace is its `EventRunResult`; one-shot subagents only — no durable or continuable children (there is no
 durable session to resume them into). A fuller statement of that line —
 durable runtime, steering queues, lanes, each with the reason it was
 declined — sits in [OPEN_TOPICS, "Deliberately not

@@ -98,10 +98,51 @@ agent (`nodes/agent.py`: `role.max_rounds or DEFAULT_MAX_ROUNDS`), so long
 autonomy runs are legal today. And rounds are not tokens — engine history
 grows monotonically (`GraphEngine` appends, never prunes) — so in long runs
 the real safety invariant is the input-token gate checked pre-request each
-round, not the round ceiling. What that implies for long runs (quality
-decay → token brake → backend `n_ctx` wall) is tracked as OPEN_TOPICS T8
-(spill first, compaction options and sequencing); the missing compaction
-mechanism itself is gap G14.
+round, not the round ceiling.
+
+### Compaction (spec D24/D25/D40/D41, closes G14)
+
+That pre-request gate used to be where a long run ended. It is now where a
+long run makes room:
+
+```
+for each round:
+    0. compactor.maybe_compact(engine, reason="pressure")   # optional
+    1. usage gates
+    2. one model request
+       └─ classified overflow (D40) → compact once, retry the round
+    3. append the assistant turn
+    4. tools, results, reflection
+```
+
+`AgentLoop(..., compactor=Compactor())` is optional in the same way
+`output_validator` is: without one the loop behaves exactly as it did
+before, and the gate fails the run as it always did. The division of labour
+is unchanged — the loop owns *turns*, the engine owns *one request*, the
+ToolBox owns *one tool batch*, and the compactor owns *the summarization
+request and the swap*.
+
+Two triggers and only two (D24). Pressure, when the estimated input crosses
+`context − reserve`; and a **classified** overflow (`kind == "overflow"`,
+`functions/model_errors.py`), at most once per run. A generic stream error
+never triggers it: a dead `llama_cpp.server` produces one of those too, and
+answering that with a summarization request against the same dead server is
+precisely what the classifier exists to prevent (D40).
+
+The mechanism lives in `functions/compaction.py`; the one rewrite operation
+on an otherwise append-only history is
+`GraphEngine.replace_history_prefix(count, summary)`, and the summarization
+request runs on a `GraphEngine.sibling()` — the agent's own model, pool
+session and usage budget, no second model resident (D25).
+
+Everything about the shape follows from D41's arithmetic: **a compaction
+costs two full prefills**, the summarization request and then the rebuilt
+context. So it is deliberately rare (hysteresis on the trigger, a generous
+keep-recent, a minimum worth dropping), it is deliberately last (the spill
+hook is prefix-preserving and carries the load first, `08-tool-system.md`),
+it cuts only on whole-round boundaries (I9), it degrades to nothing on any
+failure, and `EventCompaction` reports `prefill_tokens` so the expensive
+half is not invisible.
 
 ### Engine-side config
 
