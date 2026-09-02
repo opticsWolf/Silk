@@ -27,6 +27,7 @@ reach the UI via a queued Qt signal and downstream nodes via
 import copy
 import itertools
 import uuid
+from contextlib import ExitStack
 from typing import Any, ClassVar, Dict, List, Optional
 
 from PySide6.QtCore import Qt, QEvent, Signal, Slot
@@ -51,6 +52,7 @@ from .silk_ports import GGUF_MODEL_TYPE, SILK_ROLE_TYPE, SILK_TOOLSET_TYPE  # no
 from ..functions.agent_loop import AgentLoop, DEFAULT_MAX_ROUNDS
 from ..functions.approval import bind_run_seam
 from ..functions.compaction import Compactor
+from ..functions.file_grants import resolve_grants
 from ..functions.decision_seam import (
     DEFAULT_TIMEOUT_S,
     DecisionRequest,
@@ -146,6 +148,11 @@ class SilkAgentNode(ThreadedManualNode):
         self.add_input(
             "inference_settings", datatype="dict",
         )  # optional gen_params dict from an Inference Settings node
+        # The last link of the ToolSet → Role → Agent chain (D16). Whatever
+        # arrives here narrows the toolset's sandbox for this run and only
+        # this run; it can never widen it, and it cannot switch confinement
+        # back on (D18).
+        self.add_input("permissions", datatype="file_permissions")
 
         self.add_output("response", datatype="string")
         # Clean A2A: the reply wrapped as a self-describing AgentMessage
@@ -457,6 +464,20 @@ class SilkAgentNode(ThreadedManualNode):
         toolset = inputs.get("toolset")
         role = inputs.get("role") or DEFAULT_ROLE
 
+        # File access, narrowed once more and applied in place: the file
+        # tools closed over this sandbox when they were registered, so a
+        # replacement object would be built and ignored, and rebuilding the
+        # ToolBox would drop what was attached to it live -- the
+        # orchestrator's delegation tools, this run's approval gate (D16).
+        file_scope = ExitStack()
+        grants = self.file_grants(inputs, role)
+        sandbox = getattr(toolset, "base_sandbox", None)
+        if grants is not None and sandbox is not None:
+            file_scope.enter_context(
+                sandbox.restrict({e.path: e.mode for e in grants.entries})
+            )
+            log.debug(f"Run file access narrowed to: {grants.summary()}")
+
         binding: Optional[RoleBinding] = None
         event_hooks: list = []
         # Set once the per-run event emitter exists (only when a toolset is
@@ -751,6 +772,22 @@ class SilkAgentNode(ThreadedManualNode):
                     toolset.hooks.unregister(event_name, callback)
             if binding is not None:
                 binding.deactivate()
+            # The sandbox is a live graph object shared with the next run,
+            # so the narrowing is undone here even when the run failed.
+            file_scope.close()
+
+    # -- file access (spec D16/D17) ------------------------------------------
+
+    @staticmethod
+    def file_grants(inputs: Dict[str, Any], role: Any) -> Any:
+        """The grant this run may use, or ``None`` for "nothing was said".
+
+        Two ways in -- the one that travelled through the Role, and one
+        wired straight to this node -- composed by narrowing in
+        :func:`resolve_grants`, so adding a wire can only reduce access.
+        """
+        return resolve_grants(inputs.get("permissions"),
+                              getattr(role, "file_grants", None))
 
     # -- run-scoped observers (subclass seam) --------------------------------
 

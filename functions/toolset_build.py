@@ -21,6 +21,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
+from .file_grants import MODE_ORDER, FileGrants
 from .hooks import is_middleware_event
 from .tool_box import ToolBox
 from .tools.file_sandbox import FileToolSandbox
@@ -28,8 +29,10 @@ from .tools.file_sandbox import FileToolSandbox
 #: Tools that are ToolBox infrastructure, never part of a user selection.
 INFRASTRUCTURE_TOOLS = frozenset({"load_capability"})
 
-#: Permission modes in ascending order of access.
-PERMISSION_ORDER: dict[str, int] = {"blocked": 0, "read": 1, "read_write": 2}
+#: Permission modes in ascending order of access. Defined once, in
+#: ``file_grants``; re-exported here because this is where callers of the
+#: sandbox builder already look.
+PERMISSION_ORDER: dict[str, int] = MODE_ORDER
 
 
 def tool_catalog(toolbox: Any) -> list[dict[str, Any]]:
@@ -62,7 +65,7 @@ def catalog_categories(catalog: Iterable[dict[str, Any]]) -> list[str]:
 
 
 def split_by_ceiling(
-    permissions: dict[str, Any],
+    permissions: Any,
     base: Optional[FileToolSandbox],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Partition permission entries into (inside, outside) the ceiling.
@@ -71,10 +74,17 @@ def split_by_ceiling(
     the **hard ceiling**: entries outside every allowed root are never
     granted, no matter what an upstream permission structure claims.
     A missing or disabled base sandbox imposes no ceiling.
+
+    This is the one narrowing step that is *not* grant-against-grant: it is
+    checked against a live sandbox, because only the sandbox knows how a
+    path resolves on this machine (spec D16).
+
+    Accepts a :class:`FileGrants` or the equivalent dict; returns plain
+    dicts, which is what the callers and the status readouts already use.
     """
-    entries = [
-        e for e in (permissions.get("entries") or ())
-        if isinstance(e, dict) and e.get("path")
+    grants = FileGrants.coerce(permissions)
+    entries = [] if grants is None else [
+        {"path": e.path, "mode": e.mode} for e in grants.entries
     ]
     if base is None or not base.enabled:
         return entries, []
@@ -84,20 +94,18 @@ def split_by_ceiling(
 
 
 def sandbox_from_permissions(
-    permissions: dict[str, Any],
+    permissions: Any,
     base: Optional[FileToolSandbox] = None,
 ) -> FileToolSandbox:
-    """Build a sandbox from a ``file_permissions`` structure.
-
-    ``permissions`` is ``{"root": str, "roots": [...], "entries":
-    [{"path", "mode"}]}`` where mode is ``"read"`` or ``"read_write"``
-    (blocked paths are simply absent).
+    """Build a sandbox from a :class:`FileGrants` (or the equivalent dict).
 
     The *base* sandbox (from the ToolBox) is the hard ceiling: entries
     outside its allowed roots are dropped here — a toolset can only
     narrow, never escape. Size limits are inherited from *base*.
     """
-    entries, _outside = split_by_ceiling(permissions, base)
+    grants = FileGrants.coerce(permissions) or FileGrants()
+    permissions = grants.to_dict()
+    entries, _outside = split_by_ceiling(grants, base)
     # Hierarchical mode map: a directory rule covers its subtree; a per-path
     # entry (including an explicit "blocked" override) beats an ancestor. Files
     # created after selection inherit the nearest granted directory, so the
@@ -177,7 +185,7 @@ def carry_essential_hooks(source: Any, derived: Any) -> int:
 def build_toolset(
     source: Any,
     selected_names: Iterable[str],
-    permissions: Optional[dict[str, Any]] = None,
+    permissions: Any = None,
 ) -> ToolBox:
     """Rebuild *source* as an independent ToolBox restricted to a selection.
 

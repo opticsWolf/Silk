@@ -25,6 +25,7 @@ from weave.registry import register_node
 from weave.logger import get_logger
 
 from .silk_ports import FILE_PERMISSIONS_TYPE, SILK_TOOLSET_TYPE  # noqa: F401
+from ..functions.file_grants import FileGrant, FileGrants
 from ..functions.presets import PresetStore, ToolSetPreset
 from ..functions.toolset_build import build_toolset, split_by_ceiling, tool_catalog
 from ..widgets.preset_bar import PresetBarWidget
@@ -56,6 +57,12 @@ class SilkToolSetNode(ActiveNode):
         self.add_input("toolbox", datatype="silk_toolbox")
         self.add_input("permissions", datatype="file_permissions")
         self.add_output("toolset", datatype="silk_toolset")
+        # The grant this toolset actually ended up with, after the ToolBox
+        # ceiling dropped whatever lay outside it (D16). Emitting it is what
+        # makes the effective permission set visible in the graph instead of
+        # buried inside a sandbox handle -- and it is what the Role and Agent
+        # narrow further down the chain.
+        self.add_output("permissions", datatype="file_permissions")
 
         # ── Layout & WidgetCore ──
         form = QFormLayout()
@@ -127,7 +134,7 @@ class SilkToolSetNode(ActiveNode):
         if toolbox is None:
             self._sync_catalog: List[Dict[str, Any]] = []
             self._sync_status = "No toolbox connected."
-            return {"toolset": None}
+            return {"toolset": None, "permissions": None}
 
         self._sync_catalog = tool_catalog(toolbox)
 
@@ -135,7 +142,7 @@ class SilkToolSetNode(ActiveNode):
             toolset = build_toolset(toolbox, checked, permissions)
         except ValueError as exc:
             self._sync_status = str(exc)
-            return {"toolset": None}
+            return {"toolset": None, "permissions": None}
 
         available = {e["name"] for e in self._sync_catalog}
         selected = sorted(set(checked) & available)
@@ -165,7 +172,16 @@ class SilkToolSetNode(ActiveNode):
             f"{len(selected)}/{len(self._sync_catalog)} tools selected"
             f"{sandbox_note}: {', '.join(selected) if selected else 'none'}"
         )
-        return {"toolset": toolset}
+        effective = FileGrants.coerce(permissions)
+        if effective is not None:
+            inside, _outside = split_by_ceiling(
+                effective, getattr(toolbox, "base_sandbox", None)
+            )
+            effective = FileGrants(
+                root=effective.root, roots=effective.effective_roots(),
+                entries=[FileGrant(**e) for e in inside],
+            )
+        return {"toolset": toolset, "permissions": effective}
 
     # ── State ───────────────────────────────────────────────────────
 

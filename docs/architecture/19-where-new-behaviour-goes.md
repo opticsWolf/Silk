@@ -4,6 +4,7 @@
 |---|---|
 | Add a core tool | implement it in `functions/tools/` and register it on a `ToolBox` (or as a `Capability`) — see [TOOLS.md](../TOOLS.md) |
 | Add a behaviour without a node | a `hook_catalog` entry (`HookSpec`), or an ad-hoc hook via the `Silk ToolBox` node's hook selector |
+| Give one agent narrower file access than its toolset | a `FileGrants` on the `permissions` port (ToolSet → Role → Agent); it composes by narrowing, never widening (`functions/file_grants.py`, I6) |
 | Constrain what one agent may do / tell it how | a `ToolSelector` + `Role` from the `Silk Role` node, activated by a `RoleBinding` |
 | Package tools + instructions + hooks together | a `Capability` (`@tool` / `@instructions` members) |
 | Keep the prompt small with a large tool suite | `DeferredCapability` + the `load_capability` tool (backed by `ToolSearch`) |

@@ -77,6 +77,68 @@ class FileToolSandbox:
             if path_modes is not None else None
         )
 
+    # -- narrowing (spec D16/D18, invariant I6) ---------------------------
+
+    def restrict(self, path_modes: dict, *, write: bool = True):
+        """Tighten this sandbox for the duration of a ``with`` block.
+
+        The Agent node applies the grant that reached it down the ToolSet →
+        Role → Agent chain (D16). It has to happen **in place**: the file
+        tools closed over this object when they were registered, so a
+        replacement sandbox would be built and then ignored, and rebuilding
+        the whole ToolBox would drop anything attached to it live (the
+        orchestrator's delegation tools, the run's approval gate).
+
+        Narrowing only, in the literal sense: every resulting mode is the
+        lesser of what this sandbox already allowed and what was asked for,
+        and a path this sandbox did not cover is not added (I6). Confinement
+        itself is untouchable here -- ``enabled`` is a ToolBox-level choice
+        and no grant can turn it back on (D18).
+
+        Restores the previous policy on exit, because the sandbox is a live
+        graph object shared with the next run.
+        """
+        from contextlib import contextmanager
+
+        from ..file_grants import MODE_BLOCKED, lesser_mode
+
+        @contextmanager
+        def _scope():
+            previous_modes = self.path_modes
+            previous_write = self.write_enabled
+            narrowed: dict[Path, str] = {}
+            for raw, asked in (path_modes or {}).items():
+                path = Path(raw).resolve()
+                current = self.resolve_mode(path)
+                if current is None and previous_modes is None:
+                    # No per-path policy at all: the sandbox's own read/write
+                    # flags are the ceiling.
+                    current = "read_write" if self.write_enabled else "read"
+                elif current is None:
+                    # There *is* a policy and it does not cover this path, so
+                    # neither does the narrowing. Widening here is exactly the
+                    # failure I6 exists to prevent.
+                    current = MODE_BLOCKED
+                mode = lesser_mode(current, asked)
+                if mode != MODE_BLOCKED:
+                    narrowed[path] = mode
+            # Explicit blocks carve holes and must survive the filter above.
+            for raw, asked in (path_modes or {}).items():
+                if asked == MODE_BLOCKED:
+                    narrowed[Path(raw).resolve()] = MODE_BLOCKED
+            self.path_modes = narrowed
+            self.write_enabled = bool(
+                write and previous_write
+                and any(m == "read_write" for m in narrowed.values())
+            )
+            try:
+                yield self
+            finally:
+                self.path_modes = previous_modes
+                self.write_enabled = previous_write
+
+        return _scope()
+
     # -- path resolution -------------------------------------------------
 
     def resolve_path(self, path_str: str) -> Path:

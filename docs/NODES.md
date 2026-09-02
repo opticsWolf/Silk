@@ -38,6 +38,7 @@ sandbox permissions and named presets.
 | in | `toolbox` | `silk_toolbox` |
 | in | `permissions` | `file_permissions` |
 | out | `toolset` | `silk_toolset` |
+| out | `permissions` | `file_permissions` |
 
 ### Toolchain — `nodes/toolchain.py`
 Configures a set of external toolchains — Python interpreters/venvs, ruff,
@@ -58,7 +59,9 @@ Declarative agent configuration: persona instructions plus a
 |---|---|---|
 | in | `toolset` | `silk_toolset` |
 | in | `instructions` | `string` |
+| in | `permissions` | `file_permissions` |
 | out | `role` | `silk_role` |
+| out | `permissions` | `file_permissions` |
 
 ### Inference Settings — `nodes/inference_settings.py`
 Builds a `gen_params` dict (sampling / generation parameters) from UI
@@ -84,6 +87,7 @@ Qt-free `AgentLoop`. Exec `run`/`done` ports let agents chain into networks.
 | in | `inbox` | `agent_message` |
 | in | `run` | `exec` |
 | in | `inference_settings` | `dict` |
+| in | `permissions` | `file_permissions` |
 | out | `response` | `string` |
 | out | `outbox` | `agent_message` |
 | out | `events` | `dict` |
@@ -93,6 +97,13 @@ Qt-free `AgentLoop`. Exec `run`/`done` ports let agents chain into networks.
 tool calls and results, denials, plan snapshots, chat turns and decisions,
 each carrying `type`, `ts`, `run_id`, `seq` and the agent identity.
 Consumers filter by `type`.
+
+**File access is a port, not a hidden handle** (spec D16-D18). Whatever
+reaches `permissions` — wired straight here, or inherited down the
+ToolSet → Role → Agent chain — narrows the toolset's sandbox for this run
+and only this run, and is restored afterwards. The two sources compose by
+narrowing, so adding a wire can only reduce access (I6); a malformed grant
+grants nothing rather than falling back to the wider one.
 
 **The approval prompt is part of this node** (spec D48/I12). When a gated
 tool call blocks, the question appears in the node itself — Deny, Allow

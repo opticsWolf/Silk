@@ -121,6 +121,12 @@ class Role:
     capabilities: list["BaseCapability"] = field(default_factory=list)
     hooks: dict[str, list[Callable]] = field(default_factory=dict)
     max_rounds: Optional[int] = None
+    #: File access this role passes on, as data (spec D16/D17). The role
+    #: never holds a live sandbox -- it holds the *grant*, so the port is
+    #: visible in the graph and each layer can only narrow what it received.
+    #: ``None`` means "this role says nothing about files", which leaves the
+    #: toolset's own sandbox exactly as it was.
+    file_grants: Any = None
 
     def system_prompt_block(self) -> str:
         """The ``[ROLE: …]`` block contributed to the system prompt."""

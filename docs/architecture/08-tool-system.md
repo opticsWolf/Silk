@@ -152,6 +152,57 @@ are dropped, but `INFRASTRUCTURE_TOOLS` (`load_capability`) always stay.
 (`{name, description, parameters, category, tags, risk}`, infrastructure
 excluded) that are safe to hand across threads to UI code.
 
+### File access as a port (D16-D18)
+
+`functions/file_grants.py` is the grant structure and the only place that
+knows how two grants combine. `FileGrant` is one `(path, mode)` pair, mode
+being `blocked` / `read` / `read_write`; `FileGrants` is a root (or roots)
+plus a list of them, with `mode_for(path)` resolving by **nearest ancestor**,
+defaulting to `blocked`. Both are Pydantic models, so `file_permissions` is
+validated at the port boundary rather than trusted as a dict (D17) — the
+`silk_ports.py` registration uses `FileGrants.is_valid` as its validator and
+renders a short summary as the wire label.
+
+`FileGrants.coerce` accepts a model, a plain dict, or `None`, so every
+consumer takes the same argument and old dict-shaped graphs keep working.
+`None` is not "no access" — it means *nothing was said*, which leaves the
+sandbox exactly as it was. That distinction is what makes an unwired
+`permissions` port harmless.
+
+The grant travels **ToolSet → Role → Agent** as a visible port (D16):
+
+- **`Silk ToolSet`** emits `permissions`: the grant its sandbox actually
+  ended up with, after `split_by_ceiling` dropped everything outside the
+  ToolBox's own roots. What comes out is the *effective* set, not what was
+  asked for.
+- **`Silk Role`** takes it in and hands it on unchanged, carrying it as data
+  on `Role.file_grants`. The role never holds a live sandbox, so a role
+  reused under a narrower toolset cannot smuggle a wider grant with it.
+- **`Silk Agent`** composes the inherited grant with one wired straight to
+  its own `permissions` port via `resolve_grants`, and applies the result
+  for the run.
+
+Every combination is `FileGrants.narrow`, and narrowing is asymmetric on
+purpose: each entry becomes the **lesser** of what the upstream grant
+allowed and what was asked for, a path the upstream never covered is *not*
+added, and explicit `blocked` entries survive as holes. So adding a wire can
+only ever reduce access (I6). An unparseable grant yields an **empty** grant
+rather than the wider one it failed to parse — silently widening because a
+structure was malformed is the failure this port was made explicit to
+prevent.
+
+The Agent applies it with `FileToolSandbox.restrict(path_modes)`, a context
+manager that narrows `path_modes` / `write_enabled` **in place** and restores
+them in a `finally`. In place, because the file tools closed over that
+sandbox when they were registered: a replacement object would be built and
+then ignored, and rebuilding the ToolBox would drop whatever is attached to
+it live — the orchestrator's delegation tools, the run's approval gate. The
+sandbox is a graph object shared with the next run, hence the restore.
+
+`restrict` cannot widen and cannot re-enable confinement: `enabled` is a
+deliberate ToolBox-level choice ("Enable sandbox"), and no grant travelling
+down the chain can turn it back on (D18).
+
 ### Roles
 
 `functions/role.py` — a **role** is a named, declarative agent

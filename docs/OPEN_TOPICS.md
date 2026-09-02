@@ -392,7 +392,13 @@ a subprocess *after* approval. Two residues stay open:
   the venv, inside `weave/`, anywhere on `sys.path`) has granted more than the
   file-permissions UI suggests. Cheap check, worth doing: **warn at ToolBox
   evaluation when a writable root is importable** -- the same place a
-  whitelisted-but-unregistered node class is reported (D71).
+  whitelisted-but-unregistered node class is reported (D71). D16-D18 (landed
+  2026-09-02) makes the *extent* of the grant visible -- `file_permissions`
+  is a validated `FileGrants` model on a port that runs ToolSet -> Role ->
+  Agent, so what an agent may write is readable off the canvas rather than
+  buried in a sandbox handle. It does not close this residue: a narrower
+  grant on an importable root is still a deferred grant of process
+  authority, and nothing yet warns that the root is importable.
 - MCP servers with their own file access (§10) sit outside D77's gate
   entirely: they can write wherever their process can, and Silk neither
   sandboxes nor sees it. Already true today; §19 makes it consequential,

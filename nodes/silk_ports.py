@@ -11,15 +11,25 @@ Types:
     silk_toolset      a ToolBox restricted to a selection — the only tool
                       surface an Agent node accepts
     silk_role         a Role (declarative agent configuration)
-    file_permissions  {"root": str, "roots": [...], "entries": [{"path",
-                      "mode"}]} — per-path read / read_write grants
-                      (blocked paths absent)
+    file_permissions  a FileGrants model (or the equivalent dict) — roots
+                      plus per-path read / read_write / blocked grants,
+                      validated at the port boundary (D17)
     dirpath_list      ordered list of directory paths (sandbox roots)
     toolchains        list of ToolchainEnv handles (configured executables)
 """
 from __future__ import annotations
 
 from weave.node.port_registry import PortRegistry
+
+from ..functions.file_grants import FileGrants
+
+def _permissions_label(value) -> str:
+    """Port label for a file grant, however it is carried."""
+    grants = FileGrants.coerce(value) if FileGrants.is_valid(value) else None
+    if grants is None:
+        return "<no permissions>"
+    return f"<Permissions: {len(grants.entries)} paths>"
+
 
 if "gguf_model" not in PortRegistry._by_name:
     PortRegistry.register(
@@ -72,13 +82,11 @@ if "file_permissions" not in PortRegistry._by_name:
         color_index=214,
         type_id=None,
         default=lambda: None,
-        validator=lambda v: v is None or (
-            isinstance(v, dict) and "root" in v and "entries" in v
-        ),
-        formatter=lambda v: (
-            f"<Permissions: {len(v.get('entries') or ())} paths>"
-            if isinstance(v, dict) else "<no permissions>"
-        ),
+        # D17: the structure is a Pydantic model, and the port is where
+        # it is validated. A malformed grant used to be discovered by the
+        # sandbox behaving oddly two nodes later.
+        validator=FileGrants.is_valid,
+        formatter=lambda v: _permissions_label(v),
         casts_to={},
     )
 

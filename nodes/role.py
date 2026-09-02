@@ -26,6 +26,7 @@ from weave.logger import get_logger
 from weave.widgets.markdown_widget import MarkdownWidget
 
 from .silk_ports import SILK_ROLE_TYPE, SILK_TOOLSET_TYPE  # noqa: F401
+from ..functions.file_grants import FileGrants
 from ..functions.hook_catalog import build_hooks
 from ..functions.presets import PresetStore, RolePreset
 from ..functions.role import Role, ToolSelector
@@ -59,7 +60,13 @@ class SilkRoleNode(ActiveNode):
         # ── Ports ──
         self.add_input("toolset", datatype="silk_toolset")
         self.add_input("instructions", datatype="string")
+        # File access travels ToolSet → Role → Agent as a visible port
+        # (D16). The Role does not edit it: it carries it, so the chain is
+        # one port rather than three conventions, and a role reused under a
+        # narrower toolset cannot smuggle a wider grant along with it.
+        self.add_input("permissions", datatype="file_permissions")
         self.add_output("role", datatype="silk_role")
+        self.add_output("permissions", datatype="file_permissions")
 
         # ── Layout & WidgetCore ──
         form = QFormLayout()
@@ -203,6 +210,15 @@ class SilkRoleNode(ActiveNode):
 
         role_id = str(inputs.get("role_id") or "role").strip() or "role"
 
+        # Invalid grants are refused here rather than two nodes later, in
+        # the sandbox (D17). A refusal grants nothing; it never falls back
+        # to the wider upstream grant.
+        try:
+            grants = FileGrants.coerce(inputs.get("permissions"))
+        except Exception as exc:      # noqa: BLE001 - a bad grant is data
+            log.warning(f"Role '{role_id}': ignoring an invalid file grant: {exc}")
+            grants = FileGrants()
+
         # Filter checked_tools by the currently available catalog. This
         # prevents the Role from allowing tools that were removed from
         # the upstream toolset, while the ToolTreeWidget still remembers
@@ -230,8 +246,9 @@ class SilkRoleNode(ActiveNode):
                 (inputs.get("hooks_config") or {}).get("names") or [],
                 (inputs.get("hooks_config") or {}).get("configs") or {},
             ),
+            file_grants=grants,
         )
-        return {"role": role}
+        return {"role": role, "permissions": grants}
 
     # ── State ───────────────────────────────────────────────────────
 
