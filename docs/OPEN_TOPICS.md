@@ -337,9 +337,11 @@ as it can before compaction is triggered at all.
 
 **Still true after the close.** Setting `UsageLimits.input_tokens` alongside
 a raised `max_rounds` remains the right habit: compaction answers the context
-window, not the budget, and the two caps protect different things. And the
-spill directory still has no cleanup policy tied to the run/plan root — that
-is open, and compaction now writes into the same place.
+window, not the budget, and the two caps protect different things. The spill
+directory's cleanup policy is settled (§22 q4): `sweep()` runs when the
+hook attaches, by age then total size, over the writer's own names only.
+Compaction archives into the same directory and is covered by the same
+sweep, which is the point of there being one place.
 
 ### G15. Prompt-prefix reuse is unconfigured and unmeasured
 

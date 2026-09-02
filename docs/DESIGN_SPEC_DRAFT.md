@@ -958,7 +958,9 @@ first: `spill_large_results(max_chars, spill_dir)` in `hook_catalog`, beside
 `redact_secrets` — above threshold, write the full tool result to a file and
 replace the model-visible content with a head/tail preview plus the path.
 Deterministic, model-free, no extra model calls, append-only, covers the
-dominant growth term. Needs a cleanup policy tied to the run/plan root.
+dominant growth term. Cleanup is settled by §22 q4: `sweep()` at attach
+time, by age (`retain_days`, 14) then total size (`retain_bytes`, 256 MB),
+oldest first, only over names the writer itself produced.
 
 ### Session identity, and the three ways to restore prefix reuse
 
@@ -2053,7 +2055,17 @@ need a `__version__` to name. Still trivial; now load-bearing.
    wire. The field is filled from the engine and `to_wire` replaces it
    with `system_prompt_chars`, the same treatment a tool result gets.
    Closes G10.
-4. Spill-file cleanup policy and its lifetime (§12).
+4. ~~Spill-file cleanup policy and its lifetime (§12).~~ **Answered
+   (2026-09-02):** the file outlives its run, and the sweep happens at the
+   *start* of the next one. Tying the lifetime to the run that wrote it
+   was the obvious answer and the wrong one -- the preview in history
+   names the path, that history is persisted with the node, and an
+   orchestrator's workers may still be reading while the run ends. So
+   `attach_spill_hook` sweeps before the run writes anything: age
+   (`retain_days`, 14 days) then size (`retain_bytes`, 256 MB), oldest
+   first, only files matching the writer's own naming pattern, never
+   recursively. The spill directory lives in the user's project; a file
+   they put there is not ours to delete.
 5. Whether the hook-node question returns once per-tool binding exists --
    D12 is a "not yet", not a "never".
 6. ~~Whether the single-agent Sign-Off node survives once the Task Hub

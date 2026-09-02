@@ -49,6 +49,8 @@ from .spill import (
     DEFAULT_HEAD,
     DEFAULT_TAIL,
     DEFAULT_THRESHOLD,
+    RETAIN_BYTES,
+    RETAIN_DAYS,
     attach_spill_hook,
 )
 from .signoff import CHANGE_TYPES, preset_policy
@@ -396,6 +398,18 @@ class SpillConfig(BaseModel):
             "Fan-out results are the largest Silk produces (D57)."
         ),
     )
+    retain_days: int = Field(
+        RETAIN_DAYS, ge=0,
+        description=(
+            "Keep spill files this many days. Swept when a run starts, "
+            "never when one ends -- the previews in history name these "
+            "paths, so they must outlive the run that wrote them."
+        ),
+    )
+    retain_bytes: int = Field(
+        RETAIN_BYTES, ge=0,
+        description="Ceiling on the spill directory; oldest go first.",
+    )
 
 
 def _make_spill(_config: Optional[BaseModel] = None) -> HookMap:
@@ -614,6 +628,8 @@ def attach_catalog_hooks(
         attach_spill_hook(
             toolbox, sandbox,
             threshold=scfg.threshold, head=scfg.head, tail=scfg.tail,  # type: ignore[union-attr]
+            retain_days=scfg.retain_days,  # type: ignore[union-attr]
+            retain_bytes=scfg.retain_bytes,  # type: ignore[union-attr]
             tools=tuple(
                 n.strip() for n in str(scfg.tools or "").split(",") if n.strip()  # type: ignore[union-attr]
             ),

@@ -446,3 +446,17 @@ Every failure leaves the result inline and whole: no sandbox root means
 the hook is not attached at all, because a path the agent cannot open is
 not a reference, and a failed write costs a preview, never a result.
 
+**Lifetime (§22 q4).** A spill file outlives its run, and the cleanup runs
+on the way *in*. The preview left in history names the path and that
+history is persisted with the Agent node, so deleting at run end would
+turn every reference the model was handed into a dangling one — and an
+orchestrator's workers may still be reading files while the run finishes.
+`sweep()` is therefore called from `attach_spill_hook`, before the run has
+written a single name: nothing live can be holding a path to what it
+removes. Two bounds, `retain_days` (14) then `retain_bytes` (256 MB),
+oldest deleted first, both settable on `SpillConfig`. It deletes only
+names matching the pattern `write()` produces, only in the spill directory
+itself, never recursively — the directory sits in the user's project, and
+a file they put there is not ours to remove. A housekeeping failure is
+logged and ignored; it never stops a run.
+

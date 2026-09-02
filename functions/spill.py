@@ -68,7 +68,96 @@ DEFAULT_THRESHOLD = 4000
 DEFAULT_HEAD = 800
 DEFAULT_TAIL = 400
 
+#: How long a spill file is kept. It outlives its run on purpose: the
+#: preview left in history names the path, that history is persisted with
+#: the Agent node, and a reference the next run cannot open is worse than
+#: no reference at all. Two weeks is long enough that "read the file that
+#: tool call mentioned" still works tomorrow, and short enough that a
+#: forgotten graph does not fill a project directory (§22 q4).
+RETAIN_DAYS = 14
+
+#: A second bound, for the run that writes a hundred large results in an
+#: afternoon: past this, the oldest go first regardless of age.
+RETAIN_BYTES = 256 * 1024 * 1024
+
 _SLUG = re.compile(r"[^A-Za-z0-9_.-]+")
+
+#: What the sweep is allowed to delete: exactly the names
+#: :meth:`SpillWriter.write` produces. A file the user put in this
+#: directory is not ours to remove.
+_SPILLED = re.compile(r"\d{8}T\d{6}-.+\.md$")
+
+
+def sweep(
+    root: Optional[str | Path],
+    *,
+    subdir: str = SPILL_DIR,
+    retain_days: int = RETAIN_DAYS,
+    retain_bytes: int = RETAIN_BYTES,
+    now: Optional[datetime] = None,
+) -> list[Path]:
+    """Delete spill files that no run can still be pointing at (§22 q4).
+
+    Called at *attach* time -- the start of a run, before it writes a
+    single name -- and never at the end of one. A run that ends is exactly
+    when its files become interesting: the previews in its history name
+    them, an orchestrator's workers may still be reading them, and a
+    person debugging what happened has nowhere else to look. Cleaning up
+    on the way in means nothing deletes a file some live run is holding a
+    path to.
+
+    Two bounds, age first and total size second, oldest deleted first.
+    Only files matching the writer's own naming pattern, only in the spill
+    directory itself, never recursively. Returns what was removed; it
+    never raises, because a housekeeping failure must not stop a run.
+    """
+    if not root:
+        return []
+    directory = Path(root) / subdir
+    cutoff = ((now or datetime.now(timezone.utc)).timestamp()
+              - max(0, int(retain_days)) * 86400)
+    removed: list[Path] = []
+    try:
+        files = [p for p in directory.iterdir()
+                 if p.is_file() and _SPILLED.match(p.name)]
+    except OSError:
+        return []          # no directory yet, or not ours to read
+
+    aged: list[tuple[float, int, Path]] = []
+    for path in files:
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        aged.append((stat.st_mtime, stat.st_size, path))
+    aged.sort()
+
+    def _unlink(path: Path) -> bool:
+        try:
+            path.unlink()
+        except OSError as exc:
+            log.debug(f"Could not remove the spill file '{path}': {exc}")
+            return False
+        removed.append(path)
+        return True
+
+    kept: list[tuple[float, int, Path]] = []
+    for mtime, size, path in aged:
+        if mtime < cutoff and _unlink(path):
+            continue
+        kept.append((mtime, size, path))
+
+    total = sum(size for _m, size, _p in kept)
+    limit = max(0, int(retain_bytes))
+    for _mtime, size, path in kept:
+        if total <= limit:
+            break
+        if _unlink(path):
+            total -= size
+
+    if removed:
+        log.info(f"Swept {len(removed)} spill file(s) from '{directory}'.")
+    return removed
 
 
 def _slug(text: str, limit: int = 40) -> str:
@@ -167,6 +256,8 @@ def attach_spill_hook(
     tail: int = DEFAULT_TAIL,
     tools: tuple[str, ...] = ("delegate", "delegate_parallel"),
     writer: Optional[SpillWriter] = None,
+    retain_days: int = RETAIN_DAYS,
+    retain_bytes: int = RETAIN_BYTES,
 ) -> Optional[Any]:
     """Register the spill middleware; returns its :class:`HookEntry`.
 
@@ -178,11 +269,19 @@ def attach_spill_hook(
     into a directory the agent cannot read back would replace a large
     result with a dangling reference, which is strictly worse than the
     large result.
+
+    Attaching is also when old spill files are swept (§22 q4) -- on the way
+    in, so nothing removes a file a live run still names. Pass
+    ``retain_days=0`` to keep only what this run writes, or a very large
+    value to keep everything.
     """
     spill = writer or SpillWriter(getattr(sandbox, "root_dir", None))
     if not spill.available:
         log.debug("spill hook not attached: no sandbox root to write into")
         return None
+
+    sweep(spill.root, subdir=spill.subdir,
+          retain_days=retain_days, retain_bytes=retain_bytes)
 
     def _rewrite(value: str, label: str, tool_name: str) -> str:
         return _spill_text(value, spill, tool_name=tool_name, label=label,
