@@ -360,16 +360,10 @@ class SilkAgentNode(ThreadedManualNode):
         cached_val = self._get_cached_value("model_obj")
         if isinstance(cached_val, dict) and "pool" in cached_val:
             pool = cached_val["pool"]
+            release = getattr(pool, "release_session", None)
             try:
-                with pool._lock:
-                    if self._session_id in pool._session_instances:
-                        inst = pool._session_instances[self._session_id]
-                        # Re-entrant lock: safe to call checkin while holding.
-                        pool.checkin(
-                            inst,
-                            session_id=self._session_id,
-                            release_session=True,
-                        )
+                if release is not None:
+                    release(self._session_id)
             except Exception as exc:
                 log.debug(f"Clear context: pool release failed: {exc}")
 

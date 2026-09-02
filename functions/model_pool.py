@@ -265,7 +265,12 @@ class GGUFModelPool:
 
         self._wait_until_ready()  # raises (and cleans up) on failure
         self._client = OpenAIClientMock(self._server_url, self._model_alias)
-        self._active_sessions = 0
+        # Which conversations are bound to this server, by session id.
+        # A *set*, not a counter: `checkout` runs once per request, so a
+        # counter measured requests-ever and called them sessions -- it
+        # only ever grew, and the Pool Monitor showed that growth as bound
+        # conversations (spec D47).
+        self._bound_sessions: set[str] = set()
         self._register_for_shutdown()
 
     # -- shutdown registry ------------------------------------------------
@@ -395,7 +400,7 @@ class GGUFModelPool:
 
     def checkout(self, session_id: str = "default") -> Optional[Any]:
         with self._lock:
-            self._active_sessions += 1
+            self._bound_sessions.add(str(session_id))
             log.debug(f"Checkout: session {session_id[:8]}… → server client")
             return self._client
 
@@ -403,10 +408,34 @@ class GGUFModelPool:
         self, instance: Any, session_id: str = "default",
         release_session: bool = False,
     ) -> None:
+        """Return the client. Idempotent, because a set has no double-free.
+
+        A checkin only *unbinds* when asked to: a run ends every round with
+        one, and the conversation it belongs to is still live.
+        """
+        if release_session:
+            self.release_session(session_id)
+
+    def release_session(self, session_id: str = "default") -> bool:
+        """Forget a conversation; returns whether it was bound.
+
+        The public way to do what `Clear Context` wants. It used to reach
+        into a `_session_instances` dict that this pool does not have --
+        an AttributeError swallowed by a broad except, so the release never
+        happened and the count it was meant to correct kept climbing.
+        """
         with self._lock:
-            if release_session and self._active_sessions > 0:
-                self._active_sessions -= 1
-                log.debug(f"Checkin: session {session_id[:8]}… → released")
+            known = str(session_id) in self._bound_sessions
+            self._bound_sessions.discard(str(session_id))
+        if known:
+            log.debug(f"Released session {str(session_id)[:8]}…")
+        return known
+
+    @property
+    def bound_sessions(self) -> int:
+        """How many distinct conversations are bound to this server."""
+        with self._lock:
+            return len(self._bound_sessions)
 
     # -- prefix-reuse measurement (spec D41/D47) --------------------------
 
@@ -446,7 +475,7 @@ class GGUFModelPool:
                 "full_path": self._model_path,
                 "capacity": self._max_instances,
                 "total_instances": 1,
-                "bound_sessions": self._active_sessions,
+                "bound_sessions": len(self._bound_sessions),
                 "idle": 0,
                 # KV usage isn't exposed by the server; reported as 0 (the loader
                 # shows the bar as informational only).

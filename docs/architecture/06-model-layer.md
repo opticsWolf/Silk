@@ -65,3 +65,18 @@ already-sent message rewritten or dropped, the one kind that is never
 intentional). Compaction declares itself with `note_compaction()` and is
 forgiven exactly once: forever would make the guard go quiet for the rest
 of any run that compacts.
+
+### Session accounting on the pool
+
+`GGUFModelPool` is a shared client, not a slot allocator: one
+`llama_cpp.server` serves every agent. What it still has to track is which
+*conversations* are bound to it, because the Pool Monitor reports the
+number and `Clear Context` needs to drop one.
+
+That is a **set of session ids**, not a counter. `checkout` runs once per
+request, so counting checkouts measured requests-ever and only ever grew
+— the monitor showed that growth as bound conversations. Both operations
+are idempotent: a conversation is bound or it is not, so neither a second
+request nor a second `Clear Context` can move the number anywhere it
+should not go. `release_session(session_id)` is the public way to unbind,
+and it reports whether it knew the session.
