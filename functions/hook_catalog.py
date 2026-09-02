@@ -39,6 +39,12 @@ from pydantic import BaseModel, Field, ValidationError
 
 from weave.logger import get_logger
 
+from .approval import (
+    LEVEL_HUMAN,
+    attach_approval_gate,
+    tool_preset_policy,
+)
+from .grants import GrantStore
 from .signoff import CHANGE_TYPES, preset_policy
 
 from .hooks import (
@@ -332,8 +338,8 @@ class SignoffConfig(BaseModel):
 
     ``preset`` picks a ready-made policy; set it to ``custom`` to use the per-type
     levels below. ``agent`` = the agent self-signs (applies now); ``human`` = the
-    change needs the user's approval, and until the inline decision seam exists
-    (D30) it is refused rather than held (D31–D33 deleted the parked path).
+    change needs the user's approval, which the run asks for inline and
+    applies if the answer is yes (D30; D31–D33 deleted the parked path).
     """
 
     preset: Literal["custom", "auto", "completions", "final", "strict"] = Field(
@@ -357,6 +363,47 @@ def signoff_policy_from_config(cfg: SignoffConfig) -> dict:
     if cfg.preset != "custom":
         return preset_policy(cfg.preset)
     return {t: getattr(cfg, t) for t in CHANGE_TYPES}
+
+
+class ToolApprovalConfig(BaseModel):
+    """Which *tool calls* need a human, alongside the task changes above.
+
+    Two policies, one gate (D31). A preset covers the risk bands every tool
+    declares at registration; ``tools`` names individual tools on top of it,
+    because "ask before `run_command`" is the common case and does not fit a
+    band. Naming a tool always wins over its band.
+    """
+
+    preset: Literal["off", "high_risk", "writes", "everything"] = Field(
+        "off", description="Gate by declared risk band: off / high / high+medium / all.",
+    )
+    tools: str = Field(
+        "", description="Extra tool names needing approval, comma-separated.",
+    )
+    durable_grants: bool = Field(
+        True,
+        description=(
+            "Allow 'Always allow' to write a per-project grant to "
+            "~/.weave/silk/grants.json. Off means every run asks again."
+        ),
+    )
+
+
+def tool_policy_from_config(cfg: ToolApprovalConfig) -> dict:
+    """Resolve a :class:`ToolApprovalConfig` to a ``{tool_or_risk: level}`` map."""
+    policy = tool_preset_policy(cfg.preset)
+    for name in str(cfg.tools or "").split(","):
+        name = name.strip()
+        if name:
+            policy[name] = LEVEL_HUMAN
+    return policy
+
+
+def _make_tool_approval(_config: Optional[BaseModel] = None) -> HookMap:
+    """Inert: like ``signoff``, the gate is wired by
+    :func:`attach_catalog_hooks`, which has the toolbox. Both entries feed
+    the *same* middleware -- selecting both does not install two."""
+    return {}
 
 
 def _make_signoff(_config: Optional[BaseModel] = None) -> HookMap:
@@ -425,6 +472,16 @@ HOOK_CATALOG: dict[str, HookSpec] = {
             factory=_make_signoff,
             config_model=SignoffConfig,
         ),
+        HookSpec(
+            name="tool_approval",
+            description=(
+                "Require the user to approve tool calls before they run, by "
+                "risk band or by name. Shares one gate with 'signoff'; "
+                "configured here, enforced on the ToolBox."
+            ),
+            factory=_make_tool_approval,
+            config_model=ToolApprovalConfig,
+        ),
     )
 }
 
@@ -492,19 +549,37 @@ def attach_catalog_hooks(
     layer — ticking the same hook again on a role is legal but doubles
     it, and that should be visible, not surprising.
 
-    ``signoff`` is special: it is selectable/configurable like any catalog
-    hook, but its gate is a **store-aware** ``wrap_tool_execute`` middleware,
-    so it is wired here (where the toolbox — and its task store — is in
-    scope) rather than through the config-less ``build_hooks`` factory.
+    ``signoff`` and ``tool_approval`` are special: both are
+    selectable/configurable like any catalog hook, but they are two policy
+    domains of **one** store-aware ``wrap_tool_execute`` middleware (D31), so
+    they are wired here — where the toolbox, its task store and the sandbox
+    root are all in scope — in a single call, rather than through the
+    config-less ``build_hooks`` factory. Selecting both does not install two
+    gates.
     """
     names = tuple(str(n) for n in names)
     register_hook_map(toolbox.hooks, build_hooks(names, configs))
 
-    if "signoff" in names:
-        from .approval import attach_signoff_gate  # local: avoid import cycle
-        cfg = resolve_config(HOOK_CATALOG["signoff"], (configs or {}).get("signoff"))
-        attach_signoff_gate(
-            toolbox, sandbox, policy=signoff_policy_from_config(cfg),  # type: ignore[arg-type]
+    if "signoff" in names or "tool_approval" in names:
+        task_policy = None
+        if "signoff" in names:
+            cfg = resolve_config(HOOK_CATALOG["signoff"],
+                                 (configs or {}).get("signoff"))
+            task_policy = signoff_policy_from_config(cfg)  # type: ignore[arg-type]
+
+        tool_policy = None
+        durable = None
+        if "tool_approval" in names:
+            tcfg = resolve_config(HOOK_CATALOG["tool_approval"],
+                                  (configs or {}).get("tool_approval"))
+            tool_policy = tool_policy_from_config(tcfg)  # type: ignore[arg-type]
+            if getattr(tcfg, "durable_grants", False):
+                durable = GrantStore()
+
+        attach_approval_gate(
+            toolbox, sandbox, task_policy=task_policy, tool_policy=tool_policy,
+            grants=durable,
+            project_root=str(getattr(sandbox, "root_dir", "") or ""),
         )
 
     existing = tuple(getattr(toolbox, "catalog_hook_names", ()))

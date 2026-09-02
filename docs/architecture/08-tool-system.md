@@ -304,6 +304,7 @@ Bundled hooks:
 | `tool_budget` | `ToolBudgetConfig` | hard-denies tool calls beyond a per-run budget (total and optional per-tool ceiling) |
 | `task_audit` | `TaskAuditConfig` | holds the task plan's rationale to a quality bar (bounces trivial `n/a`-style reasons on add/complete/rescope/revise-goal) and logs a timestamped trail of plan changes |
 | `signoff` | `SignoffConfig` | requires user sign-off before task changes take effect, per change type (agent self-signs vs human approval). Needs Task Planning; configured here, enforced on the ToolBox |
+| `tool_approval` | `ToolApprovalConfig` | requires the user to approve tool calls before they run, by declared risk band or by name. Shares one gate with `signoff` — selecting both installs one middleware, not two (D31) |
 
 The `Silk ToolBox` node's hook selector edits these configs through the
 standard `config_dialog.py`, so users tune behaviour without code.
