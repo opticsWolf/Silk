@@ -145,21 +145,29 @@ class AgentLoop:
         if user_input:
             engine.append_message("user", user_input)
 
-        yield EventStart(
-            settings=dict(gen_params),
-            input_tokens=engine.count_prompt_tokens(),
-            context_length=self.context_length(),
-        )
-        self._emit(HOOK_BEFORE_RUN, user_input=user_input, settings=dict(gen_params))
-
         tool_calls_made: list[dict[str, Any]] = []
         tool_results_made: list[dict[str, Any]] = []
         start_time = time.time()
 
         # after_run is emitted via finally so every exit path — normal
         # completion, usage limit, stream error, early generator close —
-        # reports run end exactly once.
+        # reports run end exactly once (invariant I2).
+        #
+        # EventStart and before_run are *inside* the try for that last case:
+        # a consumer that takes the first event and walks away closes the
+        # generator at that first yield, and with the try opening any later
+        # the close would land outside it — before_run fired, after_run
+        # never did. Found by the I2 fixture, which is what those fixtures
+        # are for.
         try:
+            yield EventStart(
+                settings=dict(gen_params),
+                input_tokens=engine.count_prompt_tokens(),
+                context_length=self.context_length(),
+            )
+            self._emit(
+                HOOK_BEFORE_RUN, user_input=user_input, settings=dict(gen_params),
+            )
             yield from self._run_rounds(
                 gen_params, tool_calls_made, tool_results_made, start_time,
             )
