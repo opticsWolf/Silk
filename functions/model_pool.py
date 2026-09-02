@@ -95,6 +95,8 @@ _SERVER_MODEL_KEYS = (
 
 #: How long to wait for the server to answer ``/v1/models`` before giving up.
 _READY_TIMEOUT_S = 120.0
+#: How long the server may take to terminate before it is killed.
+_SHUTDOWN_TIMEOUT_S = 5.0
 
 
 def find_free_port() -> int:
@@ -204,6 +206,7 @@ class GGUFModelPool:
         self._config_path: Optional[str] = None
         self._log_path: Optional[str] = None
         self._log_handle = None
+        self._participant = None
 
         # Build the server config from the requested settings (robust: JSON, so
         # bools/ints serialize correctly and no CLI flag names are guessed).
@@ -236,6 +239,48 @@ class GGUFModelPool:
         self._wait_until_ready()  # raises (and cleans up) on failure
         self._client = OpenAIClientMock(self._server_url, self._model_alias)
         self._active_sessions = 0
+        self._register_for_shutdown()
+
+    # -- shutdown registry ------------------------------------------------
+
+    def _register_for_shutdown(self) -> None:
+        """Let the process release this server even if no node does.
+
+        ``cleanup`` used to be reachable only through the loader node —
+        so a quit that never deleted the node, or a relaunch that spawns
+        a replacement, left a ``llama_cpp.server`` holding VRAM and a
+        port with nothing left to shut it down.  Registering here fixes
+        that at the only place that knows the server is actually up, and
+        the registry's reverse order releases it before the things it
+        was built underneath.
+        """
+        try:
+            from weave.engine.shutdown import (
+                get_shutdown_registry, install_shutdown_handlers,
+            )
+        except Exception:  # noqa: BLE001 - a plugin must not need the host
+            self._participant = None
+            return
+        install_shutdown_handlers()
+        self._participant = get_shutdown_registry().register(
+            f"GGUF server :{self._port}", self._release, force=self._force,
+            timeout_s=_SHUTDOWN_TIMEOUT_S,
+        )
+
+    def _release(self, timeout: float = _SHUTDOWN_TIMEOUT_S) -> bool:
+        """The registry's graceful tier: terminate and wait."""
+        self.cleanup(timeout=timeout)
+        process = self._process
+        return process is None or process.poll() is not None
+
+    def _force(self) -> None:
+        """The registry's forceful tier: the server is holding VRAM."""
+        process = self._process
+        if process is not None and process.poll() is None:
+            try:
+                process.kill()
+            except Exception:  # noqa: BLE001
+                log.exception("Could not kill the GGUF server")
 
     # -- lifecycle --------------------------------------------------------
 
@@ -273,13 +318,15 @@ class GGUFModelPool:
             f"llama_cpp.server did not become ready within {timeout:.0f}s.\n{tail}"
         )
 
-    def cleanup(self) -> None:
+    def cleanup(self, timeout: float = _SHUTDOWN_TIMEOUT_S) -> None:
+        """Stop the server and free its VRAM.  Safe to call twice."""
         log.info("GGUF server: shutting down process and freeing VRAM.")
+        self._unregister()
         with self._lock:
             if self._process is not None and self._process.poll() is None:
                 self._process.terminate()
                 try:
-                    self._process.wait(timeout=5)
+                    self._process.wait(timeout=timeout)
                 except subprocess.TimeoutExpired:
                     self._process.kill()
             if self._log_handle is not None:
@@ -296,6 +343,20 @@ class GGUFModelPool:
                         pass
             self._config_path = self._log_path = None
         gc.collect()
+
+    def _unregister(self) -> None:
+        """Drop the registry handle: a node that ejected the model has
+        already released this server, and a participant whose resource is
+        gone would report a failure at quit."""
+        participant = getattr(self, "_participant", None)
+        if participant is None:
+            return
+        self._participant = None
+        try:
+            from weave.engine.shutdown import get_shutdown_registry
+            get_shutdown_registry().unregister(participant)
+        except Exception:  # noqa: BLE001
+            pass
 
     # -- checkout API (kept for GraphEngine; a shared client, not a slot) --
 
