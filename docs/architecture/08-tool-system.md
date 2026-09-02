@@ -305,7 +305,34 @@ Bundled hooks:
 | `task_audit` | `TaskAuditConfig` | holds the task plan's rationale to a quality bar (bounces trivial `n/a`-style reasons on add/complete/rescope/revise-goal) and logs a timestamped trail of plan changes |
 | `signoff` | `SignoffConfig` | requires user sign-off before task changes take effect, per change type (agent self-signs vs human approval). Needs Task Planning; configured here, enforced on the ToolBox |
 | `tool_approval` | `ToolApprovalConfig` | requires the user to approve tool calls before they run, by declared risk band or by name. Shares one gate with `signoff` — selecting both installs one middleware, not two (D31) |
+| `spill` | `SpillConfig` | writes an oversized tool result to a file in the sandbox and leaves the model a head/tail preview plus the path |
 
 The `Silk ToolBox` node's hook selector edits these configs through the
 standard `config_dialog.py`, so users tune behaviour without code.
+
+### `functions/spill.py` — keeping a big result out of the context
+
+A tool result the model does not need in full still costs the whole run:
+it is appended to history and re-sent, in full, on every later request.
+The spill hook rewrites the result **before it is appended** — the text
+goes to a file under `.silk/spill/` inside the sandbox, and what the model
+sees is a head, a tail, and the path.
+
+That ordering is the whole point (D41). Compaction rewrites the *head* of
+the context, which collapses the longest common prefix with the previous
+request to roughly the system prompt and forces a full re-prefill of a
+context that is by construction near the ceiling — twice, since the
+summary is itself a model request with a different prompt. Spill touches
+only the newest message, so history stays append-only, invariant I11
+holds, and compaction is *deferred* rather than caused.
+
+Fan-out comes first (D57): `delegate_parallel` returns every worker's full
+answer inline in one round, which is the largest single result Silk can
+produce. So the hook understands the delegation result shapes structurally
+and spills each worker's answer separately — the per-worker framing (who
+answered, whether it worked) is small and worth keeping.
+
+Every failure leaves the result inline and whole: no sandbox root means
+the hook is not attached at all, because a path the agent cannot open is
+not a reference, and a failed write costs a preview, never a result.
 

@@ -45,6 +45,12 @@ from .approval import (
     tool_preset_policy,
 )
 from .grants import GrantStore
+from .spill import (
+    DEFAULT_HEAD,
+    DEFAULT_TAIL,
+    DEFAULT_THRESHOLD,
+    attach_spill_hook,
+)
 from .signoff import CHANGE_TYPES, preset_policy
 
 from .hooks import (
@@ -365,6 +371,39 @@ def signoff_policy_from_config(cfg: SignoffConfig) -> dict:
     return {t: getattr(cfg, t) for t in CHANGE_TYPES}
 
 
+class SpillConfig(BaseModel):
+    """How large a tool result may be before it is written to a file.
+
+    Prefix-preserving by construction (D41): it rewrites the newest result
+    before it is appended, so history stays append-only and compaction --
+    which is what costs a double prefill -- is deferred rather than caused.
+    """
+
+    threshold: int = Field(
+        DEFAULT_THRESHOLD, ge=200,
+        description="Spill a result longer than this many characters.",
+    )
+    head: int = Field(
+        DEFAULT_HEAD, ge=0, description="Characters kept from the start.",
+    )
+    tail: int = Field(
+        DEFAULT_TAIL, ge=0, description="Characters kept from the end.",
+    )
+    tools: str = Field(
+        "delegate,delegate_parallel",
+        description=(
+            "Tools to spill, comma-separated. Empty means every tool. "
+            "Fan-out results are the largest Silk produces (D57)."
+        ),
+    )
+
+
+def _make_spill(_config: Optional[BaseModel] = None) -> HookMap:
+    """Inert: the spill hook needs the sandbox root to write into, so it is
+    wired by :func:`attach_catalog_hooks` rather than the factory path."""
+    return {}
+
+
 class ToolApprovalConfig(BaseModel):
     """Which *tool calls* need a human, alongside the task changes above.
 
@@ -473,6 +512,16 @@ HOOK_CATALOG: dict[str, HookSpec] = {
             config_model=SignoffConfig,
         ),
         HookSpec(
+            name="spill",
+            description=(
+                "Write oversized tool results to a file in the sandbox and "
+                "leave the model a head/tail preview plus the path, so a big "
+                "result does not ride along in every later request."
+            ),
+            factory=_make_spill,
+            config_model=SpillConfig,
+        ),
+        HookSpec(
             name="tool_approval",
             description=(
                 "Require the user to approve tool calls before they run, by "
@@ -559,6 +608,16 @@ def attach_catalog_hooks(
     """
     names = tuple(str(n) for n in names)
     register_hook_map(toolbox.hooks, build_hooks(names, configs))
+
+    if "spill" in names:
+        scfg = resolve_config(HOOK_CATALOG["spill"], (configs or {}).get("spill"))
+        attach_spill_hook(
+            toolbox, sandbox,
+            threshold=scfg.threshold, head=scfg.head, tail=scfg.tail,  # type: ignore[union-attr]
+            tools=tuple(
+                n.strip() for n in str(scfg.tools or "").split(",") if n.strip()  # type: ignore[union-attr]
+            ),
+        )
 
     if "signoff" in names or "tool_approval" in names:
         task_policy = None
