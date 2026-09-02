@@ -1985,8 +1985,21 @@ need a `__version__` to name. Still trivial; now load-bearing.
 
 ## 22. Open questions
 
-1. The grant record schema and the revocation *surface* -- where a user sees
-   and withdraws what they have granted (§7; location settled by D35).
+1. ~~The grant record schema and the revocation *surface* -- where a user
+   sees and withdraws what they have granted (§7; location settled by
+   D35).~~ **Answered (2026-09-02):** the schema was already `Grant`
+   (tool, project, when, by whom, note); what was missing was the surface,
+   and it is a **dock** -- `widgets/grant_manager.py`, grouped by project,
+   Revoke per row and Revoke all per project, mounted by the host with
+   `GrantManagerDock.attach(main_window)` like the Decision Inbox and for
+   D51/I12's reason. It reads the file on every refresh rather than a
+   cached set, so it shows what another window granted and what it revokes
+   is seen by the next gated call anywhere; it inherits the store's
+   allow-only shape, so the only thing this surface can do is *remove* an
+   allowance, which is why it needs no approval of its own; and it does
+   not list run-scoped grants, which die with the run and cannot be
+   withdrawn because there is nothing left to withdraw. `GrantStore` grew
+   `projects()` and `all()` for it.
    *(The former question 1b -- who answers when nobody is listening -- is
    closed by D36: every missing-answer path denies.)*
 1b. Which of D47's three mechanisms to build — decided by the rule in §12,

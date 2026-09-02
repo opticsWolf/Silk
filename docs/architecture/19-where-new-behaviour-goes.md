@@ -22,6 +22,7 @@
 | Make a compound task decision atomic | put it behind `TaskLedger._commit()` — one RLock per ledger file around read-check-assert (D64); never a second lock elsewhere |
 | Remember a turn across runs and sessions | `HistoryLedger.record_turn()` in `functions/ledger.py`; the agent reads it back with the `recall` tool (§17, D66) |
 | Compact without losing what was compacted | `HistoryLedger.compacted()` — a supersession event, so the dropped rounds stay readable (D24/D25, I11) |
+| Show or withdraw a durable grant | the Grant Manager dock (`widgets/grant_manager.py`) over `GrantStore.projects()` / `.all()` — read the file every refresh, and only ever delete (§22 q1) |
 | Centralise answering N agents' approval prompts | the Decision Inbox dock (`widgets/decision_inbox.py`) over `functions/decision_registry.py` — never a node (D59, D51, I12) |
 | See what N independent agents are doing | a `Silk Task Hub` node fed from `Silk ToolBox.root_paths`; it reads the plan stores, never the agents (D58) |
 | Point agents at a *specific* plan | a `Silk Task` node into the ToolBox node's `plan` input (and the Plan Viewer's `plan_ref`); leave both unwired to keep newest-under-root shared discovery (D23) |

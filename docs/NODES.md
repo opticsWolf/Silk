@@ -205,6 +205,14 @@ where no graph channel can reach it; the `decision.request` /
 the way the answer arrives (D59). Stop cancels the seam directly, so a run
 waiting on a decision unwinds at once instead of waiting out the timeout.
 
+**"Always allow" can be taken back** (§22 q1). A durable grant lives in
+`~/.weave/silk/grants.json`, keyed by resolved project root, and
+`GrantManagerDock.attach(main_window)` opens a dock that lists every one of
+them with Revoke per grant and Revoke all per project. It re-reads the file
+each refresh, so a revocation takes effect on the next gated call in every
+window; it can only remove, never grant. Run-scoped grants are not listed —
+they end with the run.
+
 ### Silk Agent Spec — `nodes/agent_spec.py`
 A named worker bundle (model + toolset + role) for the Orchestrator; chain
 specs to build a `silk_agents` roster.

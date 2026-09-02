@@ -411,3 +411,31 @@ root** (D10/D34/D35):
   Every failure path leads to more prompting, never less. That is also why
   the store is read-modify-write, last writer wins: a lost grant costs one
   extra prompt.
+
+### `widgets/grant_manager.py` — taking it back (§22 q1)
+
+D10 made "don't ask again" durable and D35 put it outside the graph; the
+half that faces the person is a dock, because an allowance you cannot find
+is an allowance you cannot take back. `GrantManagerDock` groups by project,
+one row per grant, with **Revoke** on the row and **Revoke all** on the
+project header. `GrantStore` grew the two readers it needs: `projects()`
+and `all()` (newest first — a user starts from *what did I allow*, not from
+a project root they have to remember).
+
+Three properties, and they are the whole design:
+
+- **It shows what is on disk.** Every refresh calls `reload()`, so a grant
+  another window made appears here, and a revocation here is seen by the
+  next gated call everywhere — the gate consults the store, not a cached
+  set.
+- **Revocation is deletion**, inheriting the allow-only store: nothing in
+  this surface can create authority or a permanent refusal. It moves in the
+  safe direction only, which is why it needs no approval of its own.
+- **Run-scoped grants are not listed.** They live in the gate's closure and
+  die with the run; showing them would invite revoking something already
+  gone.
+
+A dock and not a node, for D51/I12's reason: process-wide state, no inputs,
+no outputs, nothing a graph could wire to it. Like the Decision Inbox it is
+mounted by the host via `GrantManagerDock.attach(main_window)`, since Silk
+has no plugin-side hook into the window.

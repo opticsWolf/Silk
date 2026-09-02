@@ -218,6 +218,25 @@ class GrantStore:
         return [g for (proj, _tool), g in sorted(self._grants.items())
                 if proj == key]
 
+    def projects(self) -> list[str]:
+        """Every project that holds a grant, for a revocation surface.
+
+        Sorted, and the empty key -- grants made with no project root --
+        sorts first under its own name, because "granted everywhere" is
+        not a thing that exists and a UI must not imply it does.
+        """
+        return sorted({project for project, _tool in self._grants})
+
+    def all(self) -> list[Grant]:
+        """Every grant this store holds, newest first.
+
+        A user withdrawing authority wants to start from *what did I
+        allow*, not from a project they have to remember the name of
+        (§22 q1).
+        """
+        return sorted(self._grants.values(),
+                      key=lambda g: (-g.granted_at, g.project, g.tool_name))
+
     def tools(self, project: Optional[str | Path]) -> frozenset[str]:
         """Just the granted tool names -- the shape the gate wants."""
         return frozenset(g.tool_name for g in self.for_project(project))
