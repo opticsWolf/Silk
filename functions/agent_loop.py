@@ -27,10 +27,14 @@ from typing import Any, Optional
 
 from . import tool_calling
 from .hooks import (
+    HOOK_AFTER_MODEL_REQUEST,
     HOOK_AFTER_MODEL_RESPONSE,
     HOOK_AFTER_RUN,
     HOOK_BEFORE_MODEL_REQUEST,
     HOOK_BEFORE_RUN,
+    HOOK_ON_MODEL_REQUEST_ERROR,
+    HOOK_ON_OUTPUT_PROCESS_ERROR,
+    HOOK_ON_OUTPUT_VALIDATE_ERROR,
 )
 from .model_errors import classify_model_error
 from .protocols import AgentEngine, ToolRegistry
@@ -167,6 +171,30 @@ class AgentLoop:
                 elapsed_s=time.time() - start_time,
             )
 
+    def _model_failed(
+        self, error: Any, round_index: int, *, truncated: bool = False,
+    ) -> EventError:
+        """One place where a model-request failure becomes an event.
+
+        The classification rides along as ``kind`` so a consumer can tell an
+        overflow (which compaction may answer) from a dead server (which it
+        must not) without re-parsing the message (spec D40), and the same
+        verdict goes to the hook so a logger sees what the loop saw.
+        """
+        verdict = classify_model_error(error, truncated=truncated)
+        self._emit(
+            HOOK_ON_MODEL_REQUEST_ERROR,
+            error=verdict.message,
+            kind=verdict.kind,
+            round_index=round_index,
+        )
+        return EventError(
+            error=verdict.message,
+            context="stream_response",
+            recoverable=verdict.is_retryable,
+            kind=verdict.kind,
+        )
+
     def _run_rounds(
         self,
         gen_params: dict[str, Any],
@@ -213,12 +241,23 @@ class AgentLoop:
                 yield EventError(error=str(exc), context="usage_limits", recoverable=False)
                 return
             except Exception as exc:
-                yield _model_error(exc)
+                yield self._model_failed(exc, _round)
                 return
 
             stats = engine.last_stats or {}
+            # The request is over either way: after_model_request reports
+            # that a request happened, after_model_response that a usable
+            # answer came back. Distinct events because a failed request is
+            # still a request -- it cost time, and on a metered backend,
+            # money (D15).
+            self._emit(
+                HOOK_AFTER_MODEL_REQUEST,
+                round_index=_round,
+                ok=not stats.get("error") and not stats.get("truncated"),
+                finish_reason=stats.get("finish_reason"),
+            )
             if stats.get("error"):
-                yield _model_error(stats["error"])
+                yield self._model_failed(stats["error"], _round)
                 return
             if stats.get("truncated"):
                 # The request succeeded and the answer was cut off anyway:
@@ -227,10 +266,11 @@ class AgentLoop:
                 # sends is indistinguishable from a clean finish except by
                 # the missing finish_reason. Reasoning over half an
                 # assistant turn is worse than failing the round.
-                yield _model_error(
+                yield self._model_failed(
                     "The response stream ended without a finish reason — the "
                     "answer was truncated. If two agents share one llama.cpp "
                     "server, start it with interrupt_requests disabled.",
+                    _round,
                     truncated=True,
                 )
                 return
@@ -360,6 +400,7 @@ class AgentLoop:
                 max_retries=engine.reflection_config.max_output_retries,
             )
             if not is_valid:
+                self._emit(HOOK_ON_OUTPUT_VALIDATE_ERROR, error=str(result))
                 yield EventError(
                     error=f"Output validation failed: {result}",
                     context="output_validation",
@@ -367,7 +408,19 @@ class AgentLoop:
                 )
                 return
             if hasattr(result, "model_dump_json"):
-                full_text = result.model_dump_json()
+                try:
+                    full_text = result.model_dump_json()
+                except Exception as exc:
+                    # Serialising a validated object is the "output process"
+                    # step; it can still fail (a field that does not
+                    # round-trip), and the run keeps the validated text
+                    # rather than dying over the rendering of it.
+                    self._emit(HOOK_ON_OUTPUT_PROCESS_ERROR, error=str(exc))
+                    yield EventError(
+                        error=f"Output processing failed: {exc}",
+                        context="output_processing",
+                        recoverable=True,
+                    )
 
         stats = engine.last_stats or {}
         elapsed = time.time() - start_time
@@ -394,22 +447,6 @@ class AgentLoop:
             },
             outcome=outcome,
         )
-
-
-def _model_error(error: Any, *, truncated: bool = False) -> EventError:
-    """One place where a model-request failure becomes an event.
-
-    The classification rides along as ``kind`` so a consumer can tell an
-    overflow (which compaction may answer) from a dead server (which it
-    must not) without re-parsing the message (spec D40).
-    """
-    verdict = classify_model_error(error, truncated=truncated)
-    return EventError(
-        error=verdict.message,
-        context="stream_response",
-        recoverable=verdict.is_retryable,
-        kind=verdict.kind,
-    )
 
 
 def _args_as_dict(arguments: Any) -> dict[str, Any]:

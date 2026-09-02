@@ -21,6 +21,8 @@ from .hooks import (
     HookRegistry,
     HOOK_BEFORE_TOOL_EXECUTE,
     HOOK_AFTER_TOOL_EXECUTE,
+    HOOK_ON_TOOL_EXECUTE_ERROR,
+    HOOK_ON_TOOL_VALIDATE_ERROR,
     HOOK_TOOL_DENIED,
     HOOK_WRAP_TOOL_EXECUTE,
     register_hook_map,
@@ -645,6 +647,10 @@ class ToolBox:
                     f"{'.'.join(str(p) for p in err['loc'])}: {err['msg']}"
                     for err in e.errors()
                 ]
+                self.hooks.emit(
+                    HOOK_ON_TOOL_VALIDATE_ERROR,
+                    tool_name=name, error=str(e), details=details,
+                )
                 results.append(
                     self._error(
                         tc.id,
@@ -655,7 +661,11 @@ class ToolBox:
                     )
                 )
                 continue
-            except json.JSONDecodeError:
+            except json.JSONDecodeError as e:
+                self.hooks.emit(
+                    HOOK_ON_TOOL_VALIDATE_ERROR,
+                    tool_name=name, error=str(e), details=[],
+                )
                 results.append(
                     self._error(
                         tc.id,
@@ -753,7 +763,11 @@ class ToolBox:
                 "name": name,
                 "content": _to_content(output),
             }
-        except asyncio.TimeoutError:
+        except asyncio.TimeoutError as e:
+            self.hooks.emit(
+                HOOK_ON_TOOL_EXECUTE_ERROR,
+                tool_name=name, tool_args=args, error=f"timeout: {e}",
+            )
             return self._error(
                 call_id,
                 name,
@@ -761,6 +775,10 @@ class ToolBox:
                 suggestion="Try again with simpler arguments or fewer operations.",
             )
         except Exception as e:
+            self.hooks.emit(
+                HOOK_ON_TOOL_EXECUTE_ERROR,
+                tool_name=name, tool_args=args, error=str(e),
+            )
             # Emit after_tool_execute hook with error (Phase 2)
             self.hooks.emit(
                 HOOK_AFTER_TOOL_EXECUTE,

@@ -90,6 +90,75 @@ HOOK_ON_OUTPUT_PROCESS_ERROR = "on_output_process_error"
 HOOK_WRAP_RUN_EVENT_STREAM = "wrap_run_event_stream"
 """Wraps the event stream for streamed nodes."""
 
+
+#: Every event name this module declares. Registration checks membership,
+#: so a typo ("after_toool_execute") is refused instead of registering
+#: cleanly against a name nothing will ever emit.
+KNOWN_EVENTS = frozenset({
+    HOOK_BEFORE_MODEL_REQUEST, HOOK_AFTER_MODEL_REQUEST,
+    HOOK_AFTER_MODEL_RESPONSE, HOOK_ON_MODEL_REQUEST_ERROR,
+    HOOK_BEFORE_TOOL_EXECUTE, HOOK_AFTER_TOOL_EXECUTE, HOOK_TOOL_DENIED,
+    HOOK_ON_TOOL_VALIDATE_ERROR, HOOK_ON_TOOL_EXECUTE_ERROR,
+    HOOK_ON_OUTPUT_VALIDATE_ERROR, HOOK_ON_OUTPUT_PROCESS_ERROR,
+    HOOK_BEFORE_RUN, HOOK_AFTER_RUN,
+    HOOK_WRAP_MODEL_REQUEST, HOOK_WRAP_TOOL_VALIDATE, HOOK_WRAP_TOOL_EXECUTE,
+    HOOK_WRAP_OUTPUT_VALIDATE, HOOK_WRAP_OUTPUT_PROCESS,
+    HOOK_WRAP_RUN_EVENT_STREAM,
+})
+
+#: The events something actually emits. A hook registered on anything else
+#: registers cleanly and then silently never fires -- which is worse than an
+#: error, because the hook's *absence* is what you have to notice (G3/D15).
+#: So registration on a declared-but-unwired event raises.
+#:
+#: The five ``WRAP_*`` names below are deliberately absent: their
+#: disposition is still open (spec T2, open question 2), and until each one
+#: either fires or is deleted, asking to be called by it must fail loudly.
+WIRED_EVENTS = frozenset({
+    HOOK_BEFORE_MODEL_REQUEST, HOOK_AFTER_MODEL_REQUEST,
+    HOOK_AFTER_MODEL_RESPONSE, HOOK_ON_MODEL_REQUEST_ERROR,
+    HOOK_BEFORE_TOOL_EXECUTE, HOOK_AFTER_TOOL_EXECUTE, HOOK_TOOL_DENIED,
+    HOOK_ON_TOOL_VALIDATE_ERROR, HOOK_ON_TOOL_EXECUTE_ERROR,
+    HOOK_ON_OUTPUT_VALIDATE_ERROR, HOOK_ON_OUTPUT_PROCESS_ERROR,
+    HOOK_BEFORE_RUN, HOOK_AFTER_RUN,
+    HOOK_WRAP_TOOL_EXECUTE,
+})
+
+#: Names that are unwired *and* known, precomputed for the message.
+UNWIRED_EVENTS = frozenset(KNOWN_EVENTS - WIRED_EVENTS)
+
+
+class UnwiredHookEvent(ValueError):
+    """Raised when a hook registers on an event nothing emits.
+
+    A ``ValueError`` so a caller that already guards registration keeps
+    working, and its own class so a caller that wants to tell "this event
+    does not exist yet" from "these arguments are wrong" can.
+    """
+
+
+def _check_event(event: str, *, middleware: bool) -> None:
+    """Refuse a registration that could never fire.
+
+    Unknown names are refused too: the whole failure mode here is a hook
+    that looks installed and is not, and a misspelled event name produces
+    exactly that.
+    """
+    if event in WIRED_EVENTS:
+        return
+    kind = "middleware" if middleware else "callback"
+    if event in UNWIRED_EVENTS:
+        raise UnwiredHookEvent(
+            f"Cannot register a {kind} on '{event}': the event is declared "
+            "but nothing emits it yet, so the hook would never fire. Wire "
+            "the event first (see DESIGN_SPEC_DRAFT D15), or register on "
+            "one of: " + ", ".join(sorted(WIRED_EVENTS))
+        )
+    raise UnwiredHookEvent(
+        f"Cannot register a {kind} on '{event}': no such hook event. "
+        "Known events are: " + ", ".join(sorted(KNOWN_EVENTS))
+    )
+
 # â”€â”€ Hook Registry â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 
@@ -116,7 +185,12 @@ class HookRegistry:
         Args:
             event: The event name (e.g. HOOK_BEFORE_MODEL_REQUEST).
             callback: The callback function.
+
+        Raises:
+            UnwiredHookEvent: if nothing emits *event* -- an unknown name,
+                or one declared but not yet wired (D15).
         """
+        _check_event(event, middleware=False)
         self._hooks.setdefault(event, []).append(callback)
 
     def register_middleware(self, event: str, handler: Callable) -> None:
@@ -126,9 +200,15 @@ class HookRegistry:
         invoke to execute the next layer in the middleware chain.
 
         Args:
-            event: The event name (e.g. HOOK_WRAP_MODEL_REQUEST).
+            event: The event name (e.g. HOOK_WRAP_TOOL_EXECUTE).
             handler: The middleware handler callable.
+
+        Raises:
+            UnwiredHookEvent: if nothing emits *event*. Note that of the six
+                declared ``wrap_*`` events only ``wrap_tool_execute`` is
+                wired today; the rest are open (T2).
         """
+        _check_event(event, middleware=True)
         self._middleware.setdefault(event, []).append(handler)
 
     def register_ordered(
@@ -633,7 +713,13 @@ class _HooksOn:
         return func
 
     def model_request(self, func: Callable) -> Callable:
-        """Register a wrap_model_request (middleware) hook."""
+        """Register a wrap_model_request (middleware) hook.
+
+        Note: this event is declared but nothing emits it yet, so
+        registration raises :class:`UnwiredHookEvent` (spec D15/T2).
+        The decorator stays so the surface is visible while its
+        disposition is decided -- wire it, or delete it.
+        """
         func._hook_event = HOOK_WRAP_MODEL_REQUEST
         func._is_middleware = True
         self._registry.register_middleware(HOOK_WRAP_MODEL_REQUEST, func)
@@ -683,7 +769,13 @@ class _HooksOn:
         return func
 
     def wrap_output_validate(self, func: Callable) -> Callable:
-        """Register a wrap_output_validate (middleware) hook."""
+        """Register a wrap_output_validate (middleware) hook.
+
+        Note: this event is declared but nothing emits it yet, so
+        registration raises :class:`UnwiredHookEvent` (spec D15/T2).
+        The decorator stays so the surface is visible while its
+        disposition is decided -- wire it, or delete it.
+        """
         func._hook_event = HOOK_WRAP_OUTPUT_VALIDATE
         func._is_middleware = True
         self._registry.register_middleware(HOOK_WRAP_OUTPUT_VALIDATE, func)
@@ -696,7 +788,13 @@ class _HooksOn:
         return func
 
     def wrap_output_process(self, func: Callable) -> Callable:
-        """Register a wrap_output_process (middleware) hook."""
+        """Register a wrap_output_process (middleware) hook.
+
+        Note: this event is declared but nothing emits it yet, so
+        registration raises :class:`UnwiredHookEvent` (spec D15/T2).
+        The decorator stays so the surface is visible while its
+        disposition is decided -- wire it, or delete it.
+        """
         func._hook_event = HOOK_WRAP_OUTPUT_PROCESS
         func._is_middleware = True
         self._registry.register_middleware(HOOK_WRAP_OUTPUT_PROCESS, func)
@@ -709,7 +807,13 @@ class _HooksOn:
         return func
 
     def wrap_run_event_stream(self, func: Callable) -> Callable:
-        """Register a wrap_run_event_stream (middleware) hook."""
+        """Register a wrap_run_event_stream (middleware) hook.
+
+        Note: this event is declared but nothing emits it yet, so
+        registration raises :class:`UnwiredHookEvent` (spec D15/T2).
+        The decorator stays so the surface is visible while its
+        disposition is decided -- wire it, or delete it.
+        """
         func._hook_event = HOOK_WRAP_RUN_EVENT_STREAM
         func._is_middleware = True
         self._registry.register_middleware(HOOK_WRAP_RUN_EVENT_STREAM, func)
@@ -734,17 +838,29 @@ def register_hook_map(
     registry: HookRegistry,
     mapping: dict[str, Any] | None,
 ) -> list[tuple[str, Callable]]:
-    """Register a hook map; returns (event, callback) pairs for removal."""
+    """Register a hook map; returns (event, callback) pairs for removal.
+
+    All or nothing. Registration refuses an event nothing emits
+    (:class:`UnwiredHookEvent`), and a map that names one is a
+    *configuration* error -- a Role or capability asking to be called by
+    something that will never call it. Half-installing the rest would leave
+    the run in a state nobody described, so anything already registered is
+    rolled back and the error propagates to whoever is building the run.
+    """
     registered: list[tuple[str, Callable]] = []
-    for event, callbacks in (mapping or {}).items():
-        if not isinstance(callbacks, (list, tuple)):
-            callbacks = [callbacks]
-        for callback in callbacks:
-            if is_middleware_event(event):
-                registry.register_middleware(event, callback)
-            else:
-                registry.register(event, callback)
-            registered.append((event, callback))
+    try:
+        for event, callbacks in (mapping or {}).items():
+            if not isinstance(callbacks, (list, tuple)):
+                callbacks = [callbacks]
+            for callback in callbacks:
+                if is_middleware_event(event):
+                    registry.register_middleware(event, callback)
+                else:
+                    registry.register(event, callback)
+                registered.append((event, callback))
+    except UnwiredHookEvent:
+        unregister_hook_map(registry, registered)
+        raise
     return registered
 
 
