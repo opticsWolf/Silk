@@ -346,7 +346,6 @@ class SilkAgentNode(ThreadedManualNode):
         # Set once the per-run event emitter exists (only when a toolset is
         # wired — no toolset, no hook stream). Subclasses observe through it.
         emit_run_event: Optional[Any] = None
-        signoff_hold = {"pending": False}  # a task parked for sign-off → end turn
         try:
             if toolset is not None:
                 try:
@@ -405,15 +404,10 @@ class SilkAgentNode(ThreadedManualNode):
                         plan_rev["n"] = event["revision"]
                         _emit_event(EventPlan(revision=event["revision"],
                                               plan=event["plan"]))
-                        # A task parked for sign-off — or a held goal revision —
-                        # ends the turn (turn-boundary pause): control returns to
-                        # the user to approve/reject.
-                        _plan = event["plan"]
-                        if _plan.get("pending_goal") or any(
-                            t.get("status") == "awaiting_signoff"
-                            for t in _plan.get("tasks", ())
-                        ):
-                            signoff_hold["pending"] = True
+                        # Nothing else is read out of the plan. The node used
+                        # to infer "the user must approve something" from the
+                        # plan's *shape* and end the turn; nothing is parked
+                        # any more, so the inference is gone with it (D32).
 
                 # The hook path. Each of these types has exactly one
                 # producer (spec D2): the loop yields run.start, tool.call,
@@ -509,9 +503,9 @@ class SilkAgentNode(ThreadedManualNode):
             # so the Chat Log can render tools as first-class turns.
             tool_turns: list[dict[str, Any]] = []
             for event in loop.run(prompt, gen_params):
-                if self.is_compute_cancelled() or signoff_hold["pending"]:
-                    # Cancellation or a pending user sign-off ends the run at the
-                    # next round boundary (the current round drains normally).
+                if self.is_compute_cancelled():
+                    # Cancellation ends the run at the next round boundary
+                    # (the current round drains normally).
                     engine.request_stop()
 
                 # Every loop event is part of the one vocabulary, so it

@@ -132,7 +132,7 @@ class SilkToolBoxNode(ActiveNode):
         self.chk_planning = QCheckBox()
         self.chk_planning.setToolTip(
             "Task planning & tracking tools (plan_start, task_add, task_complete, "
-            "request_signoff, …). The plan is stored in the sandbox root. "
+            "task_rescope, …). The plan is stored in the sandbox root. "
             "Add the 'signoff' hook below to require user approval of changes."
         )
         form.addRow("Task Planning:", self.chk_planning)

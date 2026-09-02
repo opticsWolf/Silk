@@ -16,7 +16,7 @@ GGUF Loader ─(gguf_model)─────────────► Silk Agent
 Inference Settings ─(dict)─────────────► Silk Agent
 Silk Agent.outbox (agent_message) ───► (another) Silk Agent.inbox
 Silk Agent.events (dict) ────────────► Hook Monitor / Plan Viewer /
-                                       Chat Log / Sign-Off
+                                       Chat Log
 ```
 
 Full per-node port tables are in [NODES.md](../NODES.md); the custom port

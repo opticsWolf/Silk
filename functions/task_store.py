@@ -46,17 +46,12 @@ from typing import Any, Callable, Iterator, Optional
 
 #: Task lifecycle states.
 STATUSES: frozenset[str] = frozenset(
-    {"pending", "in_progress", "blocked", "done", "dropped", "awaiting_signoff"}
+    {"pending", "in_progress", "blocked", "done", "dropped"}
 )
 
 #: States a plain ``task_update`` may set (``done`` → task_complete, ``dropped``
 #: → task_rescope, each of which requires a rationale).
 UPDATE_STATUSES: frozenset[str] = frozenset({"pending", "in_progress", "blocked"})
-
-#: A task parked here (by the sign-off gate or ``request_signoff``) waits for the
-#: user to approve/reject via ``sign_off``; only that human action can advance it
-#: to ``done``.
-STATUS_AWAITING = "awaiting_signoff"
 
 MODES = ("read", "read_write", "blocked")  # (unused here; kept for symmetry)
 
@@ -68,14 +63,9 @@ _STATUS_GLYPH: dict[str, str] = {
     "blocked": ":no_entry:",
     "done": ":white_check_mark:",
     "dropped": ":wastebasket:",
-    STATUS_AWAITING: ":eyes:",
 }
 
 DEFAULT_ACTOR = "agent"
-
-#: Pseudo-id for the plan-level goal revision in the sign-off flow (so the
-#: Sign-Off node and sign_off() can address a pending goal change like a task).
-GOAL_TARGET = "goal"
 
 # Op kinds recorded in the revision log.
 OP_START = "plan_start"
@@ -85,8 +75,6 @@ OP_COMPLETE = "task_complete"
 OP_RESCOPE = "task_rescope"
 OP_GOAL = "goal_revise"
 OP_CLAIM = "task_claim"
-OP_SIGNOFF_REQUEST = "request_signoff"   # agent (or gate) parks a task for review
-OP_SIGNOFF = "sign_off"                   # user approves/rejects (human actor)
 
 # Deviation kinds (the "course corrections" ledger).
 DEV_RESCOPE = "rescope_task"
@@ -122,15 +110,6 @@ class Task:
     done_by: Optional[str] = None
     created_at: str = ""
     updated_at: str = ""
-    # Sign-off: set while status == awaiting_signoff, and preserved after the
-    # user's decision so the audit shows who approved/rejected and why.
-    signoff_summary: str = ""      # what the agent says it did, for the reviewer
-    signoff_by: Optional[str] = None       # the human who decided
-    signoff_note: str = ""         # the reviewer's note (esp. on reject)
-    # The action held for approval. None / {"kind":"complete"} → mark done on
-    # approve; {"kind":"rescope", new_title, new_status, from_*} → apply the
-    # (deviation) rescope on approve. This is how deviations are held-and-applied.
-    signoff_action: Optional[dict] = None
 
 
 @dataclass
@@ -153,10 +132,6 @@ class Plan:
     goal: Goal
     tasks: list[Task] = field(default_factory=list)
     deviations: list[Deviation] = field(default_factory=list)
-    # A goal revision held for the user's sign-off (deviation gate, strict mode):
-    # {"new_text", "acceptance_add", "acceptance_remove"} — applied on approve.
-    pending_goal: Optional[dict] = None
-    pending_goal_summary: str = ""
 
 
 @dataclass
@@ -329,8 +304,6 @@ def plan_to_json(plan: Plan) -> dict:
             "acceptance": list(plan.goal.acceptance),
             "revised": plan.goal.revised,
         },
-        "pending_goal": plan.pending_goal,
-        "pending_goal_summary": plan.pending_goal_summary,
         "tasks": [
             {
                 "id": t.id, "title": t.title, "status": t.status,
@@ -338,8 +311,6 @@ def plan_to_json(plan: Plan) -> dict:
                 "origin": t.origin, "added_by": t.added_by,
                 "claimed_by": t.claimed_by, "done_by": t.done_by,
                 "created_at": t.created_at, "updated_at": t.updated_at,
-                "signoff_summary": t.signoff_summary, "signoff_by": t.signoff_by,
-                "signoff_note": t.signoff_note, "signoff_action": t.signoff_action,
             }
             for t in plan.tasks
         ],
@@ -369,9 +340,6 @@ def plan_from_json(data: dict) -> Plan:
             origin=t.get("origin", "added"), added_by=t.get("added_by", DEFAULT_ACTOR),
             claimed_by=t.get("claimed_by"), done_by=t.get("done_by"),
             created_at=t.get("created_at", ""), updated_at=t.get("updated_at", ""),
-            signoff_summary=t.get("signoff_summary", "") or "",
-            signoff_by=t.get("signoff_by"), signoff_note=t.get("signoff_note", "") or "",
-            signoff_action=t.get("signoff_action"),
         )
         for t in (data.get("tasks", []) or [])
     ]
@@ -387,17 +355,16 @@ def plan_from_json(data: dict) -> Plan:
         plan_id=data.get("plan_id", ""), created_at=data.get("created_at", ""),
         updated_at=data.get("updated_at", ""), revision=int(data.get("revision", 0)),
         goal=goal, tasks=tasks, deviations=deviations,
-        pending_goal=data.get("pending_goal"),
-        pending_goal_summary=data.get("pending_goal_summary", "") or "",
     )
 
 
-#: Statuses that still count as open work (used by the "final" sign-off mode).
+#: Statuses that still count as open work (used to resolve a plan-closing
+#: completion -- the ``complete_final`` change type of the approval policy).
 _OPEN_STATUSES: frozenset[str] = frozenset({"pending", "in_progress", "blocked"})
 
 
 def open_task_ids(plan: Plan) -> list[str]:
-    """Ids of tasks that are still open (not done/dropped/awaiting)."""
+    """Ids of tasks that are still open (not done, not dropped)."""
     return [t.id for t in plan.tasks if t.status in _OPEN_STATUSES]
 
 
@@ -452,8 +419,6 @@ def render_markdown(plan: Plan) -> str:
             title = f"~~{task.title}~~" if task.status == "dropped" else task.title
             owner = f" _(@{task.claimed_by})_" if task.claimed_by else ""
             note = f" -- {task.note}" if task.note else ""
-            if task.status == STATUS_AWAITING and task.signoff_summary:
-                note += f" -- _awaiting sign-off: {task.signoff_summary}_"
             indent = "  " * depth
             lines.append(
                 f"{indent}- {box} {glyph} {title}{owner} "
@@ -564,15 +529,12 @@ class SqliteTaskStore:
             CREATE TABLE IF NOT EXISTS plan (
                 plan_id TEXT PRIMARY KEY, created_at TEXT, updated_at TEXT,
                 goal_text TEXT, goal_original TEXT, goal_acceptance TEXT,
-                revised INTEGER, revision INTEGER,
-                pending_goal TEXT DEFAULT '', pending_goal_summary TEXT DEFAULT ''
+                revised INTEGER, revision INTEGER
             );
             CREATE TABLE IF NOT EXISTS task (
                 plan_id TEXT, id TEXT, title TEXT, status TEXT, parent TEXT,
                 ord INTEGER, note TEXT, origin TEXT, added_by TEXT,
                 claimed_by TEXT, done_by TEXT, created_at TEXT, updated_at TEXT,
-                signoff_summary TEXT DEFAULT '', signoff_by TEXT,
-                signoff_note TEXT DEFAULT '', signoff_action TEXT DEFAULT '',
                 PRIMARY KEY (plan_id, id)
             );
             CREATE TABLE IF NOT EXISTS revision (
@@ -603,13 +565,12 @@ class SqliteTaskStore:
     def _load_con(self, con: sqlite3.Connection) -> Optional[Plan]:
         row = con.execute(
             "SELECT plan_id, created_at, updated_at, goal_text, goal_original, "
-            "goal_acceptance, revised, revision, pending_goal, "
-            "pending_goal_summary FROM plan LIMIT 1"
+            "goal_acceptance, revised, revision FROM plan LIMIT 1"
         ).fetchone()
         if row is None:
             return None
-        (pid, created, updated, gtext, goriginal, gaccept, revised, revision,
-         pgoal, pgoal_summary) = row
+        (pid, created, updated, gtext, goriginal, gaccept, revised,
+         revision) = row
         self._pid = pid
         goal = Goal(
             text=gtext, original_text=goriginal,
@@ -621,14 +582,10 @@ class SqliteTaskStore:
                 note=r[5] or "", origin=r[6] or "added",
                 added_by=r[7] or DEFAULT_ACTOR, claimed_by=r[8], done_by=r[9],
                 created_at=r[10] or "", updated_at=r[11] or "",
-                signoff_summary=r[12] or "", signoff_by=r[13],
-                signoff_note=r[14] or "",
-                signoff_action=json.loads(r[15]) if r[15] else None,
             )
             for r in con.execute(
                 "SELECT id, title, status, parent, ord, note, origin, added_by, "
-                "claimed_by, done_by, created_at, updated_at, signoff_summary, "
-                "signoff_by, signoff_note, signoff_action FROM task "
+                "claimed_by, done_by, created_at, updated_at FROM task "
                 "WHERE plan_id=? ORDER BY ord, id", (pid,)
             )
         ]
@@ -648,8 +605,6 @@ class SqliteTaskStore:
         return Plan(
             plan_id=pid, created_at=created, updated_at=updated,
             revision=revision, goal=goal, tasks=tasks, deviations=deviations,
-            pending_goal=json.loads(pgoal) if pgoal else None,
-            pending_goal_summary=pgoal_summary or "",
         )
 
     # -- history ----------------------------------------------------------
@@ -1049,203 +1004,6 @@ class SqliteTaskStore:
         return self._commit(actor=actor, now=now, op_kind=OP_CLAIM,
                             rationale=None, work=work)
 
-    # -- sign-off ---------------------------------------------------------
-
-    def request_signoff(
-        self, *, task_id: str, summary: str, actor: str = DEFAULT_ACTOR,
-        now: Optional[str] = None, action: Optional[dict] = None,
-    ) -> "Plan | Conflict | None":
-        """Park a task for user review (status → awaiting_signoff). *summary* is
-        what the agent did; only the user's :meth:`sign_off` can then act on it.
-
-        *action* is the intent held for approval: ``None`` / ``{"kind":
-        "complete"}`` → mark done on approve; ``{"kind": "rescope", "new_title",
-        "new_status", "from_title", "from_status"}`` → apply the (deviation)
-        rescope on approve. This is how the gate holds a deviation."""
-        now = now or _now_iso()
-
-        def work(con: sqlite3.Connection) -> "dict | Conflict":
-            row = _task_row(con, self._pid, task_id)
-            if not row:
-                return Conflict(0, f"task '{task_id}' does not exist", task_id)
-            if row["status"] in ("done", "dropped"):
-                return Conflict(0, f"task '{task_id}' is already {row['status']}",
-                                task_id)
-            con.execute(
-                "UPDATE task SET status=?, signoff_summary=?, signoff_action=?, "
-                "updated_at=? WHERE plan_id=? AND id=?",
-                (STATUS_AWAITING, summary, json.dumps(action) if action else "",
-                 now, self._pid, task_id),
-            )
-            return {"op": {"id": task_id, "summary": summary,
-                           "kind": (action or {}).get("kind", "complete")}}
-
-        return self._commit(actor=actor, now=now, op_kind=OP_SIGNOFF_REQUEST,
-                            rationale=summary, work=work)
-
-    def request_goal_signoff(
-        self, *, new_text: Optional[str] = None,
-        acceptance_add: Optional[list[str]] = None,
-        acceptance_remove: Optional[list[str]] = None, summary: str,
-        actor: str = DEFAULT_ACTOR, now: Optional[str] = None,
-    ) -> "Plan | Conflict | None":
-        """Hold a goal revision for the user's sign-off (does **not** change the
-        goal). Applied by :meth:`sign_off` on ``task_id="goal"`` approval."""
-        now = now or _now_iso()
-        pending = {
-            "new_text": new_text,
-            "acceptance_add": list(acceptance_add or []),
-            "acceptance_remove": list(acceptance_remove or []),
-        }
-
-        def work(con: sqlite3.Connection) -> "dict | Conflict":
-            con.execute(
-                "UPDATE plan SET pending_goal=?, pending_goal_summary=? "
-                "WHERE plan_id=?",
-                (json.dumps(pending), summary, self._pid),
-            )
-            return {"op": {"target": GOAL_TARGET, "summary": summary}}
-
-        return self._commit(actor=actor, now=now, op_kind=OP_SIGNOFF_REQUEST,
-                            rationale=summary, work=work)
-
-    def sign_off(
-        self, *, task_id: str, approved: bool, by: str, note: str = "",
-        now: Optional[str] = None,
-    ) -> "Plan | Conflict | None":
-        """User decision on a parked item. **Human-only** (not a model tool);
-        recorded with *by* as the op actor. Dispatches by what was held:
-
-        - a completion → done (``done_by`` = *by*);
-        - a **rescope** deviation → applies the drop/re-scope (+ ledger entry);
-        - the **goal** (``task_id="goal"``) → applies the held goal revision.
-        Reject restores prior state and records the note as feedback.
-        """
-        now = now or _now_iso()
-        if task_id == GOAL_TARGET:
-            return self._sign_off_goal(approved=approved, by=by, note=note, now=now)
-
-        def work(con: sqlite3.Connection) -> "dict | Conflict":
-            row = _task_row(con, self._pid, task_id)
-            if not row:
-                return Conflict(0, f"task '{task_id}' does not exist", task_id)
-            if row["status"] != STATUS_AWAITING:
-                return Conflict(0, f"task '{task_id}' is not awaiting sign-off "
-                                f"(status {row['status']})", task_id)
-            action = row["signoff_action"]
-            action = json.loads(action) if action else {}
-            if not approved:
-                con.execute(
-                    "UPDATE task SET status='in_progress', signoff_action='', "
-                    "signoff_by=?, signoff_note=?, updated_at=? "
-                    "WHERE plan_id=? AND id=?",
-                    (by, note, now, self._pid, task_id),
-                )
-                return {"op": {"id": task_id, "approved": False, "by": by}}
-
-            if action.get("kind") == "rescope":
-                new_status = action.get("new_status", "dropped")
-                new_title = action.get("new_title")
-                sets = ["status=?", "signoff_action=''", "signoff_by=?",
-                        "signoff_note=?", "updated_at=?"]
-                params: list = [new_status, by, note, now]
-                if new_title is not None:
-                    sets.insert(0, "title=?"); params.insert(0, new_title)
-                params.extend([self._pid, task_id])
-                con.execute(
-                    f"UPDATE task SET {', '.join(sets)} WHERE plan_id=? AND id=?",
-                    params,
-                )
-                before = {"title": action.get("from_title", row["title"]),
-                          "status": action.get("from_status", "in_progress")}
-                after = {"title": new_title if new_title is not None
-                         else before["title"], "status": new_status}
-                kind = DEV_DROP if new_status == "dropped" else DEV_RESCOPE
-                return {
-                    "op": {"id": task_id, "approved": True, "by": by,
-                           "kind": "rescope"},
-                    "deviation": {"kind": kind, "target": task_id,
-                                  "from": before, "to": after},
-                }
-
-            # completion (default)
-            con.execute(
-                "UPDATE task SET status='done', done_by=?, signoff_action='', "
-                "signoff_by=?, signoff_note=?, updated_at=? "
-                "WHERE plan_id=? AND id=?",
-                (by, by, note, now, self._pid, task_id),
-            )
-            return {"op": {"id": task_id, "approved": True, "by": by}}
-
-        return self._commit(actor=by, now=now, op_kind=OP_SIGNOFF,
-                            rationale=note or ("approved" if approved else "rejected"),
-                            work=work)
-
-    def _sign_off_goal(
-        self, *, approved: bool, by: str, note: str, now: str,
-    ) -> "Plan | Conflict | None":
-        def work(con: sqlite3.Connection) -> "dict | Conflict":
-            r = con.execute(
-                "SELECT goal_text, goal_original, goal_acceptance, revised, "
-                "pending_goal FROM plan LIMIT 1"
-            ).fetchone()
-            gtext, goriginal, gaccept_json, revised, pgoal_json = r
-            if not pgoal_json:
-                return Conflict(0, "no goal revision is awaiting sign-off",
-                                GOAL_TARGET)
-            if not approved:
-                con.execute(
-                    "UPDATE plan SET pending_goal='', pending_goal_summary='' "
-                    "WHERE plan_id=?", (self._pid,),
-                )
-                return {"op": {"target": GOAL_TARGET, "approved": False, "by": by}}
-
-            pending = json.loads(pgoal_json)
-            acceptance = json.loads(gaccept_json or "[]")
-            before = {"text": gtext, "acceptance": list(acceptance)}
-            new_goal = pending.get("new_text") or gtext
-            for crit in pending.get("acceptance_remove", []):
-                if crit in acceptance:
-                    acceptance.remove(crit)
-            for crit in pending.get("acceptance_add", []):
-                if crit not in acceptance:
-                    acceptance.append(crit)
-            revised_flag = 1 if (new_goal != goriginal) else revised
-            con.execute(
-                "UPDATE plan SET goal_text=?, goal_acceptance=?, revised=?, "
-                "pending_goal='', pending_goal_summary='' WHERE plan_id=?",
-                (new_goal, json.dumps(acceptance), revised_flag, self._pid),
-            )
-            after = {"text": new_goal, "acceptance": acceptance}
-            kind = DEV_GOAL if new_goal != gtext else DEV_ACCEPT
-            return {
-                "op": {"target": GOAL_TARGET, "approved": True, "by": by},
-                "deviation": {"kind": kind, "target": GOAL_TARGET,
-                              "from": before, "to": after},
-            }
-
-        return self._commit(actor=by, now=now, op_kind=OP_SIGNOFF,
-                            rationale=note or ("approved" if approved else "rejected"),
-                            work=work)
-
-    def pending_signoffs(self) -> list[dict]:
-        """Items awaiting the user's sign-off (tasks + a goal revision if held),
-        with the agent's summary — the Sign-Off node's work list."""
-        plan = self.load()
-        if plan is None:
-            return []
-        items = [
-            {"id": t.id, "title": t.title, "summary": t.signoff_summary,
-             "kind": (t.signoff_action or {}).get("kind", "complete")}
-            for t in plan.tasks if t.status == STATUS_AWAITING
-        ]
-        if plan.pending_goal:
-            items.append({
-                "id": GOAL_TARGET, "title": "Goal revision",
-                "summary": plan.pending_goal_summary, "kind": "goal_revise",
-            })
-        return items
-
     # -- projections ------------------------------------------------------
 
     def _write_projections(self, plan: Plan) -> None:
@@ -1269,12 +1027,10 @@ class SqliteTaskStore:
 def _task_row(con: sqlite3.Connection, pid: Optional[str], task_id: str):
     r = con.execute(
         "SELECT id, title, status, parent, ord, note, origin, added_by, "
-        "claimed_by, done_by, signoff_summary, signoff_by, signoff_note, "
-        "signoff_action FROM task WHERE plan_id=? AND id=?", (pid, task_id),
+        "claimed_by, done_by FROM task WHERE plan_id=? AND id=?", (pid, task_id),
     ).fetchone()
     if r is None:
         return None
     keys = ("id", "title", "status", "parent", "ord", "note", "origin",
-            "added_by", "claimed_by", "done_by", "signoff_summary",
-            "signoff_by", "signoff_note", "signoff_action")
+            "added_by", "claimed_by", "done_by")
     return dict(zip(keys, r, strict=True))

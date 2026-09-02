@@ -135,14 +135,6 @@ class TaskClaimArgs(BaseModel):
     id: str = Field(..., description="Task id to claim (advisory soft ownership).")
 
 
-class RequestSignoffArgs(BaseModel):
-    id: str = Field(..., description="Task id to submit for user sign-off.")
-    summary: str = Field(
-        ..., description="What you did, for the user to review before approving.",
-    )
-    _v = field_validator("summary")(_non_blank)
-
-
 # ── response schema ─────────────────────────────────────────────────────────
 
 class PlanResult(BaseModel):
@@ -446,28 +438,3 @@ def attach_task_tools(toolbox: "ToolBox", sandbox: "FileToolSandbox") -> None:
         out = store.claim_task(task_id=id, actor=_actor(user_session))
         return _result(out, message="Task claimed.")
 
-    @toolbox.register(
-        name="request_signoff",
-        tags=("planning",), category="planning", risk="low",
-        description=(
-            "Submit a task for the user's sign-off: park it as awaiting_signoff "
-            "with a summary of what you did. Only the user can then approve it to "
-            "done. Use this instead of task_complete when a task needs review."
-        ),
-        args_model=RequestSignoffArgs,
-        procedure=(
-            "Hand a finished task to the user for approval.\n"
-            "- summary (required): what you did, so the user can judge it.\n"
-            "- The task moves to 'awaiting_signoff'; STOP after this — the user "
-            "reviews and approves/rejects out of band. Do not mark it done.\n"
-            "- Reply JSON: ok, revision, message."
-        ),
-    )
-    @_refuses_gracefully
-    def _request_signoff(
-        db_pool: Any, user_session: dict, id: str, summary: str,
-    ) -> PlanResult:
-        out = store.request_signoff(
-            task_id=id, summary=summary, actor=_actor(user_session),
-        )
-        return _result(out, message="Task submitted for sign-off.")

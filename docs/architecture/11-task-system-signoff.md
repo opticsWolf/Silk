@@ -10,13 +10,10 @@ database location (trying candidate directories in order) and opens the
 schema:
 
 - **`plan`** — one row per plan: `plan_id`, goal text + original text +
-  acceptance criteria, `revised`, `revision`, and any *pending goal*
-  revision held for sign-off.
+  acceptance criteria, `revised`, `revision`.
 - **`task`** — `(plan_id, id)`-keyed rows: `title`, `status`, `parent`,
-  `ord`, `note`, `origin`, `added_by`/`claimed_by`/`done_by` actors,
-  timestamps, and the sign-off fields (`signoff_summary`, `signoff_by`,
-  `signoff_note`, and `signoff_action` — the *held-and-applied* action,
-  e.g. a deviation rescope that only lands on approval).
+  `ord`, `note`, `origin`, `added_by`/`claimed_by`/`done_by` actors, and
+  timestamps.
 - **`revision`** — an append-only audit log (AUTOINCREMENT id, `at`,
   `actor`, `op_kind`, `op_json`, `rationale`) — every mutation is recorded
   with who did it and why.
@@ -30,9 +27,8 @@ guessing, and the model is told that retrying the identical operation will
 not help.
 
 **Operations:** `start`, `add_task`, `update_task`, `complete_task`,
-`rescope_task`, `revise_goal`, `claim_task`, `request_signoff`,
-`request_goal_signoff`, `sign_off`, plus reads (`load`, `history`,
-`pending_signoffs`). Each mutation bumps the plan `revision` and writes an
+`rescope_task`, `revise_goal`, `claim_task`, plus reads (`load`,
+`history`). Each mutation bumps the plan `revision` and writes an
 audit row. `plan_changed_event(store, last_revision)` returns a
 `plan_summary` event **only if** the revision advanced past
 `last_revision` — reads never bump the revision, so an unchanged plan never
@@ -45,25 +41,32 @@ A **policy** maps each *change type* to who may sign it:
 
 - **`agent`** — the agent self-signs; the change applies immediately
   (audited with the agent as actor).
-- **`human`** — the change is *parked* for the user; only
-  `SqliteTaskStore.sign_off` can apply it. Deviations (rescope / goal
-  revision) are **held and applied on approval** — the `signoff_action`
-  stores the pending action and it lands only when the user approves.
+- **`human`** — the change needs the user. Until the inline decision seam
+  lands (spec D30) it is **refused**, with `approval_required`, the
+  `change_type` and the target in the result, so the model can say what is
+  waiting on the user instead of retrying.
 
 Change types: `add`, `complete`, `complete_final` (the completion that
 closes the plan — resolved dynamically), `rescope`, `goal`. Plain progress
 (`task_update` / `claim`) is never gated.
 
-Because the gate must read plan state (which task, is it the last one) and
-park the item itself, it is attached **with a handle to the ToolBox** so
-the model can't bypass it. It runs as a `HOOK_WRAP_TOOL_EXECUTE` middleware
-and is exposed as the configurable `signoff` catalog hook. `SIGNOFF_MODES`
-presets (`auto`/`requested`/`completions`/`final`/`strict`) expand to
-policies; `custom` uses per-type levels.
+Because the gate must read plan state (which task, is it the last one) it
+is attached **with a handle to the ToolBox** so the model can't bypass it.
+It runs as a `HOOK_WRAP_TOOL_EXECUTE` middleware, **bound** to the four
+plan tools and registered **essential** (D11/D13/D14), so a Role cannot
+deactivate it and a derived ToolSet carries it. It is exposed as the
+configurable `signoff` catalog hook. `SIGNOFF_MODES` presets
+(`auto`/`requested`/`completions`/`final`/`strict`) expand to policies;
+`custom` uses per-type levels.
 
-**Turn-boundary pause:** parking flips a task to `awaiting_signoff` (or sets
-`pending_goal`); the Agent node then *ends the run* so control returns to
-the user. The user's approve/reject goes through the `Sign-Off` node →
-`sign_off(...)`, which applies or rejects the held action (recording
-`signoff_by` / `signoff_note`).
+**Nothing is parked (spec D31–D33).** There used to be a second approval
+subsystem here: an `awaiting_signoff` status, four `signoff_*` columns, a
+`pending_goal` on the plan, `request_signoff` / `request_goal_signoff` /
+`sign_off`, a `Sign-Off` node, and an Agent node that inferred "the user
+must decide something" from the *shape* of the plan and ended the turn.
+All of it is deleted, not migrated — forward-only (D33): early
+development, `plan-*.db` files are recreated rather than upgraded, so an
+in-flight plan does not survive the change. Audit was never in those
+columns anyway; it lives in `revision` and `deviation`, which already
+record who did what, when and why.
 

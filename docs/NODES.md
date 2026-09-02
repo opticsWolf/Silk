@@ -141,18 +141,6 @@ markdown style.
 | out | `plan_text` | `string` |
 | out | `plan_html` | `string` |
 
-### Sign-Off — `nodes/signoff_node.py`
-The human end of the task sign-off gate: lists tasks the agent parked as
-`awaiting_signoff` (with the agent's summary); approve or reject, then it
-pulses `signed` to resume the agent.
-
-| Direction | Port | Type |
-|---|---|---|
-| in | `root` | `string` |
-| in | `event` | `dict` |
-| out | `plan_json` | `dict` |
-| out | `signed` | `exec` |
-
 ### Chat Log Display — `nodes/chat_display.py` *(Display / Chat)*
 Sink that continuously appends chat turns to a running log, rendering the
 thread as markdown/HTML.
@@ -188,6 +176,6 @@ agent's `done` port to `refresh` for updates without polling.
        │                        │
        └─ pool_info             ├─ events ─┬─▶ [Hook Monitor]
                                 │          ├─▶ [Chat Log Display]
-                                │          └─▶ [Plan Viewer] / [Sign-Off]
+                                │          └─▶ [Plan Viewer]
                                 └─ done (exec) ─▶ [Pool Monitor] .refresh
 ```

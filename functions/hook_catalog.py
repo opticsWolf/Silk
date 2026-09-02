@@ -331,8 +331,9 @@ class SignoffConfig(BaseModel):
     """Per-change-type approval policy for the task sign-off gate.
 
     ``preset`` picks a ready-made policy; set it to ``custom`` to use the per-type
-    levels below. ``agent`` = the agent self-signs (applies now); ``human`` =
-    parked for the user's approval (deviations are held and applied on approval).
+    levels below. ``agent`` = the agent self-signs (applies now); ``human`` = the
+    change needs the user's approval, and until the inline decision seam exists
+    (D30) it is refused rather than held (D31–D33 deleted the parked path).
     """
 
     preset: Literal["custom", "auto", "completions", "final", "strict"] = Field(
@@ -418,8 +419,8 @@ HOOK_CATALOG: dict[str, HookSpec] = {
             name="signoff",
             description=(
                 "Require user sign-off before task changes take effect, per change "
-                "type (agent self-signs vs human approval). Needs Task Planning; "
-                "configured here, enforced on the ToolBox."
+                "type (agent self-signs vs human approval refuses the change). "
+                "Needs Task Planning; configured here, enforced on the ToolBox."
             ),
             factory=_make_signoff,
             config_model=SignoffConfig,
