@@ -1681,9 +1681,11 @@ and the grant in `widgets/node_whitelist.py` on the ToolBox node's
 seam and D36's four failure paths), `tests/test_silk_graph_authoring.py`
 (default-deny, run scope, the self-modification walk) and
 `tests/test_silk_graph_canvas.py` (a real `Canvas`, in a subprocess, because
-D72's claim cannot be faked: the undo *is* the safety property). Left open:
-re-resolving the whitelist on a `NODE_REGISTRY` generation change, which
-needs the hot-load work below.
+D72's claim cannot be faked: the undo *is* the safety property). D74's hot-reload
+interaction closed with it: `NodeWhitelistWidget` subscribes to the
+registry's listener and coalesces a load's burst of registrations into one
+rebuild, so a suite loaded into the running session is tickable without
+rebuilding the graph.
 
 ---
 
@@ -1930,8 +1932,6 @@ not a guarantee and a ledger handle closed late loses its final snapshot.
     from D49, the whitelist widget on the ToolBox node, the six tools, the
     self-modification guard. Strictly after the Phase 2 seam — it is the
     seam's second user, not its first. **Done 2026-09-02**
-    (D74's hot-reload re-resolve excepted — it waits on the registry's
-    generation counter).
 9. Self-modification (§19, D75–D81): the three load verbs, the user plugin
     root, the always-approve floor with its diff-carrying request,
     `weave_lint` in the toolchain, `request_relaunch` + the release

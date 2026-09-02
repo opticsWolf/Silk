@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from typing import Any, Iterable, Optional
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QLabel, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
@@ -42,6 +42,7 @@ class NodeWhitelistWidget(CompositeValueWidget):
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self._checked: set[str] = set()
+        self._reload_pending = False
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -62,6 +63,52 @@ class NodeWhitelistWidget(CompositeValueWidget):
 
         self._tree.itemChanged.connect(self._on_item_changed)
         self.reload()
+        self._subscribe()
+
+    # ── staying current across a hot load (D74) ──────────────────────
+
+    def _subscribe(self) -> None:
+        """Re-read the registry when it changes.
+
+        Weave's hot-load work gives `NODE_REGISTRY` a generation counter
+        and a listener; without this, a plugin loaded into the running
+        session is placeable by the *tools* (they resolve live) and
+        invisible in the *widget*, so the user cannot tick it without
+        rebuilding the graph.
+        """
+        try:
+            from weave.registry import NODE_REGISTRY
+        except ImportError:      # pragma: no cover - Weave without a registry
+            return
+        NODE_REGISTRY.add_listener(self._on_registry_changed)
+        self.destroyed.connect(lambda *_: self._unsubscribe())
+
+    def _unsubscribe(self) -> None:
+        try:
+            from weave.registry import NODE_REGISTRY
+
+            NODE_REGISTRY.remove_listener(self._on_registry_changed)
+        except Exception:  # noqa: BLE001 - teardown, and nothing depends on it
+            pass
+
+    def _on_registry_changed(self, event: str, cls: Any = None) -> None:
+        """Coalesce a burst into one rebuild.
+
+        Loading a suite registers every class in it, one event each; a
+        tree rebuilt per class would rebuild N times and lose the user's
+        expansion state N times.
+        """
+        if self._reload_pending:
+            return
+        self._reload_pending = True
+        QTimer.singleShot(0, self._reload_now)
+
+    def _reload_now(self) -> None:
+        self._reload_pending = False
+        try:
+            self.reload()
+        except RuntimeError:      # the C++ side went away first
+            self._unsubscribe()
 
     # ── the registry side ────────────────────────────────────────────
 

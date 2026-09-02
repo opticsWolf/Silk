@@ -125,5 +125,10 @@ grant travels in the saved graph and in a preset; unlike file grants (D35) it
 carries no secret and no filesystem authority. There is no "allow all"
 checkbox: selecting everything is possible, but it has to be a deliberate act.
 
+The tree subscribes to `NODE_REGISTRY`'s listener and coalesces a burst of
+registrations into one rebuild (D74), so a suite hot-loaded into the running
+session becomes tickable there — the tools already resolve the registry live,
+and without this the widget would be the only place that had not noticed.
+
 Deliberately not in v1: setting widget values, moving or resizing nodes,
 saving or loading graph files, and anything touching another graph.
