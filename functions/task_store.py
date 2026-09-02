@@ -82,6 +82,14 @@ DEV_DROP = "drop_task"
 DEV_GOAL = "revise_goal"
 DEV_ACCEPT = "change_acceptance"
 
+#: The plan file's schema version, stamped into ``PRAGMA user_version``
+#: (spec D39). Nothing migrates -- D33 is forward-only, and a plan database
+#: from an older Silk is deleted, not upgraded. The number exists so that
+#: the *next* schema change fails saying so, instead of surfacing as an
+#: ``OperationalError`` from inside a column list several frames down. A
+#: declared pre-release stance beats an undeclared one.
+PLAN_SCHEMA_VERSION = 1
+
 _BUSY_TIMEOUT_MS = 5000
 _WRITE_RETRIES = 6
 
@@ -457,6 +465,25 @@ def _short(val: Any) -> str:
 
 # ── The store ───────────────────────────────────────────────────────────────
 
+class PlanSchemaVersionError(RuntimeError):
+    """A plan database this build of Silk does not know how to read (D39).
+
+    Raised on open rather than on the first query that trips over a missing
+    column, so the message can say what to do about it.
+    """
+
+    def __init__(self, path, found: int) -> None:
+        self.path = path
+        self.found = found
+        direction = "an older" if found < PLAN_SCHEMA_VERSION else "a newer"
+        super().__init__(
+            f"The plan database '{path}' was written by {direction} Silk "
+            f"(schema {found}; this build reads {PLAN_SCHEMA_VERSION}). Plan "
+            f"files are recreated, not migrated -- delete it and start a new "
+            f"plan."
+        )
+
+
 class SqliteTaskStore:
     """One plan's store of record, anchored at a working-directory *root*.
 
@@ -520,7 +547,31 @@ class SqliteTaskStore:
         con.execute("PRAGMA journal_mode=WAL")
         con.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
         con.execute("PRAGMA foreign_keys=ON")
+        self._check_version(con, path)
         return con
+
+    @staticmethod
+    def _check_version(con: sqlite3.Connection, path: Path) -> None:
+        """Stamp the schema version, or refuse a file written by another one.
+
+        A fresh database and every file written before D39 both read back
+        zero, and both are stamped: the schema they carry *is* version 1, so
+        there is nothing to distinguish and nothing to migrate. Stamping is
+        best-effort -- a read-only plan file is still readable, and refusing
+        to read one because the version could not be written would be a
+        worse failure than the one this guards against.
+        """
+        found = con.execute("PRAGMA user_version").fetchone()[0]
+        if found == PLAN_SCHEMA_VERSION:
+            return
+        if found == 0:
+            try:
+                con.execute(f"PRAGMA user_version={PLAN_SCHEMA_VERSION}")
+            except sqlite3.Error:
+                pass
+            return
+        con.close()
+        raise PlanSchemaVersionError(path, found)
 
     @staticmethod
     def _schema(con: sqlite3.Connection) -> None:

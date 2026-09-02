@@ -33,6 +33,7 @@ from PySide6.QtCore import Qt, QEvent, Signal, Slot
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
+    QPushButton,
     QVBoxLayout,
     QWidget,
 )
@@ -48,6 +49,13 @@ from weave.widgets.sync_button import SyncButton
 
 from .silk_ports import GGUF_MODEL_TYPE, SILK_ROLE_TYPE, SILK_TOOLSET_TYPE  # noqa: F401
 from ..functions.agent_loop import AgentLoop, DEFAULT_MAX_ROUNDS
+from ..functions.approval import bind_run_seam
+from ..functions.decision_seam import (
+    DEFAULT_TIMEOUT_S,
+    DecisionRequest,
+    DecisionSeam,
+)
+from ..functions.grants import SCOPE_ALWAYS, SCOPE_ONCE, SCOPE_RUN
 from ..functions.graph_engine import GraphEngine
 from ..functions.hooks import (
     HOOK_AFTER_MODEL_RESPONSE,
@@ -62,6 +70,8 @@ from ..functions.role import DEFAULT_ROLE, RoleBinding
 from ..functions.task_store import plan_changed_event  # Qt-free
 from ..functions.stream_events import (
     EventChatTurn,
+    EventDecisionRequest,
+    EventDecisionResponse,
     EventDelta,
     EventError,
     EventModelRequest,
@@ -88,6 +98,11 @@ class SilkAgentNode(ThreadedManualNode):
     # Worker → main-thread bridges (V6 R11.1).
     chunk_streamed = Signal(str)
     status_changed = Signal(str)
+    # A gated tool call is blocked on the worker thread and needs the user
+    # (D48). The request travels as a plain dict so the queued connection
+    # carries nothing Qt has to marshal specially.
+    decision_requested = Signal(dict)
+    decision_settled = Signal(str)
 
     node_class: ClassVar[str] = "AI"
     node_subclass: ClassVar[str] = "Agents"
@@ -109,6 +124,12 @@ class SilkAgentNode(ThreadedManualNode):
         self._history: List[Dict[str, Any]] = []
         self._last_run_ok: bool = False
         self._session_id: str = str(uuid.uuid4())  # persistent pool session key
+        # The run's decision seam, and the request currently on screen.
+        # Both are None between runs; `cancel_compute` reads the seam, which
+        # is why it lives on the node rather than in `compute`'s frame.
+        self._seam: Optional[DecisionSeam] = None
+        self._pending_decision: Optional[dict] = None
+        self._emit_event: Optional[Any] = None
 
         # ── Ports ──
         self.add_input("model_obj", datatype="gguf_model")
@@ -181,6 +202,39 @@ class SilkAgentNode(ThreadedManualNode):
             datatype="string", default="", add_to_layout=False,
         )
 
+        # Approval prompt. Hidden until a gated call blocks on it: the
+        # decision surface is *in* the node because the run is inside
+        # compute(), where no graph channel can reach it (D48/I12).
+        self._decision_box = QWidget()
+        decision_layout = QVBoxLayout(self._decision_box)
+        decision_layout.setContentsMargins(0, 0, 0, 0)
+        self._label_decision = QLabel("")
+        self._label_decision.setWordWrap(True)
+        self._label_decision.setStyleSheet("font-weight: bold;")
+        decision_layout.addWidget(self._label_decision)
+        buttons = QHBoxLayout()
+        # Deny first, and it is what Escape-by-closing amounts to: the
+        # safe answer should never be the one that takes an extra look.
+        for label, approved, remember in (
+            ("Deny", False, SCOPE_ONCE),
+            ("Allow once", True, SCOPE_ONCE),
+            ("Allow this run", True, SCOPE_RUN),
+            ("Always allow", True, SCOPE_ALWAYS),
+        ):
+            button = QPushButton(label)
+            button.clicked.connect(
+                lambda _checked=False, a=approved, r=remember:
+                    self._answer_decision(a, r)
+            )
+            buttons.addWidget(button)
+        decision_layout.addLayout(buttons)
+        self._decision_box.setVisible(False)
+        form.addWidget(self._decision_box)
+        self._widget_core.register_widget(
+            "decision", self._decision_box, role=PortRole.INTERNAL,
+            add_to_layout=False,
+        )
+
         # Status readout (role, tool activity, errors).
         self._label_status = QLabel("Idle.")
         self._label_status.setWordWrap(True)
@@ -209,6 +263,8 @@ class SilkAgentNode(ThreadedManualNode):
         # ── Signal wiring (worker → main thread; disconnected in cleanup) ──
         self.chunk_streamed.connect(self._on_chunk_streamed)
         self.status_changed.connect(self._on_status_changed)
+        self.decision_requested.connect(self._on_decision_requested)
+        self.decision_settled.connect(self._on_decision_settled)
 
         # ── Mount ──
         self.set_content_widget(container)
@@ -253,6 +309,51 @@ class SilkAgentNode(ThreadedManualNode):
     def _on_status_changed(self, msg: str) -> None:
         self._widget_core.push_display("status", msg)
 
+    @Slot(dict)
+    def _on_decision_requested(self, request: dict) -> None:
+        """Show the question. **Main thread**, while the run is blocked."""
+        self._pending_decision = request
+        self._label_decision.setText(str(request.get("prompt") or "Approve?"))
+        self._decision_box.setVisible(True)
+
+    @Slot(str)
+    def _on_decision_settled(self, _decision_id: str) -> None:
+        self._pending_decision = None
+        self._label_decision.setText("")
+        self._decision_box.setVisible(False)
+
+    def _answer_decision(self, approved: bool, remember: str) -> None:
+        """Deliver the user's answer to the waiting run. **Main thread.**
+
+        The seam decides whether the answer still applies -- the run may
+        have been stopped or the request timed out while the panel was up --
+        so nothing here reads or repairs its state (D42).
+        """
+        request, seam = self._pending_decision, self._seam
+        self._on_decision_settled("")
+        if not request or seam is None:
+            return
+        decision_id = str(request.get("decision_id") or "")
+        kind = str(request.get("kind") or "approval")
+        if approved:
+            landed = seam.approve(decision_id, actor="user", kind=kind,
+                                  remember=remember)
+        else:
+            landed = seam.deny(decision_id, actor="user", kind=kind,
+                               reason="the user declined this call")
+        if not landed:
+            # Late: stopped, timed out, or already answered. The run has
+            # long since been told no; saying so beats a silent no-op.
+            self.status_changed.emit("That request had already expired.")
+            return
+        emit = self._emit_event
+        if emit is not None:
+            emit(EventDecisionResponse(
+                decision_id=decision_id, kind=kind, approved=approved,
+                actor="user",
+                reason="" if approved else "the user declined this call",
+            ))
+
     def _clear_context(self) -> None:
         # Release the agent's dedicated pool instance so its KV cache is
         # wiped and returned to the general idle queue.
@@ -277,6 +378,20 @@ class SilkAgentNode(ThreadedManualNode):
         self._widget_core.push_display("status", "Idle.")
 
     # ── Execution ───────────────────────────────────────────────────
+
+    def cancel_compute(self) -> None:
+        """Stop, including a run that is blocked on a decision (D38).
+
+        The loop's generator is inside a single ``next()`` while the gate
+        waits and is polling nothing, so the stop flag alone would not be
+        read until an answer arrived. Stop therefore cancels the seam
+        *directly*; every waiter denies and the run unwinds normally.
+        """
+        seam = self._seam
+        if seam is not None:
+            seam.cancel("the user stopped the run")
+        self.decision_settled.emit("")
+        super().cancel_compute()
 
     def execute(self) -> None:
         if self._is_computing:
@@ -390,6 +505,32 @@ class SilkAgentNode(ThreadedManualNode):
                 # Handed to subclasses (the Orchestrator node) so a worker's
                 # events can be re-emitted on this node's own stream.
                 emit_run_event = _emit_event
+                # ... and to the main thread, so an answered decision can
+                # put its response on the same port the request went out on.
+                self._emit_event = _emit_event
+
+                def _ask(request: DecisionRequest) -> None:
+                    """Put a decision on screen. **Worker thread**, blocked.
+
+                    Outbound on the emission path, inbound through the
+                    seam's threading primitive: the loop's generator is
+                    mid-next() and cannot yield one (D48).
+                    """
+                    _emit_event(EventDecisionRequest(
+                        decision_id=request.decision_id, kind=request.kind,
+                        prompt=request.prompt, tool_name=request.tool_name,
+                        tool_args=dict(request.tool_args),
+                    ))
+                    self.decision_requested.emit({
+                        "decision_id": request.decision_id,
+                        "kind": request.kind,
+                        "prompt": request.prompt,
+                        "tool_name": request.tool_name,
+                    })
+                    self.status_changed.emit("Waiting for your approval\u2026")
+
+                self._seam = DecisionSeam(_ask, timeout_s=DEFAULT_TIMEOUT_S)
+                bind_run_seam(toolset, self._seam)
 
                 def _emit_plan_if_changed() -> None:
                     # Live plan updates for the Plan Viewer. No-op when the
@@ -583,6 +724,16 @@ class SilkAgentNode(ThreadedManualNode):
             self.compute_error.emit(str(exc))
             return {"response": f"Error: {exc}"}
         finally:
+            # The seam dies with the run it belongs to: close it before
+            # anything else, so a call still blocked on the way out is
+            # denied rather than left waiting on a node that has moved on.
+            if self._seam is not None:
+                self._seam.close()
+                self._seam = None
+            self._emit_event = None
+            self.decision_settled.emit("")
+            if toolset is not None:
+                bind_run_seam(toolset, None)
             self._detach_run_observers(toolset)
             if toolset is not None:
                 for event_name, callback in event_hooks:

@@ -17,4 +17,13 @@
 - **The task store is its own concern** — SQLite with optimistic revision
   checks, so concurrent agent runs on one plan resolve conflicts by
   returning a `Conflict` rather than corrupting state.
-
+- **A human decision blocks the worker, not the loop's control flow.** The
+  approval gate runs inside the tool batch, several frames below a
+  generator that is mid-`next()` and cannot yield. So the question goes
+  *out* along the hook emission path — an `emit_stream` and a queued Qt
+  signal, both safe from any thread — and the answer comes *back* through
+  a `threading.Event` in the run's `DecisionSeam`. The waiter re-reads the
+  committed outcome under the seam's lock; the event alone only says that
+  something happened. Stop does not go through the loop's stop flag here,
+  because nothing is polling it: the node calls `seam.cancel()` directly
+  and every waiter denies.

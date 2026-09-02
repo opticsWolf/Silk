@@ -35,6 +35,14 @@ never sees -- harmless for the shipped hooks, which only deny, but not
 harmless as a rule. :func:`attach_approval_gate` therefore forces itself
 to position zero, and re-forces it if something registers later.
 
+**The policy is attached once; the seam is bound per run.** The gate is
+installed when the ToolBox is built, but *who to ask* only exists once a
+run starts, and the answer is a different object every run (D38). So the
+policy is snapshotted at attach time and the seam is resolved at call
+time, through :func:`bind_run_seam` -- the one thing about the gate that is
+deliberately late-bound. With nothing bound, the gate is a gate with no way
+to ask, which denies (D36).
+
 **Order of consultation**, cheapest and least surprising first: a
 run-scoped grant, then a durable grant, then the policy, then the human.
 Grants can only *skip* the question, never create one, so consulting them
@@ -43,6 +51,7 @@ first cannot make the gate stricter than the policy says.
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from weave.logger import get_logger
@@ -132,6 +141,33 @@ def _refusal(*, target: str, change_type: str, text: str) -> str:
     }, ensure_ascii=False)
 
 
+#: Where a run parks its seam so the already-attached gate can find it.
+_SEAM_ATTR = "_decision_seam"
+
+
+def bind_run_seam(toolbox: Any, seam: Optional[DecisionSeam]) -> None:
+    """Point the gate at this run's seam (or at nothing, to unbind).
+
+    The Agent node calls this on both edges of a run. Unbinding matters as
+    much as binding: a seam left behind after its run is a widget nobody is
+    watching, and a gate that asks it would block until the timeout.
+    """
+    try:
+        setattr(toolbox, _SEAM_ATTR, seam)
+    except AttributeError:      # a toolbox that forbids attributes
+        log.debug("could not bind the decision seam to %r", toolbox)
+
+
+@contextmanager
+def run_seam(toolbox: Any, seam: Optional[DecisionSeam]):
+    """Bind *seam* for the duration of one run, and always unbind."""
+    bind_run_seam(toolbox, seam)
+    try:
+        yield seam
+    finally:
+        bind_run_seam(toolbox, None)
+
+
 def attach_approval_gate(
     toolbox: "ToolBox",
     sandbox: "Optional[FileToolSandbox]" = None,
@@ -148,8 +184,9 @@ def attach_approval_gate(
     Every argument is captured **here, once**, and never re-read mid-run:
     editing a Role or a hook config while a run is in flight affects the
     next run, not the one already going (D38's policy-snapshot rule). The
-    seam is likewise run-scoped -- the node makes one per run and hands it
-    in.
+    one exception is the seam: pass it here for a headless embedder that
+    has exactly one, or leave it out and let each run bind its own with
+    :func:`bind_run_seam`.
 
     Returns ``None`` when nothing is gated, so the caller can tell "no gate
     was needed" from "a gate is installed".
@@ -241,7 +278,11 @@ def attach_approval_gate(
             return await handler()
 
         target = str(args.get("id") or (tool_name if ctype is None else "goal"))
-        if seam is None:
+        # Late-bound on purpose: the gate outlives any one run, the seam
+        # does not. An explicit seam passed at attach time still wins, which
+        # is what the tests and a headless embedder use.
+        asker = seam if seam is not None else getattr(toolbox, _SEAM_ATTR, None)
+        if asker is None:
             # No seam at all is D36's first failure by another route: the
             # gate was configured but the run has nothing to ask with.
             return _refusal(
@@ -251,7 +292,7 @@ def attach_approval_gate(
                       "a human present."),
             )
 
-        decision = seam.await_decision(DecisionRequest(
+        decision = asker.await_decision(DecisionRequest(
             decision_id=new_decision_id(),
             kind=KIND_APPROVAL,
             prompt=_prompt(tool_name, ctype, args),

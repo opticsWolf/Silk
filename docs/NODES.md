@@ -94,6 +94,15 @@ tool calls and results, denials, plan snapshots, chat turns and decisions,
 each carrying `type`, `ts`, `run_id`, `seq` and the agent identity.
 Consumers filter by `type`.
 
+**The approval prompt is part of this node** (spec D48/I12). When a gated
+tool call blocks, the question appears in the node itself — Deny, Allow
+once, Allow this run, Always allow — and the held call resumes with the
+answer. It is not a separate node because the run is inside `compute()`,
+where no graph channel can reach it; the `decision.request` /
+`decision.response` pair on `events` is a *mirror* for a monitor, never
+the way the answer arrives (D59). Stop cancels the seam directly, so a run
+waiting on a decision unwinds at once instead of waiting out the timeout.
+
 ### Silk Agent Spec — `nodes/agent_spec.py`
 A named worker bundle (model + toolset + role) for the Orchestrator; chain
 specs to build a `silk_agents` roster.
