@@ -2114,7 +2114,11 @@ T5 (delegation depth), T6 (HTML floor), T7 (durable event sink).
 **G12 (version metadata) gains a second reason and stays cheap.** §19 makes
 suite identity operational rather than cosmetic: a reload report, a
 quarantine record and a "which build wrote this ledger assertion" question all
-need a `__version__` to name. Still trivial; now load-bearing.
+need a `__version__` to name. Still trivial; now load-bearing. **Built
+2026-09-03** (`functions/version.py`): `__version__` plus a `commit()` that
+reads HEAD off disk rather than shelling out to git, so it is safe to call
+during a graph load and returns `""` rather than failing in a source tree
+with no `.git`. A quarantine record can name a build now.
 
 ---
 

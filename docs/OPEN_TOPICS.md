@@ -282,11 +282,21 @@ cause is still legible. The embedder reuses those headers via `pool.client`.
 a client purely to count, so an exact round-trip would be wasted. What is
 left is D45's own scope — N named backends behind `checkout()`.
 
-### G12. No version metadata
+### G12. No version metadata — CLOSED
 
-The package has no `__version__` (or equivalent), so a running graph
-cannot report which Silk commit it is running — only the submodule pin in
-the Weave checkout can. Trivial to add; useful for logs and bug reports.
+**Closed 2026-09-03** by `functions/version.py`: `__version__` (kept in
+step with `pyproject.toml` by a test, since Silk is never installed and
+has no package metadata to read back) and `commit()`, which reads the
+checkout's HEAD out of the files git writes — `.git` as a *file* holding
+`gitdir:`, because Silk is a submodule; a detached HEAD; a packed ref.
+No subprocess: this is imported during a graph load, and a source tree
+with no `.git` must still import, so "no commit" is an ordinary answer.
+`weave.plugins.silk` logs `version_string()` once at import, so a log
+carrying a Silk problem carries which Silk had it.
+
+The gap: the package had no `__version__` (or equivalent), so a running
+graph could not report which Silk commit it was running — only the
+submodule pin in the Weave checkout could.
 
 ### G13. The `max_rounds` error is silently dropped by every consumer — CLOSED
 
@@ -550,9 +560,18 @@ it becomes load-bearing the moment `checkout()` starts using the session id
 for affinity or backend routing (**G15**, spec D46/D47), because then a stale
 session is a stale route. Fix it with that work.
 
-### G16. The shared server truncates in-flight streams
+### G16. The shared server truncates in-flight streams — CLOSED
 
-Not a performance gap: a correctness one, and it is live.
+**Closed** by all three parts of D43, and the record below is what was
+wrong. `model_pool.py` forwards `interrupt_requests: false` in the
+generated server config; `graph_engine.stream_response` initialises
+`finish_reason` to `None` rather than `"stop"` and marks the stats
+`truncated`; and `agent_loop` fails the round on a stream that ended
+without one, with a message that names the setting — the check stays
+whether or not the setting is forwarded, because a remote backend (D45)
+can truncate for its own reasons.
+
+Not a performance gap: a correctness one, and it was live.
 
 `llama_cpp/server/app.py` serializes every request through
 `llama_outer_lock` / `llama_inner_lock`, so concurrency never reaches the
