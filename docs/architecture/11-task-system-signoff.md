@@ -180,6 +180,16 @@ one attempt, so a broken index costs recall a little cleverness and never
 costs a run. A turn is written either way: the turn is the fact, its
 vector is an index entry (`functions/embeddings.py`).
 
+What *calls* those writes is the selectable `remember` hook
+(`functions/remember.py`), on the ordinary run lifecycle: `before_run`
+starts the run and records the task, `after_model_response` records each
+answer, `after_tool_execute` collects what that answer used, `after_run`
+closes the run. The Agent node binds a `RunIdentity` onto the toolset for
+the duration of the run so the ledger's keys are the same ids the events
+port streams (D60); with nothing bound, nothing is remembered, because a
+turn no event can be joined to is a turn nobody finds. A ledger that
+raises is dropped for the rest of the run, once, out loud.
+
 Writes are turn-shaped (D65): the run concept and its identity edges at
 start (`BYAGENT`, `INSESSION` — D60's observability plumbing and the
 ledger's keys are the same plumbing), then per turn one concept for the

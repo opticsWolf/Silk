@@ -1475,6 +1475,28 @@ renegotiation (the sole-writer rule, D62).
   (run -> file) as edges. The identity plumbing D60 mandates for
   observability is the same plumbing the ledger wants as keys.
 
+**The writer, 2026-09-03.** For a while the ledger knew how to record a
+run and nothing in a running graph called it, so `recall` searched an
+empty table and answered *nothing remembered matches that* forever -- the
+one failure that looks exactly like working correctly. The `remember`
+hook closes it: it rides the run lifecycle Silk already emits
+(`before_run` for the task, `after_model_response` for each answer,
+`after_tool_execute` for what was touched, `after_run` for the outcome),
+so remembering is not a new path through the loop. It is selectable in
+the hook catalog rather than a default, because a run that silently
+starts writing turns to disk is a surprise.
+
+Its keys come from the node, not from itself: the Agent node binds this
+run's `RunIdentity` (run id, agent title, agent uuid, session) onto the
+toolset the way it binds the decision seam, and unbinds it at run end. A
+run id invented inside the hook would not be the one on the events port,
+and D60's whole claim is that the identity plumbing observability needs
+*is* the plumbing the ledger wants as keys. A run with no bound identity
+is therefore not remembered at all, which is better than turns nothing can
+be joined to. And a ledger that raises is dropped for the rest of the run
+after one line: memory is a side effect of doing the work, never part of
+it.
+
 *Boundary:* the raw `tool_events` firehose does **not** go into the ledger
 -- events are a log, not belief. T7's JSONL sink remains their home. The
 ledger gets the distilled layer: turns, runs, task transitions, sign-offs,

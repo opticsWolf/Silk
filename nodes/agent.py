@@ -71,6 +71,7 @@ from ..functions.decision_seam import (
 )
 from ..functions.grants import SCOPE_ALWAYS, SCOPE_ONCE, SCOPE_RUN
 from ..functions.graph_engine import GraphEngine
+from ..functions.remember import RunIdentity, bind_run_identity
 from ..functions.usage_limits import describe_budget, parse_budget
 from ..functions.hooks import (
     HOOK_AFTER_MODEL_RESPONSE,
@@ -688,6 +689,15 @@ class SilkAgentNode(ThreadedManualNode):
                 self._seam = DecisionSeam(_ask, timeout_s=DEFAULT_TIMEOUT_S)
                 bind_run_seam(toolset, self._seam)
 
+                # The same identity, for the ledger's keys (§17, D60): a
+                # remembered turn and a streamed event must be joinable, so
+                # the run id the memory hook files under is the run id on
+                # the events port -- not one it invented for itself.
+                bind_run_identity(toolset, RunIdentity(
+                    run_id=run_id, agent=identity["agent"],
+                    agent_id=identity["agent_id"], session=self._session_id,
+                ))
+
                 # The canvas seam (D70): the same waiter, resolved by the
                 # main thread instead of a person. Bound per run and per
                 # agent, so the run scope that says "you may remove only
@@ -935,6 +945,11 @@ class SilkAgentNode(ThreadedManualNode):
                 self._canvas_seam = None
             self._canvas_author = None
             self._emit_event = None
+            # An identity left bound would file the next run's turns under
+            # this run's id, and the ledger is append-only: a wrong turn
+            # can only be superseded afterwards, never corrected.
+            if toolset is not None:
+                bind_run_identity(toolset, None)
             # The budget is the run's, not the node's: a second run
             # inheriting the first one's counters would start already
             # spent (D26).

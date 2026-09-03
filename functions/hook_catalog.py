@@ -45,6 +45,8 @@ from .approval import (
     tool_preset_policy,
 )
 from .grants import GrantStore
+from .ledger import HistoryLedger, available as ledger_available
+from .remember import attach_remember_hook
 from .spill import (
     DEFAULT_HEAD,
     DEFAULT_TAIL,
@@ -525,6 +527,29 @@ def _make_spill(_config: Optional[BaseModel] = None) -> HookMap:
     return {}
 
 
+class RememberConfig(BaseModel):
+    """Whether this run is written into memory, and how much of it.
+
+    Remembering is a decision per graph, not a default: a run that
+    silently starts writing turns to disk is a surprise, and one that
+    remembers every "ok" is a search nobody trusts.
+    """
+
+    min_chars: int = Field(
+        20, ge=1,
+        description=(
+            "Skip turns shorter than this. Acknowledgements are noise in "
+            "a search, and noise is what makes people stop using it."
+        ),
+    )
+
+
+def _make_remember(_config: Optional[BaseModel] = None) -> HookMap:
+    """Inert: the remember hook needs the history ledger, so it is wired by
+    :func:`attach_catalog_hooks` rather than the factory path."""
+    return {}
+
+
 class ToolApprovalConfig(BaseModel):
     """Which *tool calls* need a human, alongside the task changes above.
 
@@ -646,6 +671,15 @@ HOOK_CATALOG: dict[str, HookSpec] = {
             config_model=SpillConfig,
         ),
         HookSpec(
+            name="remember",
+            description=(
+                "Write this run's turns into the history ledger, so recall "
+                "can find them in later runs and later sessions."
+            ),
+            factory=_make_remember,
+            config_model=RememberConfig,
+        ),
+        HookSpec(
             name="tool_approval",
             description=(
                 "Require the user to approve tool calls before they run, by "
@@ -704,6 +738,25 @@ def build_hooks(
     return merged
 
 
+def _memory_for(toolbox: "ToolBox", sandbox: "Optional[FileToolSandbox]") -> Any:
+    """The ledger this box writes its memory to, or ``None``.
+
+    Preferring the one ``recall`` already opened is not an optimisation:
+    one Write Actor per file is the whole concurrency model (D62), and a
+    second handle on the same history would be a second writer. A box that
+    remembers without offering ``recall`` opens its own -- writing memory
+    nothing in *this* graph reads is a perfectly ordinary thing to do, and
+    the next session will read it.
+    """
+    existing = getattr(toolbox, "_history_ledger", None)
+    if existing is not None:
+        return existing
+    root = str(getattr(sandbox, "root_dir", "") or "")
+    if not root or not ledger_available():
+        return None
+    return HistoryLedger(root)
+
+
 def attach_catalog_hooks(
     toolbox: "ToolBox",
     sandbox: "Optional[FileToolSandbox]" = None,
@@ -744,6 +797,14 @@ def attach_catalog_hooks(
             tools=tuple(
                 n.strip() for n in str(scfg.tools or "").split(",") if n.strip()  # type: ignore[union-attr]
             ),
+        )
+
+    if "remember" in names:
+        rcfg = resolve_config(HOOK_CATALOG["remember"],
+                              (configs or {}).get("remember"))
+        attach_remember_hook(
+            toolbox, _memory_for(toolbox, sandbox),
+            min_chars=rcfg.min_chars,  # type: ignore[union-attr]
         )
 
     if "signoff" in names or "tool_approval" in names:
