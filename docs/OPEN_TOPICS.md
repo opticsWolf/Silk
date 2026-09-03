@@ -597,9 +597,21 @@ between them. **"Do nothing" is an explicitly reachable outcome** of that
 rule — if prefill turns out to be a small share of request time, none of the
 three pays for itself, and the correct response is to stop.
 
-**Still open:** the sub-questions the rule does not settle — `LlamaCache`
-size and backing if B is selected; who chooses the backend, and the
-down-backend path, if C is.
+**The measurement is now something a user can run, not only something a
+consumer could compute.** The harness landed with Phase 1
+(`functions/prefix_stats.py`, `pool.prefix_report()`), but nothing on the
+canvas rendered it, so producing the numbers meant reading a dict off a
+wire. **2026-09-03:** the Pool Monitor node has a *Prefix reuse* row —
+reuse, contention, prefill share, and how many requests were measured —
+and it reads "no requests measured yet" until there are some, because 0%
+and "nobody looked" lead to opposite decisions. The procedure (which two
+runs to capture, and D47's rule applied to what comes back) is in
+[docs/prefix_reuse_measurement.md](prefix_reuse_measurement.md).
+
+**Still open, and only this:** the numbers themselves, which need a live
+backend and are therefore the user's to produce, plus the sub-questions
+the rule does not settle — `LlamaCache` size and backing if B is
+selected; who chooses the backend, and the down-backend path, if C is.
 
 ### G21. Write authority over an importable directory is process authority — REPORTED
 

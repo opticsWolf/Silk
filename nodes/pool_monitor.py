@@ -41,6 +41,38 @@ def queue_note(info: dict) -> str:
     )
 
 
+def prefix_note(info: dict) -> str:
+    """D47's three numbers, where the pool is already being watched (G15).
+
+    The measurement has existed since Phase 1 and has never been visible:
+    `snapshot()` carries it, and nothing rendered it, so producing the
+    numbers meant reading a dict off a wire. This is the surface that
+    makes Phase 1 item 6 something a user can *run*.
+
+    "unknown" and 0% are opposite answers -- one says reuse is being lost,
+    the other says nobody looked -- so an unmeasured metric says so rather
+    than rendering as a zero.
+    """
+    stats = info.get("prefix_reuse") or {}
+    requests = int(stats.get("requests") or 0)
+    if not requests:
+        return "— (no requests measured yet)"
+
+    def pct(value: Any) -> str:
+        return "unknown" if value is None else f"{float(value) * 100:.1f}%"
+
+    return (
+        "reuse {reuse}  ·  contention {contention}  ·  "
+        "prefill {prefill}  ·  {measured}/{requests} measured".format(
+            reuse=pct(stats.get("reuse_rate")),
+            contention=pct(stats.get("contention_rate")),
+            prefill=pct(stats.get("prefill_share")),
+            measured=int(stats.get("measured_requests") or 0),
+            requests=requests,
+        )
+    )
+
+
 @register_node
 class PoolMonitorNode(ThreadedManualNode):
     """Reads pool state from a model handle and emits a status dict."""
@@ -101,6 +133,17 @@ class PoolMonitorNode(ThreadedManualNode):
             datatype="str", add_to_layout=False,
         )
 
+        # The number the whole context design hangs on (D41, D47, G15).
+        # Shown always, including "no requests measured yet": an empty row
+        # is what tells someone the measurement has not been run.
+        self._label_prefix = QLabel("—")
+        self._label_prefix.setWordWrap(True)
+        form.addRow("Prefix reuse:", self._label_prefix)
+        self._widget_core.register_widget(
+            "display_prefix", self._label_prefix, role=PortRole.DISPLAY,
+            datatype="str", add_to_layout=False,
+        )
+
         self._label_flags = QLabel("—")
         self._label_flags.setWordWrap(True)
         form.addRow("Flags:", self._label_flags)
@@ -138,6 +181,7 @@ class PoolMonitorNode(ThreadedManualNode):
             "model": "display_model",
             "usage": "display_usage",
             "flags": "display_flags",
+            "prefix": "display_prefix",
         }
         target = mapping.get(field)
         if target:
@@ -173,6 +217,7 @@ class PoolMonitorNode(ThreadedManualNode):
 
         clear_flag = "clear-on-return: on" if info.get("clear_on_return") else "clear-on-return: off"
         self._display_update.emit("flags", clear_flag + queue_note(info))
+        self._display_update.emit("prefix", prefix_note(info))
 
         return {"pool_status": info}
 

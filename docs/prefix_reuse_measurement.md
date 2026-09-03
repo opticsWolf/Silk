@@ -44,9 +44,21 @@ rate of 0.0 and an unknown reuse rate lead to opposite decisions.
 
 ## How to run it
 
-**Live, during a graph run.** The pool snapshot carries the report under
+**Live, on the canvas.** Wire a **Pool Monitor** to the GGUF loader's
+`model_obj` and read the *Prefix reuse* row:
+
+```
+Prefix reuse:  reuse 93.2%  ·  contention 25.0%  ·  prefill 11.4%  ·  12/12 measured
+```
+
+Before any request it reads `— (no requests measured yet)`, which is the
+point: an unmeasured metric must not render as a zero, because 0% and
+"nobody looked" lead to opposite decisions. Wire an agent's `done` port to
+the monitor's `refresh` to see it move as a run proceeds.
+
+**Live, from code.** The pool snapshot carries the same report under
 `prefix_reuse`, and the GGUF loader node already streams that snapshot on its
-`pool_info` port, so any monitor watching the pool sees the three numbers
+`pool_info` port, so anything watching the pool sees the three numbers
 without further wiring:
 
 ```python
