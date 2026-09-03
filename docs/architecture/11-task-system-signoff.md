@@ -187,6 +187,29 @@ History lives in its own file (`history.macrame`) beside the task ledger
 queueing behind a plan read, and lets a graph keep its plan while
 dropping its memory.
 
+**Scope: memory follows the sandbox roots (§22 q7).** A per-user memory
+store (`~/.weave/silk/memory.db`) so `recall` spans every project was
+considered and rejected — it crosses the boundary the rest of Silk keeps
+(grants are per project, pins per suite, plans under the root) and would
+put one project's turns into another project's prompt with nothing in the
+graph saying so. Instead `attach_recall_tool` opens the working root's
+ledger for writing and, read-only, the ledger of every *other* allowed
+root that already has one. Consequences worth naming:
+
+- Spanning projects is a wire the author drew — a second folder on the
+  ToolBox — never a default.
+- Narrowing file access narrows memory with it. A derived ToolSet replays
+  this recipe against its own, narrower sandbox, so a role that lost a
+  root loses its memory of that root. That is I6, not a second mechanism.
+- Every hit carries the `root` it came from. Scores from two FTS5 indexes
+  are not comparable, so the merged order is a ranking rather than a
+  measurement, and provenance is what keeps that honest.
+- A root with no history file is left alone: opening a ledger creates
+  one, and a folder nobody asked to remember anything about should be
+  found as it was left.
+- Another root failing to open costs its hits and nothing else — this
+  box still remembers its own work.
+
 `recall` reaches the agent as a tool
 (`functions/tools/recall_tool.py`, the `Recall (memory)` checkbox on the
 ToolBox node). It imports `functions/ledger.py` and nothing else — D66's

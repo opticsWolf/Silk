@@ -2092,17 +2092,33 @@ need a `__version__` to name. Still trivial; now load-bearing.
    with the rest of the parked-state machinery, and the hub inherited the
    *viewing* half only -- nothing is parked, so nothing is signed off
    outside the turn that asks.
-7. Ledger placement for *history* (§17): **half-answered 2026-09-02** --
-   history is its own file (`history.macrame`) beside the task ledger
+7. ~~Ledger placement for *history* (§17).~~ **Answered (2026-09-02).**
+   History is its own file (`history.macrame`) beside the task ledger
    under the same root, not shared with it: one Write Actor each keeps a
    per-turn writer from queueing behind a plan read, and a graph can drop
-   its memory while keeping its plan. Still open is the *scope* question
-   the placement does not settle: a per-user memory ledger
-   (`~/.weave/silk/memory.db`) so `recall` spans projects, which is a
-   second ledger rather than a move. Related and untouched: which
-   embedding model stamps turn vectors, and whether embedding versioning
-   (Macrame stores per-model tables) tracks the pool's loaded model --
-   `recall` is FTS5-only today.
+   its memory while keeping its plan.
+
+   The *scope* half is answered too, and the per-user memory ledger
+   (`~/.weave/silk/memory.db`) is **rejected**. It crosses the boundary
+   every other durable thing in Silk respects -- grants are per project
+   (§22 q1), pins are per suite, plans live under the root -- and it
+   would put one project's turns into another project's prompt with
+   nothing in the graph saying so. Instead **memory follows the sandbox
+   roots**: `recall` writes to the working root and reads every root the
+   box was given, so spanning projects is a wire the author drew (a
+   second folder on the ToolBox), never a default. Two properties fall
+   out of that rather than being added: narrowing file access narrows
+   memory with it, because a derived ToolSet replays the recipe against
+   its own sandbox (I6); and every hit carries the `root` it came from,
+   because scores from two FTS5 indexes are a ranking, not a
+   measurement. A root with no history file is left alone -- opening a
+   ledger would create one in a folder nobody asked to remember.
+
+   Still open and untouched: which embedding model stamps turn vectors,
+   and whether embedding versioning (Macrame stores per-model tables)
+   tracks the pool's loaded model -- `recall` is FTS5-only today. That is
+   on the "Later" list with the rest of the hybrid-search work, not a
+   placement question.
 8. Whether the sandbox consults ledger claims as *dynamic* write policy
    (D68) -- deny writes to paths another agent has claimed -- and whether a
    claim then needs a release path and a timeout, which is approval-gate
