@@ -88,6 +88,101 @@ class HookSpec:
     config_model: Optional[type[BaseModel]] = None
 
 
+# ── the binding a graph can express (D13, §22 q5) ─────────────────────────
+
+
+def _names(text: Any) -> frozenset[str]:
+    """A comma-separated field as a set of names; blanks dropped."""
+    return frozenset(
+        part.strip() for part in str(text or "").split(",") if part.strip()
+    )
+
+
+class BoundHookConfig(BaseModel):
+    """Which tool calls a catalog hook applies to, said from the graph.
+
+    D13 made per-tool binding a first-class field on ``HookEntry``, and
+    §22 q5 asked whether that revives the Hooks-node question D12 parked.
+    It does not: a binding is a property *of an entry*, not a new place to
+    compose hooks, so it belongs in the config the two existing selectors
+    already edit. A third node would add a surface without adding an
+    expression.
+
+    Only hooks that **observe** inherit this. A gate does not: a guard a
+    preset can narrow to nothing is not a guard (the same reasoning as
+    D77), so ``signoff``, ``tool_approval`` and ``task_audit`` bind
+    structurally in code and are not narrowable from here.
+    """
+
+    bind_tools: str = Field(
+        "",
+        description=(
+            "Only these tools, comma-separated. Empty means every tool, "
+            "which is what a hook meant before bindings existed."
+        ),
+    )
+    bind_categories: str = Field(
+        "",
+        description="Only these tool categories, comma-separated.",
+    )
+
+    def binding(self) -> tuple[frozenset[str], frozenset[str]]:
+        return _names(self.bind_tools), _names(self.bind_categories)
+
+
+def _entry_of(callback: Any) -> HookEntry:
+    """One hook map value as a :class:`HookEntry`, decorators included."""
+    if isinstance(callback, HookEntry):
+        return callback
+    return HookEntry(
+        callback=callback,
+        tools=frozenset(getattr(callback, "_hook_tools", ()) or ()),
+        categories=frozenset(getattr(callback, "_hook_categories", ()) or ()),
+        essential=bool(getattr(callback, "_hook_essential", False)),
+    )
+
+
+def _narrow(entry: HookEntry, tools: frozenset[str],
+            categories: frozenset[str], hook: str) -> HookEntry:
+    """Apply a configured binding to *entry* -- narrowing only.
+
+    The same rule file access follows (I6): a configured binding may only
+    make a hook quieter than the code that wrote it declared. If the two
+    do not overlap at all the result would be a hook that fires on
+    nothing, which is the silent failure this whole field exists to
+    prevent, so it is refused instead.
+    """
+    new_tools = (entry.tools & tools) if (entry.tools and tools) else (
+        entry.tools or tools)
+    new_categories = (
+        (entry.categories & categories)
+        if (entry.categories and categories) else (entry.categories or categories)
+    )
+    if entry.bound and not (new_tools or new_categories):
+        raise ValueError(
+            f"Hook '{hook}' is bound in code to "
+            f"{sorted(entry.tools | entry.categories)}, and the configured "
+            f"binding {sorted(tools | categories)} shares nothing with it. "
+            "A hook that fires on nothing is not a configuration."
+        )
+    return HookEntry(callback=entry.callback, tools=new_tools,
+                     categories=new_categories, essential=entry.essential)
+
+
+def bind_hook_map(hook_map: HookMap, config: Optional[BaseModel],
+                  hook: str = "") -> HookMap:
+    """Rewrite *hook_map*'s entries with the binding *config* declares."""
+    if not isinstance(config, BoundHookConfig):
+        return hook_map
+    tools, categories = config.binding()
+    if not (tools or categories):
+        return hook_map
+    return {
+        event: [_narrow(_entry_of(cb), tools, categories, hook) for cb in cbs]
+        for event, cbs in hook_map.items()
+    }
+
+
 # ── starter hook implementations (config-less) ───────────────────────────
 
 
@@ -165,7 +260,19 @@ def _make_usage_meter(_config: Optional[BaseModel] = None) -> HookMap:
 # ── configurable middleware hooks ────────────────────────────────────────
 
 
-class RedactSecretsConfig(BaseModel):
+class LogToolCallsConfig(BoundHookConfig):
+    """Nothing to configure but *what to watch* (§22 q5)."""
+
+
+class TimingConfig(BoundHookConfig):
+    """Nothing to configure but *what to time* (§22 q5)."""
+
+
+class UsageMeterConfig(BoundHookConfig):
+    """Nothing to configure but *what to count* (§22 q5)."""
+
+
+class RedactSecretsConfig(BoundHookConfig):
     """Config for the redact_secrets hook (regex patterns over results)."""
 
     patterns: list[str] = Field(
@@ -205,7 +312,7 @@ def _make_redact_secrets(config: Optional[BaseModel]) -> HookMap:
     return {HOOK_WRAP_TOOL_EXECUTE: [redact]}
 
 
-class ToolBudgetConfig(BaseModel):
+class ToolBudgetConfig(BoundHookConfig):
     """Config for the tool_budget hook (per-run call ceilings)."""
 
     max_calls: int = Field(
@@ -476,16 +583,19 @@ HOOK_CATALOG: dict[str, HookSpec] = {
             name="log_tool_calls",
             description="Log every tool call, result and role denial.",
             factory=_make_log_tool_calls,
+            config_model=LogToolCallsConfig,
         ),
         HookSpec(
             name="timing",
             description="Log the wall-clock duration of each tool execution.",
             factory=_make_timing,
+            config_model=TimingConfig,
         ),
         HookSpec(
             name="usage_meter",
             description="Count tool calls / denials per run; summary at run end.",
             factory=_make_usage_meter,
+            config_model=UsageMeterConfig,
         ),
         HookSpec(
             name="redact_secrets",
@@ -587,7 +697,8 @@ def build_hooks(
         if spec is None:
             log.warning(f"Unknown hook '{name}' — not in the catalog, skipped.")
             continue
-        hook_map = spec.factory(resolve_config(spec, configs.get(str(name))))
+        cfg = resolve_config(spec, configs.get(str(name)))
+        hook_map = bind_hook_map(spec.factory(cfg), cfg, spec.name)
         for event, callbacks in hook_map.items():
             merged.setdefault(event, []).extend(callbacks)
     return merged

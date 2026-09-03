@@ -542,6 +542,21 @@ by `RoleBinding.activate` and reversed by `deactivate()`. That distinction is
 load-bearing and a single node would hide it. Revisit if a concrete scenario
 needs hook composition the two selectors cannot express.
 
+**Revisited and closed (§22 q5).** The concrete scenario arrived — "log the
+file tools only", now that D13 made binding a real field — and it did not
+need a node. A binding is a property *of a hook entry*, not a new place to
+compose hooks, so it became `BoundHookConfig`: `bind_tools` /
+`bind_categories` on the config the two existing selectors already edit,
+applied by `build_hooks` at construction. A third node would have added a
+surface without adding an expression, and would have hidden the two-seam
+split D12 exists to keep visible. Two limits ride with it: a configured
+binding may only **narrow** what the code declared (the I6 rule, applied to
+hooks — a binding sharing nothing with the code's is refused, because a
+hook that fires on nothing is the silent failure the field exists to
+prevent), and only hooks that *observe* carry the field. `signoff`,
+`tool_approval` and `task_audit` bind in code, out of a preset's reach: a
+guard a preset can narrow to nothing is not a guard (D77).
+
 **D13. Per-tool binding as a first-class field.** A hook entry declares which
 tools or categories it applies to; the registry does the filtering. Today
 hooks fire for every tool and a "tool-specific" hook filters by name inside
@@ -2066,8 +2081,11 @@ need a `__version__` to name. Still trivial; now load-bearing.
    first, only files matching the writer's own naming pattern, never
    recursively. The spill directory lives in the user's project; a file
    they put there is not ours to delete.
-5. Whether the hook-node question returns once per-tool binding exists --
-   D12 is a "not yet", not a "never".
+5. ~~Whether the hook-node question returns once per-tool binding exists --
+   D12 is a "not yet", not a "never".~~ **Answered (2026-09-02):** it
+   returns as a *field*, not a node. `BoundHookConfig` puts `bind_tools` /
+   `bind_categories` on the observing hooks' configs, narrowing-only, in
+   the selectors that already exist. See D12's closing note in §8.
 6. ~~Whether the single-agent Sign-Off node survives once the Task Hub
    (D58) absorbs its role for N agents.~~ **Answered (2026-09-02)** by the
    hub being built: there is no node to keep. D32 deleted `signoff_node.py`

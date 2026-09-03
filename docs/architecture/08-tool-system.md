@@ -407,9 +407,9 @@ Bundled hooks:
 
 | Name | Config | What it does |
 |---|---|---|
-| `log_tool_calls` | — | logs every tool call, result and role denial via the Weave logger |
-| `timing` | — | logs the wall-clock duration of each tool execution |
-| `usage_meter` | — | counts tool calls / denials per run; summary at run end |
+| `log_tool_calls` | `LogToolCallsConfig` | logs every tool call, result and role denial via the Weave logger |
+| `timing` | `TimingConfig` | logs the wall-clock duration of each tool execution |
+| `usage_meter` | `UsageMeterConfig` | counts tool calls / denials per run; summary at run end |
 | `redact_secrets` | `RedactSecretsConfig` | masks secret-looking matches (API keys, tokens) in tool results before the model sees them |
 | `tool_budget` | `ToolBudgetConfig` | hard-denies tool calls beyond a per-run budget (total and optional per-tool ceiling) |
 | `task_audit` | `TaskAuditConfig` | holds the task plan's rationale to a quality bar (bounces trivial `n/a`-style reasons on add/complete/rescope/revise-goal) and logs a timestamped trail of plan changes |
@@ -419,6 +419,22 @@ Bundled hooks:
 
 The `Silk ToolBox` node's hook selector edits these configs through the
 standard `config_dialog.py`, so users tune behaviour without code.
+
+**Binding from the graph (§22 q5).** The observing hooks' configs derive
+from `BoundHookConfig`, which adds `bind_tools` and `bind_categories`:
+"log the file tools only" is expressible without touching code, and
+`build_hooks` turns the field into the same `HookEntry` binding D13
+defined. This is where the Hooks-node question D12 parked ended up — a
+binding is a property of an entry, not a new place to compose hooks, so it
+belongs in the config the two existing selectors already edit rather than
+in a third node that would hide the ToolBox/Role split.
+
+Two limits. A configured binding may only **narrow** what the code
+declared (the I6 rule applied to hooks); one that shares nothing with the
+code's binding raises rather than producing a hook that fires on nothing.
+And only hooks that observe carry the field: `signoff`, `tool_approval`
+and `task_audit` bind in code, out of a preset's reach, because a guard a
+preset can narrow to nothing is not a guard (D77).
 
 ### `functions/spill.py` — keeping a big result out of the context
 
