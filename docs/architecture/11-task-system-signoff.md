@@ -166,12 +166,19 @@ the model actually see at round 7* survives the squeeze — the question
 D41's measurement and D42's tests want and could not have while history
 lived in `self._history` and died with the node (D24/D25).
 
-**Memory outlives the run.** `recall(query, top_k=…, kinds=…)` is FTS5
-keyword search over remembered turns and runs, so it reaches into earlier
-runs and earlier sessions, and into rounds compaction dropped. §17's plan
-is hybrid search (FTS5 + vectors, fused by RRF); FTS5 needs no embedding
-model, so it ships first and the result shape does not change when the
-vector half arrives.
+**Memory outlives the run.** `recall(query, top_k=…, kinds=…)` searches
+remembered turns and runs, so it reaches into earlier runs and earlier
+sessions, and into rounds compaction dropped. FTS5 keyword search needs
+no model and shipped first; wiring an embedding model to the ToolSet's
+`embedding_model` port makes the same call §17's hybrid search (FTS5 +
+vectors, fused by RRF). The result shape did not change when the vector
+half arrived: hits gained `via` (`keyword` / `vector` / `both`) and
+nothing else moved. One embedder serves every root the box reads — two
+roots indexed by two models would be two incomparable rankings merged
+into one list — and an embedder that cannot embed disables itself after
+one attempt, so a broken index costs recall a little cleverness and never
+costs a run. A turn is written either way: the turn is the fact, its
+vector is an index entry (`functions/embeddings.py`).
 
 Writes are turn-shaped (D65): the run concept and its identity edges at
 start (`BYAGENT`, `INSESSION` — D60's observability plumbing and the

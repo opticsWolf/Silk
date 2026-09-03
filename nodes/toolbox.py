@@ -45,6 +45,7 @@ from ..functions.tools.graph_authoring import attach_graph_tools
 from ..functions.tools.suite_tools import attach_suite_tools
 from ..functions.self_modify import user_plugin_root
 from ..functions.tools.recall_tool import attach_recall_tool
+from ..functions.embeddings import embedder_for
 from ..functions.tools.ripgrep_tool import attach_ripgrep_tools
 from ..functions.tools.toolchains import attach_toolchain_tools
 from ..functions.tools.task_tracker import attach_task_tools
@@ -91,6 +92,11 @@ class SilkToolBoxNode(ActiveNode):
         # discovery, which is also how two unrelated plans in one root
         # used to find each other.
         self.add_input("plan", datatype="silk_plan")
+        # The vector half of memory (§17): an *embedding* model, not the
+        # agent's chat model. Unwired, recall is keyword search, which is
+        # what it has always been -- so this port adds a capability and
+        # never changes one.
+        self.add_input("embedding_model", datatype="gguf_model")
         self.add_output("toolbox", datatype="silk_toolbox")
         self.add_output("root_paths", datatype="dirpath_list")
 
@@ -162,7 +168,8 @@ class SilkToolBoxNode(ActiveNode):
             "remembered in this sandbox root's history ledger — including "
             "ones from earlier sessions and ones compaction dropped. "
             "Needs the 'ledger' extra (macrame-db); without it the tool "
-            "says so rather than returning nothing."
+            "says so rather than returning nothing. Wire an embedding "
+            "model to the embedding_model port to add vector search."
         )
         form.addRow("Recall (memory):", self.chk_recall)
         self._widget_core.register_widget(
@@ -394,7 +401,16 @@ class SilkToolBoxNode(ActiveNode):
         # reads as plan-then-memory in the tool list, which is the order
         # an agent uses them in.
         if inputs.get("enable_recall", False):
-            recipe.append(("recall", attach_recall_tool))
+            # An embedding model turns recall into hybrid search; without
+            # one this is the same keyword attach as before. The embedder
+            # is built per compute so a re-run picks up a model that was
+            # wired since, and it is shared by every root the box reads:
+            # two roots indexed by two models would be two incomparable
+            # rankings merged into one list.
+            embedder = embedder_for(inputs.get("embedding_model"))
+            recipe.append((
+                "recall", partial(attach_recall_tool, embedder=embedder),
+            ))
 
         toolchains = tuple(inputs.get("toolchains") or ())
         if toolchains:

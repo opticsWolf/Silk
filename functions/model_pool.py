@@ -93,6 +93,10 @@ def server_missing_deps_message() -> str:
 _SERVER_MODEL_KEYS = (
     "n_ctx", "n_gpu_layers", "n_threads", "n_threads_batch", "n_batch",
     "seed", "use_mmap", "use_mlock", "flash_attn", "type_k", "type_v", "verbose",
+    # A server started without this refuses /v1/embeddings, which is the
+    # right default for a chat model: embeddings are the vector half of
+    # memory (SS17) and want their own, much smaller, model.
+    "embedding",
 )
 
 #: How long to wait for the server to answer ``/v1/models`` before giving up.
@@ -282,6 +286,27 @@ class GGUFModelPool:
         self._register_for_shutdown()
 
     # -- shutdown registry ------------------------------------------------
+
+    # -- what a caller outside the pool may know about the server ---------
+    #
+    # The embedder (``functions/embeddings.py``) talks to this server over
+    # ``/v1/embeddings``. It needs the URL and the alias, and it names its
+    # vectors after the model file, because vectors from two models are not
+    # comparable. Reading three underscore attributes from another module
+    # would be the same coupling without saying so.
+
+    @property
+    def base_url(self) -> str:
+        """The server's OpenAI-compatible base URL (``.../v1``)."""
+        return self._server_url
+
+    @property
+    def model_path(self) -> str:
+        return self._model_path
+
+    @property
+    def model_alias(self) -> str:
+        return self._model_alias
 
     def _register_for_shutdown(self) -> None:
         """Let the process release this server even if no node does.

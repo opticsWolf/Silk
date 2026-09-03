@@ -1455,9 +1455,20 @@ renegotiation (the sole-writer rule, D62).
   RRF) over past turns/runs is a `recall` tool on the ToolBox -- long-term
   agent memory across sessions, graph-linked: turn -> run -> task -> files
   touched -> agent. FTS5 works day one with no embedding model; vectors
-  arrive when something produces embeddings (the GGUF pool can --
-  llama.cpp serves embeddings). Side effect: G2's fake-BM25 gains a real
-  ranked search to delegate to or be measured against.
+  arrived on **2026-09-03**, and what produces them is a GGUF handle --
+  an *embedding* model wired to the ToolSet's `embedding_model` port, not
+  the chat model the agent is talking to (a separate file, and embedding
+  through the agent's own model would push its KV cache out from under
+  it). With one wired, `recall` is `hybrid_search`: FTS5 and DiskANN
+  fused by RRF, and each hit says which arm found it (`via`: `keyword`,
+  `vector`, `both`), because a hit both arms found is a different kind of
+  hit and the fused score cannot say which. Without one, `recall` is the
+  keyword search it always was -- and an embedder that cannot embed (a
+  chat model on that port, a server built without embedding support)
+  disables itself after one attempt and memory carries on, because the
+  optional half of a search index must never fail a run. Side effect:
+  G2's fake-BM25 gains a real ranked search to delegate to or be measured
+  against.
 - **Identity maps 1:1 onto D46/D60.** `agent:<uuid>`, `session:<id>`,
   `run:<run_id>`, `turn:<id>` as concepts; `IN_RUN`, `DELEGATED_TO`
   (run -> run, carrying D54's correlation), `CLAIMED_BY`, `TOUCHED`
@@ -2021,9 +2032,7 @@ not a guarantee and a ledger handle closed late loses its final snapshot.
     surface, not the plumbing. **Done 2026-09-02** (Weave's
     six hot-reload phases had all shipped; Silk improving Silk stays out, T10).
 
-**Later:** embeddings for `recall` (vector half of §17 — needs an
-embedding producer; the GGUF pool can serve one); the D47 mechanisms not
-selected by the measurement --
+**Later:** the D47 mechanisms not selected by the measurement --
 kept described rather than deleted, since the rule that skips one today
 selects it as soon as the graph shape changes.
 

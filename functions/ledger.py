@@ -987,10 +987,20 @@ class HistoryLedger:
 
     def __init__(self, root: str | os.PathLike, *,
                  db_path: str | os.PathLike | None = None,
-                 registry: Optional[LedgerRegistry] = None) -> None:
+                 registry: Optional[LedgerRegistry] = None,
+                 embedder: Any = None) -> None:
         self.root = Path(root).expanduser().resolve()
         self._registry = registry if registry is not None else REGISTRY
         self._path = Path(db_path) if db_path else history_path(self.root)
+        #: The vector half of recall (SS17), or ``None`` for keyword only.
+        #: Nothing here requires it: a turn is written the same either way
+        #: and only its vector is missing, which is what every turn written
+        #: before an embedding model was wired already looks like.
+        self._embedder = embedder
+        #: Whether this ledger has told Macrame the model's dimension yet.
+        #: The width is only known once a vector exists, so registration
+        #: cannot happen at construction time.
+        self._model_registered = False
 
     @property
     def path(self) -> Path:
@@ -1057,6 +1067,8 @@ class HistoryLedger:
             "role": role, "text": text, "at": now,
             "tools": list(tools or []), "files": [str(f) for f in (files or [])],
         })
+
+        self._embed(db, cid, text)
 
         run_node = _concept(db, _run_cid(run_id))
         edges = [_edge(cid, _run_cid(run_id), EDGE_IN_RUN)]
@@ -1183,22 +1195,71 @@ class HistoryLedger:
                       for node in _related(self._db(), _run_cid(run_id),
                                            EDGE_USED))
 
+    # -- the vector half (§17) ------------------------------------------
+
+    @property
+    def embedder(self) -> Any:
+        """The embedding model backing this ledger's memory, if any."""
+        return self._embedder
+
+    def _embed(self, db: Any, cid: str, text: str) -> bool:
+        """Store *text*'s vector against *cid*. Never raises.
+
+        A turn is a fact; its vector is an index entry. Losing the index
+        entry costs a search a little recall, and losing the turn would
+        cost the run its memory -- so every failure here is a warning and
+        the write goes on. That also covers the ordinary case of a chat
+        model wired where an embedding model was meant: the embedder
+        disables itself after one attempt and this becomes a no-op.
+        """
+        embedder = self._embedder
+        if embedder is None:
+            return False
+        try:
+            vector = embedder.embed(text)
+            if not vector:
+                return False
+            if not self._model_registered:
+                # The width is discovered, not declared: registering at
+                # the wrong one would raise on every later write.
+                db.register_model(embedder.name, len(vector))
+                self._model_registered = True
+            db.upsert_embeddings(embedder.name, [(cid, vector)])
+            return True
+        except Exception as exc:  # noqa: BLE001 - the index is optional
+            log.warning(f"History embedding skipped for {cid}: {exc}")
+            embedder.disable(f"{type(exc).__name__}: {exc}")
+            return False
+
     def recall(self, query: str, *, top_k: int = 10,
                kinds: Sequence[str] = (KIND_TURN,)) -> list[dict]:
-        """Keyword search over remembered turns and runs (FTS5 half).
+        """Search remembered turns and runs -- hybrid when it can be.
 
-        §17's plan is hybrid search -- FTS5 plus vectors, fused by RRF.
-        FTS5 works on day one with no embedding model, so it ships first
-        and the vector half arrives when something in the graph produces
-        embeddings. Callers see the same shape either way: hits, ranked,
-        with enough identity to traverse onwards.
+        §17's plan was FTS5 first (it needs no model) and vectors when
+        something in the graph produces them. With an embedder wired, the
+        query is embedded and the ledger fuses keyword and vector ranks by
+        RRF, which is what makes *what did we conclude about the lexer*
+        findable when the words used then are not the words used now.
+
+        Without one -- or when embedding the query fails -- this is the
+        keyword search it has always been. The result shape does not
+        change either way: hits, ranked, with enough identity to traverse
+        onwards. ``via`` says which arm found each hit -- ``both``,
+        ``vector`` or ``keyword`` -- because a hit both arms found is a
+        different kind of hit from one only the vectors found, and the
+        fused score alone cannot say which.
+
+        The two paths do not share a scale (BM25 is negative and ascends,
+        RRF is positive and descends), so scores are comparable *within*
+        one search and not across ledgers searched differently. That is
+        the same caveat `recall`'s merge across roots already carries.
         """
         text = (query or "").strip()
         if not text:
             return []
         db = self._db()
         hits = []
-        for cid, score in db.keyword_search(text, top_k=max(1, int(top_k) * 3)):
+        for cid, score, via in self._ranked(db, text, top_k):
             node = _concept(db, cid)
             if node is None:
                 continue
@@ -1211,11 +1272,61 @@ class HistoryLedger:
                 "index": body.get("index"), "role": body.get("role", ""),
                 "at": body.get("at", ""), "title": node.title or "",
                 "text": body.get("text", body.get("goal", "")),
-                "score": float(score),
+                "score": float(score), "via": via,
             })
             if len(hits) >= top_k:
                 break
         return hits
+
+    def _ranked(self, db: Any, text: str, top_k: int) -> list[tuple]:
+        """``(concept_id, score, via)`` for a query, hybrid where possible.
+
+        Kinds are filtered by the caller, so this over-fetches: a query
+        whose best matches are all runs must still be able to return
+        turns.
+
+        A hybrid search that fails falls back to keyword rather than
+        failing the search. Memory that stops working because its
+        *optional* half broke would be worse than memory that got a
+        little less clever.
+        """
+        width = max(1, int(top_k) * 3)
+        vector = None
+        if self._embedder is not None:
+            try:
+                vector = self._embedder.embed(text)
+            except Exception as exc:  # noqa: BLE001
+                log.warning(f"Query embedding failed: {exc}")
+        if vector:
+            try:
+                if not self._model_registered:
+                    # A ledger that only reads -- another root's memory,
+                    # or this one in a later session -- never wrote a
+                    # vector, so registration happens here too. It is
+                    # idempotent at the same width and raises at another,
+                    # which is the honest answer to a changed model.
+                    db.register_model(self._embedder.name, len(vector))
+                    self._model_registered = True
+                rows = db.hybrid_search(
+                    self._embedder.name, text, vector, top_k=width,
+                )
+                # A hit both arms found is a different kind of hit from one
+                # only the vectors found, and the fused score cannot say
+                # which -- so the answer carries which arm saw it.
+                return [(hit.concept_id, hit.score, _via(hit)) for hit in rows]
+            except Exception as exc:  # noqa: BLE001
+                log.warning(f"Hybrid search failed, using keywords: {exc}")
+        return [(cid, score, "keyword")
+                for cid, score in db.keyword_search(text, top_k=width)]
+
+
+def _via(hit: Any) -> str:
+    """Which arm of the hybrid search found this hit."""
+    vector = getattr(hit, "vector_rank", None) is not None
+    keyword = getattr(hit, "keyword_rank", None) is not None
+    if vector and keyword:
+        return "both"
+    return "vector" if vector else "keyword"
 
 
 #: A run with more compaction events than this is not a run any more.

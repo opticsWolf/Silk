@@ -14,9 +14,13 @@ append-only store under the sandbox root, so `recall` reaches across runs
 and across sessions -- *"what did we conclude about the lexer last week"*
 rather than *"what is still in the prompt"*.
 
-Ranking is FTS5 keyword search today. §17's plan is hybrid (FTS5 plus
-vectors fused by RRF); FTS5 needs no embedding model, so it ships first
-and the result shape does not change when the vector half arrives.
+Ranking is FTS5 keyword search, and hybrid (FTS5 plus vectors, fused by
+RRF) when an embedding model is wired to the ToolSet -- §17's plan, in
+that order, because FTS5 needs no model and works on day one. The result
+shape did not change when the vector half arrived: hits gained a `via`
+saying which arm found them, and nothing else moved. An embedding model
+that cannot embed disables itself and memory stays keyword search
+(`functions/embeddings.py`).
 
 **Where memory lives is not a new question (§22 q7).** A per-user memory
 store spanning every project was the tempting answer and the wrong one:
@@ -97,6 +101,12 @@ class RecallArgs(BaseModel):
 
 class RecallHit(BaseModel):
     id: str = Field(..., description="Ledger id of the remembered item.")
+    via: str = Field(
+        "", description=(
+            "Which search found this: 'keyword', 'vector', or 'both' when "
+            "the words and the meaning agreed."
+        ),
+    )
     root: str = Field(
         "", description="Which sandbox root remembered it (§22 q7).")
     kind: str = Field(..., description="'turn' or 'run'.")
@@ -151,13 +161,19 @@ def memory_roots(sandbox: "FileToolSandbox", working: Any) -> list:
 
 
 def attach_recall_tool(toolbox: "ToolBox", sandbox: "FileToolSandbox",
-                       history: Any = None) -> None:
+                       history: Any = None, embedder: Any = None) -> None:
     """Mount ``recall`` against the memory of every root this box was given.
 
     *history* lets a node pass a ledger it already holds (one Write Actor
     per file is the whole concurrency model, D62); without one the tool
     opens the ledger under the sandbox's working root, which is where the
     run that wrote the turns put it.
+
+    *embedder* is the vector half (§17): with one, turns are indexed as
+    they are written and `recall` becomes a hybrid search. Every root gets
+    the same one, because two roots indexed by two models would be two
+    incomparable rankings merged into one list. Without one, this is the
+    keyword search it has always been.
 
     The other allowed roots are read and never written (§22 q7), and only
     when they already have a history file. Since a derived ToolSet replays
@@ -167,10 +183,11 @@ def attach_recall_tool(toolbox: "ToolBox", sandbox: "FileToolSandbox",
     working = getattr(sandbox, "root_dir", ".")
     ledger = history
     if ledger is None and available():
-        ledger = HistoryLedger(working)
+        ledger = HistoryLedger(working, embedder=embedder)
     others = []
     if available():
-        others = [HistoryLedger(root) for root in memory_roots(sandbox, working)]
+        others = [HistoryLedger(root, embedder=embedder)
+                  for root in memory_roots(sandbox, working)]
     toolbox._history_ledger = ledger  # type: ignore[attr-defined]
     toolbox._history_ledgers_read = tuple(others)  # type: ignore[attr-defined]
 
@@ -193,7 +210,8 @@ def attach_recall_tool(toolbox: "ToolBox", sandbox: "FileToolSandbox",
             "Search remembered history (keyword ranked).\n"
             "- query: plain words; scope: 'turns' (default), 'runs', 'all'.\n"
             "- run_id: optional, restricts to one run.\n"
-            "- Hits carry {id, kind, root, run_id, role, at, text}: quote "
+            "- Hits carry {id, kind, root, run_id, role, at, text, via}: "
+            "quote "
             "them rather than paraphrasing, and say which root a hit came "
             "from when it is not the one you are working in.\n"
             "- An empty result means nothing was remembered, not that it "
@@ -235,7 +253,7 @@ def attach_recall_tool(toolbox: "ToolBox", sandbox: "FileToolSandbox",
         rows = [
             RecallHit(
                 id=h.get("id", ""), kind=h.get("kind", ""),
-                root=h.get("root", ""),
+                root=h.get("root", ""), via=h.get("via", ""),
                 run_id=h.get("run_id", ""), role=h.get("role", ""),
                 at=h.get("at", ""), text=str(h.get("text", ""))[:4000],
             )
