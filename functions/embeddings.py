@@ -143,10 +143,17 @@ class ServerEmbedder(Embedder):
     """
 
     def __init__(self, base_url: str, name: str = "",
-                 model_alias: str = "default") -> None:
+                 model_alias: str = "default",
+                 headers: Optional[dict] = None) -> None:
         super().__init__(name or "server")
         self.base_url = str(base_url).rstrip("/")
         self.model_alias = model_alias
+        # The same headers the pool's chat client uses, so a backend that
+        # needs a key (D45) is reachable for embeddings too -- taken from
+        # the client rather than resolved again here, because the value
+        # belongs to whoever connected (D22).
+        self._headers = dict(headers or {})
+        self._headers.setdefault("Content-Type", "application/json")
 
     def _vector(self, text: str) -> list[float]:
         payload = json.dumps(
@@ -154,7 +161,7 @@ class ServerEmbedder(Embedder):
         ).encode("utf-8")
         request = urllib.request.Request(
             f"{self.base_url}/embeddings", data=payload,
-            headers={"Content-Type": "application/json"},
+            headers=dict(self._headers),
         )
         try:
             with urllib.request.urlopen(request, timeout=TIMEOUT_S) as response:
@@ -187,9 +194,12 @@ def embedder_for(handle: Any, name: str = "") -> Optional[Embedder]:
     pool = handle.get("pool")
     base_url = getattr(pool, "base_url", "") if pool is not None else ""
     if base_url:
+        client = getattr(pool, "client", None)
+        headers = client.headers() if hasattr(client, "headers") else None
         return ServerEmbedder(
             base_url, name=name or _pool_name(pool),
             model_alias=getattr(pool, "model_alias", "default") or "default",
+            headers=headers,
         )
     return None
 

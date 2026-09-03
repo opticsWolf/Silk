@@ -26,9 +26,18 @@ A server-based model pool so several agents can share loaded GGUF models:
   its OpenAI-compatible HTTP/SSE API — no in-process `Llama` object per
   agent.
 - Generates a JSON server config on the fly (paths, context, etc.).
-- `OpenAIClientMock` mimics the `llama_cpp.Llama` API on top of the HTTP
+- `OpenAICompatClient` mimics the `llama_cpp.Llama` API on top of the HTTP
   client, so code written against the in-process API works unchanged against
-  a pooled model.
+  a pooled model. (It was called `OpenAIClientMock` until 2026-09-03, which
+  read as a test double and was the pool's live client — G11.)
+- That client is the whole surface a *remote* OpenAI-compatible backend
+  needs (D45), so it takes a credential: the pool is constructed with a
+  credential **name**, the value is resolved once at connect time from the
+  environment or `~/.weave/silk/secrets.json`, and lives only in the
+  client's header dict (D22, `functions/credentials.py`). A name nobody has
+  set raises there and then, rather than as a 401 three layers away. The
+  embedder posts to `/v1/embeddings` on the same server and takes those
+  same headers from `pool.client`, so one connect means one resolution.
 - A pool-backed `gguf_model` handle carries `"pool": pool` instead of
   `"model": Llama`; the engine checks a model out/in around a request.
 

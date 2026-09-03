@@ -258,10 +258,10 @@ saves a round-trip. A failed load returns a structured error in the
 - Per-tool deferral is needed. The machinery partly exists — the ToolSet
   layer already has `defer_loading(tool_names)` → `DeferredLoadingToolset` —
   but the model-facing loader is capability-granular.
-- G2 stops being cosmetic. `ToolSearch._bm25_search` currently delegates to
-  `_keyword_search` with a TODO; once discovery is the primary path into
-  context, ranking quality is load-bearing. Either implement BM25 or drop
-  the strategy from the public surface.
+- G2 stops being cosmetic: once discovery is the primary path into context,
+  ranking quality is load-bearing. **Settled 2026-09-02** — `_bm25_search`
+  is real Okapi BM25 over the tool corpus, not the alias for `_keyword_search`
+  it was, so `bm25` can ship as a public strategy rather than being hidden.
 - `load_capability` stays for capability-granular loading; it is no longer
   the only discovery path.
 - **Auto-load interacts with I11.** If loading a tool mid-run re-advertises
@@ -907,7 +907,7 @@ if interrupt_requests and llama_outer_lock.locked():
 `host`, `port` and `models` (`functions/model_pool.py:217`), so the default
 stands. The effect: **while agent A is streaming, a request from agent B
 truncates A's response.** A gets a well-formed `[DONE]`, and
-`OpenAIClientMock.generator()` (`model_pool.py:153`) cannot distinguish that
+`OpenAICompatClient.generator()` (`model_pool.py:153`) cannot distinguish that
 from a natural stop -- it simply ends the generator. The agent then reasons
 over, and may act on, a silently cut-off assistant turn.
 
@@ -966,14 +966,18 @@ Three things this needs, all small and all currently absent:
 1. **`checkout()` is already the routing seam** -- it takes a `session_id`
    and discards it. Backend selection, and the request affinity D41 leaves
    open, both live there.
-2. **`OpenAIClientMock` is already the full client surface**
+2. **`OpenAICompatClient` is already the full client surface**
    (`create_chat_completion`, `tokenize`, `reset`) and is constructed from a
    bare `base_url`. A remote backend is that class with a different URL and
-   no subprocess -- but it sends only `Content-Type`
-   (`model_pool.py:128`), so **there is no way to pass an API key today**.
-   Adding an `Authorization` header is a precondition for litellm, and the
-   key must follow D22: a credential *name* resolved at connect time, never
-   persisted in the graph or a preset.
+   no subprocess. **Done 2026-09-03**: it was renamed out of
+   `OpenAIClientMock` (G11 — the name said test double, the pool used it
+   live), and it now carries a credential *name*, resolved once at connect
+   time and held only in its header dict, never persisted in the graph or a
+   preset (D22). The resolver moved to `functions/credentials.py`, since MCP
+   servers and model backends must not each own a copy of that rule. The
+   embedder takes the resolved headers off `pool.client` rather than
+   resolving again. What remains of D45 is the pool holding N *named*
+   backends and routing at `checkout()`.
 3. **`snapshot()` returns a single flat dict** (`model_pool.py:323`) with
    `total_instances: 1` and zeroed KV fields. It becomes per-backend, and it
    is the natural place to surface the D41 prefix-reuse rate.
@@ -1478,8 +1482,8 @@ renegotiation (the sole-writer rule, D62).
   chat model on that port, a server built without embedding support)
   disables itself after one attempt and memory carries on, because the
   optional half of a search index must never fail a run. Side effect:
-  G2's fake-BM25 gains a real ranked search to delegate to or be measured
-  against.
+  G2's BM25 gains a ranked search to be measured against (it is no longer a
+  fake -- it was implemented in its own right on 2026-09-02).
 - **Identity maps 1:1 onto D46/D60.** `agent:<uuid>`, `session:<id>`,
   `run:<run_id>`, `turn:<id>` as concepts; `IN_RUN`, `DELEGATED_TO`
   (run -> run, carrying D54's correlation), `CLAIMED_BY`, `TOUCHED`
@@ -2038,8 +2042,8 @@ not a guarantee and a ledger handle closed late loses its final snapshot.
      that reading exposed — the dead `pool._session_instances` access in
      `Clear Context` and the `bound_sessions` count it corrupts.
    - *C — multi-backend pool* (D45): N named backends behind `checkout()`,
-     an `Authorization` header on `OpenAIClientMock` so remote/litellm
-     endpoints work at all, per-backend `snapshot()`.
+     and per-backend `snapshot()`. The `Authorization` header that made
+     remote/litellm endpoints reachable at all landed 2026-09-03.
    - *B — `LlamaCache`* (D44) only if rule 4 fires and the copy-vs-prefill
      inequality holds.
 6. Loop compaction: engine history-replace, compactor, `EventCompaction`
@@ -2105,8 +2109,7 @@ out of scope.
 
 Untouched by this spec: G5 (dependency declaration), G8 (mid-batch stops),
 G9 (type coverage),
-G11 (`OpenAIClientMock`
-name), T5 (delegation depth), T6 (HTML floor), T7 (durable event sink).
+T5 (delegation depth), T6 (HTML floor), T7 (durable event sink).
 
 **G12 (version metadata) gains a second reason and stays cheap.** §19 makes
 suite identity operational rather than cosmetic: a reload report, a

@@ -257,19 +257,30 @@ Dropping the field entirely would have thrown away the useful half;
 shipping the text on the wire would have put the graph author's prompt
 into every log that tails the port.
 
-### G11. `OpenAIClientMock` is the production client
+### G11. `OpenAIClientMock` is the production client — CLOSED
 
-The name says "Mock", but `GGUFModelPool` instantiates it as its live
-HTTP client (`functions/model_pool.py`). A rename (e.g.
-`OpenAICompatClient`) would stop it being confused with a test double.
+**Closed 2026-09-03.** Renamed `OpenAICompatClient`, and given the header
+that was the actual blocker. The rest of the entry is kept as the record.
+
+The name said "Mock", but `GGUFModelPool` instantiated it as its live
+HTTP client (`functions/model_pool.py`).
 
 It is also the whole client surface — `create_chat_completion`, `tokenize`,
 `reset` — built from a bare `base_url`, which makes it the natural adapter
 for a remote OpenAI-compatible backend (litellm, vLLM, hosted). Two things
-block that today: it sends only `Content-Type` (`model_pool.py:128`), so
-**no API key can be passed**, and `tokenize` is a `len // 4` approximation
+blocked that: it sent only `Content-Type` (`model_pool.py:128`), so **no
+API key could be passed**, and `tokenize` is a `len // 4` approximation
 (`:171`) that a remote backend has no way to improve. Decided: spec **D45**;
 the key follows D22 (a credential *name*, resolved at connect time).
+
+The key half is **built**: the client takes a credential name, resolves it
+once at construction through `functions/credentials.py` — the D22 resolver,
+moved out of `mcp_session` so that MCP servers and model backends share one
+rule rather than one each — and raises on a name nobody has set, where the
+cause is still legible. The embedder reuses those headers via `pool.client`.
+`tokenize` stays an approximation, and stays deliberate: nothing checks out
+a client purely to count, so an exact round-trip would be wasted. What is
+left is D45's own scope — N named backends behind `checkout()`.
 
 ### G12. No version metadata
 
@@ -558,7 +569,7 @@ if interrupt_requests and llama_outer_lock.locked():
 (`llama_cpp/server/settings.py:223`), and Silk's generated config sets only
 `host`, `port` and `models` (`model_pool.py:217`) — so the default applies.
 **Agent B starting a request truncates agent A's response mid-stream.** A
-receives a well-formed `[DONE]`; `OpenAIClientMock.generator()` (`:153`)
+receives a well-formed `[DONE]`; `OpenAICompatClient.generator()` (`:153`)
 breaks on it exactly as it would on a natural stop, so the loop cannot tell
 a cut-off turn from a finished one and reasons on against the fragment.
 

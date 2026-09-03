@@ -10,7 +10,7 @@ flags), so the full set of model settings — GPU layers, context, threads, seed
 flash-attention, mmap, KV-cache quant — is forwarded robustly across
 ``llama-cpp-python`` versions without guessing flag names or bool spellings.
 
-``checkout()`` hands agents an :class:`OpenAIClientMock` that mimics the
+``checkout()`` hands agents an :class:`OpenAICompatClient` that mimics the
 ``llama_cpp.Llama`` API (``create_chat_completion``) the GraphEngine/AgentLoop
 already speak, translating calls into HTTP + SSE.
 """
@@ -33,6 +33,7 @@ from typing import Any, Dict, List, Optional
 
 from weave.logger import get_logger
 
+from .credentials import missing_credential, resolve_credential
 from .prefix_stats import LogDrain, PrefixMeter
 
 log = get_logger("SilkModelPool")
@@ -111,14 +112,47 @@ def find_free_port() -> int:
         return s.getsockname()[1]
 
 
-class OpenAIClientMock:
+class OpenAICompatClient:
     """Proxy that mimics the ``llama_cpp.Llama`` API used by GraphEngine, routing
-    ``create_chat_completion`` to the local server over HTTP (+ SSE for streams).
+    ``create_chat_completion`` to an OpenAI-compatible server over HTTP
+    (+ SSE for streams).
+
+    It was called ``OpenAIClientMock`` until 2026-09-03, which was a lie by
+    then: the pool instantiates it as its live client, and it is the whole
+    client surface (``create_chat_completion``, ``tokenize``, ``reset``)
+    built from a bare ``base_url``. That is precisely what a remote backend
+    needs (D45) -- litellm, vLLM, a hosted endpoint are this class with a
+    different URL and no subprocess. What blocked that was headers: it sent
+    only ``Content-Type``, so no key could be passed.
+
+    ``credential`` is the *name* of a credential, never its value (D22).
+    It is resolved once here, at connect time, and held only in memory; a
+    saved graph carries the name and nothing else.
     """
 
-    def __init__(self, base_url: str, model_alias: str = "default") -> None:
+    def __init__(
+        self, base_url: str, model_alias: str = "default",
+        credential: str = "", credential_header: str = "Authorization",
+        credential_prefix: str = "Bearer ",
+    ) -> None:
         self.base_url = base_url
         self.model_alias = model_alias
+        self.credential = credential
+        self._headers = {"Content-Type": "application/json"}
+        secret = resolve_credential(credential)
+        if credential and not secret:
+            raise RuntimeError(missing_credential(credential))
+        if secret:
+            self._headers[credential_header] = f"{credential_prefix}{secret}"
+
+    def headers(self) -> Dict[str, str]:
+        """A fresh copy of the request headers, key included if there is one.
+
+        A copy because a caller that mutated the client's own dict would be
+        editing every later request; the embedder (``embeddings.py``) posts
+        to the same server and asks for these.
+        """
+        return dict(self._headers)
 
     def create_chat_completion(
         self, messages: List[Dict[str, Any]], stream: bool = False, **kwargs: Any,
@@ -133,7 +167,7 @@ class OpenAIClientMock:
 
         req = urllib.request.Request(
             url, data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
+            headers=self.headers(),
         )
 
         # NOTE: do NOT wrap the streaming response in `with` — returning the
@@ -195,11 +229,16 @@ class GGUFModelPool:
         model_path: str,
         n_instances: int = 4,
         clear_on_return: bool = True,
+        credential: str = "",
         **llama_kwargs: Any,
     ) -> None:
         if not LLAMA_SERVER_AVAILABLE:
             raise RuntimeError(server_missing_deps_message())
 
+        # The *name* of a credential, not its value (D22). A local server
+        # needs none; the field exists because the same client talks to a
+        # remote OpenAI-compatible backend, and that one does (D45).
+        self._credential = credential
         self._lock = threading.RLock()
         self._max_instances = n_instances  # display only (single shared server)
         self._clear_on_return = clear_on_return
@@ -276,7 +315,9 @@ class GGUFModelPool:
         )
 
         self._wait_until_ready()  # raises (and cleans up) on failure
-        self._client = OpenAIClientMock(self._server_url, self._model_alias)
+        self._client = OpenAICompatClient(
+            self._server_url, self._model_alias, credential=self._credential,
+        )
         # Which conversations are bound to this server, by session id.
         # A *set*, not a counter: `checkout` runs once per request, so a
         # counter measured requests-ever and called them sessions -- it
@@ -307,6 +348,16 @@ class GGUFModelPool:
     @property
     def model_alias(self) -> str:
         return self._model_alias
+
+    @property
+    def client(self) -> "OpenAICompatClient":
+        """The client the pool talks through.
+
+        Exposed for its :meth:`~OpenAICompatClient.headers` -- the embedder
+        posts to the same server and must carry the same key (D45). It is
+        deliberately not a checkout: nothing here reserves the backend.
+        """
+        return self._client
 
     def _register_for_shutdown(self) -> None:
         """Let the process release this server even if no node does.

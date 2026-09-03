@@ -43,12 +43,12 @@ from typing import Any, Callable, Optional
 
 from weave.logger import get_logger
 
+# D22 lives in one place now: remote model backends need the same rule
+# (D45), and a second copy of it would be a second place to get it wrong.
+from .credentials import SECRETS_FILE, missing_credential, resolve_credential
+
 
 log = get_logger("SilkMCP")
-
-#: Where a credential value may live when it is not in the environment.
-#: Outside the graph on purpose (D22).
-SECRETS_FILE = Path.home() / ".weave" / "silk" / "secrets.json"
 
 #: How long a tool call may block the dispatcher before it is abandoned.
 #: A hung server must not hang the agent thread.
@@ -65,30 +65,6 @@ TRANSPORTS = (STDIO, HTTP, SSE)
 
 class MCPUnavailable(RuntimeError):
     """The MCP client library is not installed, or a server would not talk."""
-
-
-def resolve_credential(name: str) -> Optional[str]:
-    """The value behind a credential *name*, or ``None`` (D22).
-
-    Environment first, then the secrets file. Nothing here writes, and the
-    value is never handed back to the graph -- only used to build the
-    headers of a connection.
-    """
-    if not name:
-        return None
-    value = os.environ.get(name)
-    if value:
-        return value
-    try:
-        if SECRETS_FILE.is_file():
-            data = json.loads(SECRETS_FILE.read_text(encoding="utf-8"))
-            if isinstance(data, dict):
-                found = data.get(name)
-                if isinstance(found, str) and found:
-                    return found
-    except (OSError, ValueError) as exc:
-        log.warning(f"Could not read {SECRETS_FILE}: {exc}")
-    return None
 
 
 @dataclass
@@ -177,10 +153,7 @@ class MCPServerSpec:
         headers = dict(self.headers)
         secret = resolve_credential(self.credential)
         if self.credential and not secret:
-            raise MCPUnavailable(
-                f"Credential '{self.credential}' is not set. Put it in the "
-                f"environment, or in {SECRETS_FILE} -- never in the graph."
-            )
+            raise MCPUnavailable(missing_credential(self.credential))
         if secret:
             headers[self.credential_header] = f"{self.credential_prefix}{secret}"
         return headers
