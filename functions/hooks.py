@@ -530,7 +530,7 @@ class HookRegistry:
                 # middleware behind a pass-through saw an anonymous call
                 # and let it by. That is how the policy gate deferring to
                 # the load floor (D77) and to the requires_approval floor
-                # (D81) silently disabled both. Overrides still win, which
+                # (D82) silently disabled both. Overrides still win, which
                 # is what lets a middleware repair arguments.
                 return _chain(index + 1, **{**kw, **overrides})
 

@@ -113,6 +113,10 @@ log = get_logger("SilkAgent")
 class SilkAgentNode(ThreadedManualNode):
     """Autonomous tool-calling agent over model + toolbox + role."""
     node_state_api = 1   # owns a hand-written state dict
+    # Bumped on any change to what this node persists or how its
+    # ports are shaped; `node_state_api` is what says old state can
+    # no longer be restored (G20). 1 = the shape this spec settled on.
+    node_version = 1
 
     # Worker → main-thread bridges (V6 R11.1).
     chunk_streamed = Signal(str)

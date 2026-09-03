@@ -513,7 +513,7 @@ class ToolBox:
             }
 
             if requires_approval:
-                # The flag arrives with its gate (D81). Declaring it is
+                # The flag arrives with its gate (D82). Declaring it is
                 # the whole of what a tool author has to do; a host that
                 # wants grants or a fixed seam attaches the floor itself
                 # first, and this then finds it already there.
@@ -943,7 +943,7 @@ class ToolBox:
     async def _safe_execute(
         self, call_id: str, name: str, meta: dict, args: dict
     ) -> dict:
-        # The flag is enforced by the floor in `approval_floor.py` (D81),
+        # The flag is enforced by the floor in `approval_floor.py` (D82),
         # which is middleware and has already run by the time execution
         # reaches here. What is left at this site is the fail-closed half:
         # a tool that declares it needs a human, in a toolbox where

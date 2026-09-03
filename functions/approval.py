@@ -286,7 +286,7 @@ def attach_approval_gate(
             # the two is not this one.
             return await handler()
         if (toolbox.tools.get(tool_name) or {}).get("requires_approval"):
-            # Same reasoning for the registration flag (D81): its floor
+            # Same reasoning for the registration flag (D82): its floor
             # asks whatever the policy says, so a policy that also names
             # the tool would only add a second dialog to the same call.
             return await handler()

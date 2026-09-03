@@ -844,7 +844,7 @@ def attach_catalog_hooks(
             toolbox, sandbox, task_policy=task_policy, tool_policy=tool_policy,
             grants=durable, project_root=root,
         )
-        # The floor under `requires_approval` (D81) is installed with the
+        # The floor under `requires_approval` (D82) is installed with the
         # first flagged tool, before any of this is configured, so it has
         # no grant store of its own. Re-attaching hands it the same one
         # the policy gate got: a durable grant means the same thing to

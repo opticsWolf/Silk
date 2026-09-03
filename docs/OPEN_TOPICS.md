@@ -746,7 +746,37 @@ Silk's pool does not depend on cross-request prompt caching. That was
 inherited from a hosted-API framing where a cache miss costs money. Locally
 it costs latency, and the code shows the dependency is real.
 
-### G20. Silk depends on Weave behaviour that has no version or contract
+### G20. Silk depends on Weave behaviour that has no version or contract — PARTLY CLOSED
+
+**Half closed (2026-09-03), and the halves are different problems.**
+
+*The contract.* `functions/weave_contract.py` is the declared floor the
+entry asked for: every Weave internal Silk reaches into, with the reason
+Silk wants it, checked once at plugin import. It does not make any of
+them stable -- Silk cannot -- but it turns "a Weave refactor breaks Silk
+silently" into a named line in the load log, before anything tries to
+use the thing that moved, and into a test that fails in *this* tree the
+day one is renamed (`tests/test_silk_weave_contract.py`). A finding
+never blocks the load: the nodes that do not touch the missing seam
+still work, and a user who can read "Weave moved
+`PortRegistry._by_name`" can act on it.
+
+*The node metadata.* Weave's hot-reload work has landed
+(`weave/engine/migration.py`, `resolve_node`, `GhostNode`,
+`node_state_manifest.json`), so the second half is no longer waiting on
+anything: every Silk node that hand-writes its state declares
+`node_state_api` **and** now `node_version`, and the migration ladder is
+pinned from Silk's side -- an older `node_version` with the same
+`state_api` restores clean, and an unknown Silk class resolves MISSING
+carrying the suite that would supply it.
+
+**Still open:** Weave's own internals remain unversioned, so the floor
+is a list Silk maintains rather than a promise Weave makes. Closing that
+is a Weave decision, not a Silk one. The entry stays for it.
+
+*Original text follows for the record.*
+
+#### G20, as first written
 
 Silk reaches into Weave internals that are stable by convention rather than
 by declaration: `PortRegistry._by_name` / `_cast_registry` for port

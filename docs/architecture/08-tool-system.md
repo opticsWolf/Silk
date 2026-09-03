@@ -21,7 +21,7 @@ fields that matter:
 | `procedure` | optional prose appended to the system prompt |
 | `source` | provenance tag (`'core'`, `'mcp'`, `'plugin'`, ...) |
 | `timeout` | max execution seconds |
-| `requires_approval` | asks the user before every call, whatever the tool policy says — enforced by the floor in `functions/approval_floor.py` (D81), installed on the first flagged registration; a flagged tool in a toolbox with no floor is refused in `_safe_execute` rather than run |
+| `requires_approval` | asks the user before every call, whatever the tool policy says — enforced by the floor in `functions/approval_floor.py` (D82), installed on the first flagged registration; a flagged tool in a toolbox with no floor is refused in `_safe_execute` rather than run |
 | `sequential` | must not run concurrently with other sequential tools |
 | `tags`, `category`, `risk` | used by role selectors and search |
 

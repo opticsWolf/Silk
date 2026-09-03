@@ -53,6 +53,7 @@ class SilkRoleNode(ActiveNode):
     node_icon: ClassVar[Optional[str]] = "text-recognition"
     vertical_size_policy: ClassVar[VerticalSizePolicy] = VerticalSizePolicy.FIT
     node_state_api = 1   # owns a hand-written state dict
+    node_version = 1     # bump on any state-shape change (G20)
 
     def __init__(self, title: str = "Silk Role", **kwargs: Any) -> None:
         super().__init__(title=title, **kwargs)

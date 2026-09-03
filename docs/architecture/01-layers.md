@@ -22,6 +22,12 @@ Two small modules sit under everything and belong to neither concern:
   credential *name*, and the value is resolved at connect time from the
   environment or `~/.weave/silk/secrets.json`. MCP sessions and model
   backends both go through it; neither owns a copy.
+- `functions/weave_contract.py` -- the list of Weave internals Silk reaches
+  into, each with the reason, checked once at import (G20, D83). It makes
+  none of them stable; it makes a moved one say so by name in the load
+  log, instead of surfacing as an `AttributeError` inside a run. A finding
+  never blocks the load, and `tests/test_silk_weave_contract.py` fails in
+  this tree the day one of the entries is renamed.
 
 > **Where to start?** For "how do I use Silk in a graph", read
 > [NODES.md](../NODES.md). For "I want to add a tool / change behaviour", read

@@ -6,7 +6,7 @@ Copyright (c) 2026 opticsWolf
 
 SPDX-License-Identifier: Apache-2.0 OR MIT
 
-The floor under ``requires_approval=True`` (spec §7, D81; closes G1).
+The floor under ``requires_approval=True`` (spec §7, D82; closes G1).
 
 A tool is registered with ``requires_approval=True`` by whoever wrote it:
 ``remove_node`` and ``disconnect`` carry it (D73), and any capability may

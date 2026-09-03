@@ -62,6 +62,7 @@ class ToolchainNode(ThreadedNode):
     node_icon: ClassVar[Optional[str]] = "braces"
     vertical_size_policy: ClassVar[VerticalSizePolicy] = VerticalSizePolicy.GROW_ONLY
     node_state_api = 1   # owns a hand-written state dict
+    node_version = 1     # bump on any state-shape change (G20)
 
     def __init__(self, title: str = "Toolchain", **kwargs: Any) -> None:
         super().__init__(title=title, **kwargs)

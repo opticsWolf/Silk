@@ -49,6 +49,7 @@ class SilkToolSetNode(ActiveNode):
     node_icon: ClassVar[Optional[str]] = "slice"
     vertical_size_policy: ClassVar[VerticalSizePolicy] = VerticalSizePolicy.FIT
     node_state_api = 1   # owns a hand-written state dict
+    node_version = 1     # bump on any state-shape change (G20)
 
     def __init__(self, title: str = "Silk ToolSet", **kwargs: Any) -> None:
         super().__init__(title=title, **kwargs)

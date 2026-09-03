@@ -51,6 +51,7 @@ class SilkMCPAggregatorNode(ActiveNode):
     node_icon: ClassVar[Optional[str]] = "arrows-join"
     vertical_size_policy: ClassVar[VerticalSizePolicy] = VerticalSizePolicy.FIT
     node_state_api = 1
+    node_version = 1     # bump on any state-shape change (G20)
 
     def __init__(self, title: str = "Silk MCP Aggregator", **kwargs: Any) -> None:
         super().__init__(title=title, **kwargs)

@@ -68,7 +68,7 @@ Rules of the shape:
 - **`risk`** — declared risk level; a tool policy may gate a whole band.
 - **`requires_approval=True`** — this tool always asks the user first. It
   needs no policy and no hook config: the flag installs its own floor
-  (D81), which asks on every call unless a grant pre-authorises the tool,
+  (D82), which asks on every call unless a grant pre-authorises the tool,
   and refuses when the run has no way to ask.
 - **`replaces`** — `BashHint(command, native_call)` entries teach the model
   to prefer the native tool over a shell one-liner (e.g. `rg` →

@@ -543,7 +543,7 @@ exactly this -- `SESSION_FORMAT_VERSION = 0`, no compatibility promise, but
 the number is *there*. A declared pre-release stance beats an undeclared
 one.
 
-**D81. `requires_approval=True` carries its own gate (closes G1).** The
+**D82. `requires_approval=True` carries its own gate (closes G1).** The
 registration flag is the *tool author's* half of the approval story, and it
 had no enforcement at all: `_safe_execute` held a `pass` with a TODO, and
 the only thing that ever asked was the policy gate of D30-D37 -- which is
@@ -2030,6 +2030,39 @@ and the task store already were, and the Macrame `LedgerRegistry` and each
 MCP session now register too -- explicitly, because interpreter teardown is
 not a guarantee and a ledger handle closed late loses its final snapshot.
 
+**D83. What Silk needs from Weave is a list, checked at load (G20).** Silk
+reaches into Weave internals that carry no version and no promise:
+`PortRegistry._by_name` and `_cast_registry` for port registration, the
+node registry and its metadata for graph authoring (D69), the undo command
+map (D72), the panel mirror contract (D59), `emit_stream` / `pulse`. The
+failure that matters is not that a Weave refactor breaks Silk -- it is
+that it breaks Silk *silently*, as an `AttributeError` from inside a run,
+three layers from the thing that moved.
+
+`functions/weave_contract.py` is the declared floor: every such reach,
+with the reason Silk wants it, checked once at plugin import. Three rules
+keep it honest.
+
+- **Only what Silk actually touches.** A list that drifts from the code
+  reports the wrong things confidently, which is worse than reporting
+  nothing. Every entry has a caller, and a test fails in this tree the day
+  one of them is renamed.
+- **A finding, never an exception.** The plugin still loads: nodes that do
+  not touch the missing seam still work, and "Weave moved
+  `PortRegistry._by_name`" is something a user can act on, where a plugin
+  that refuses to import says only that Silk is broken.
+- **It is not a version.** Silk cannot make Weave's internals stable; it
+  can only make a move *legible*. Versioning them is Weave's decision, and
+  G20 stays open for it.
+
+The other half of G20 is now met by Weave rather than argued about: the
+hot-reload work landed (`weave/engine/migration.py`, `resolve_node`,
+`GhostNode`, the state manifest), so every Silk node that hand-writes its
+state declares `node_state_api` **and** `node_version`, and Silk pins its
+own side of the ladder -- an older `node_version` with the same
+`state_api` restores clean, and an unknown Silk class resolves MISSING
+carrying the suite that would supply it.
+
 ---
 
 ## 20. Phasing
@@ -2164,6 +2197,8 @@ selects it as soon as the graph shape changes.
 | T3 — multi-agent budgeting | §13 (D26: `SubBudget` + `nest`, built 2026-09-02) |
 | T4 — plan discovery policy | §11 |
 | G2 — BM25 is a keyword alias | §6 (forced into scope by discovery) |
+| G8 — stops not honoured mid-tool-batch | §7 (the gate's block, D38/D49) + `bind_stop` on the ToolBox — landed 2026-09-03 |
+| G20 (half) — no declared floor under the Weave internals Silk uses | §19 (D83, `functions/weave_contract.py`); versioning them stays Weave's call |
 
 G6 is no longer fully untouched: D40 makes a model-request error classifier a
 precondition of D24, and that classifier is what would let a future supervisor
