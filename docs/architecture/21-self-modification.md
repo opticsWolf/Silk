@@ -120,6 +120,15 @@ makes *only that root* writable: plugin authoring is not a reason to make the
 user's project writable. Weave core and Silk sit outside every root, so the
 existing static narrowing is what keeps them read-only. No new mechanism.
 
+It also *reports* what the roots reach. Every file tool is sandboxed and
+`import` is not, so a writable root Python will import from is a deferred
+grant of the whole process's authority, redeemable by anything that later
+imports it. `functions/import_reach.py` names such roots at evaluation --
+inside Weave, inside the Python environment, or on `sys.path` -- in the
+node's status line and in the log. It never refuses: plugin authoring is
+exactly the legitimate case, and the G21 residue was that nobody was told,
+not that it was allowed.
+
 **Out of scope in v1, deliberately: Silk improving Silk** (T10). That needs
 review-then-relaunch and has a bootstrapping problem the graph case does not —
 the code that would review the change is the code being changed.

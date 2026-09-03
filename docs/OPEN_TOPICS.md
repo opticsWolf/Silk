@@ -490,14 +490,31 @@ a subprocess *after* approval. Two residues stay open:
   Agent, so what an agent may write is readable off the canvas rather than
   buried in a sandbox handle. It does not close this residue: a narrower
   grant on an importable root is still a deferred grant of process
-  authority, and nothing yet warns that the root is importable.
+  authority — but the silence is over. **Built 2026-09-03**
+  (`functions/import_reach.py`): the ToolBox node checks its *writable*
+  roots at evaluation and says which ones Python will import from, and
+  why — inside Weave, inside the environment, or on `sys.path` — in the
+  status line beside the root count, and in the log. It reports and never
+  refuses: an agent authoring its own plugin (D76) writes into an
+  importable tree on purpose, so the defect was the silence, not the
+  permissiveness. A relative or blank root is not a finding, because
+  resolving one would answer about the process's working directory rather
+  than about the root the user chose.
 - MCP servers with their own file access (§10) sit outside D77's gate
   entirely: they can write wherever their process can, and Silk neither
   sandboxes nor sees it. Already true today; §19 makes it consequential,
   because now something in the process is willing to import what appears on
   disk.
 
-### G19. Toolchain subprocess writes bypass the file locks across agents
+### G19. Toolchain subprocess writes bypass the file locks across agents — CLOSED
+
+**Closed** by D67 tier 2, in `functions/tools/file_locks.py`: a
+writer-preferring readers-writer gate per registered sandbox root, taken
+shared by the file tools (which then take their per-path locks) and
+exclusive by any `CommandSpec` flagged `writes_files`, for the
+subprocess's whole duration. Nested roots are taken together, root gates
+before path locks, both in canonical order. The gap statement follows.
+
 
 The per-path write locks (`functions/tools/file_locks.py`) are process-wide
 and deliberately module-global, so every mutating *file tool* is already
@@ -515,7 +532,25 @@ Fix specified at spec **D67 tier 2**: a per-root readers-writer gate, a
 Scope ruling at **D68** (advisory, per-process; long-term ownership via
 ledger claims, not locks). Phase 1 item 12.
 
-### G18. `delegate_parallel` is unsound with more than one assignment
+### G18. `delegate_parallel` is unsound with more than one assignment — CLOSED
+
+**Closed**, all four defects and D54's residue: the fan-out refuses a
+duplicate worker with the reason and the fix rather than failing
+obscurely (D52.1); depth and chain are restored in a `finally` so a
+worker's toolset does not start its next run pre-charged (D52.2); an
+over-long assignment list is **refused, never trimmed** — the old slice
+reported "8/8 delegations succeeded" for twelve (D52.3); the shared
+budget is a `SubBudget` that reserves before it spends and refunds a
+parent refusal (D26/T3); and `_run_one` now forwards `on_event` and
+`should_stop`, so a fan-out is visible while it runs and can be stopped
+between workers (D54). It runs sequentially per D53.
+
+One thing D53 changes but does not settle: with the fan-out sequential, a
+worker *could* now take two assignments in turn. It still refuses, because
+D53 is explicitly temporary — the fan-out becomes concurrent again once
+there is more than one backend to be concurrent across — and a permission
+granted now would have to be taken back then. The gap statement follows.
+
 
 The orchestrator's shape is right — delegation is a normal tool, so it
 inherits hooks, role enforcement and `tool_events` for free — but the
@@ -546,7 +581,15 @@ Separately, `_run_one` discards the `on_event` and `should_stop` parameters
 invisible while it runs and **uninterruptible** — G8's most severe instance.
 Spec **D54**.
 
-### G17. `Clear Context` silently fails to release the pool session
+### G17. `Clear Context` silently fails to release the pool session — CLOSED
+
+**Closed** by `GGUFModelPool.release_session` and a *set* of bound
+session ids: `nodes/agent.py` calls the public method instead of reaching
+for `_session_instances`, an attribute of the old multi-`Llama` pool that
+this pool never had. Both binding and releasing are idempotent, which is
+what stops a per-request `checkout` from counting requests and calling
+them conversations. The gap statement follows.
+
 
 `nodes/agent.py:258` reads `pool._session_instances`, an attribute of the
 **old multi-`Llama` pool**; `GGUFModelPool` has no such attribute. The access

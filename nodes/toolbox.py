@@ -43,6 +43,7 @@ from ..functions.tools.file_write import attach_file_write_tools
 from ..functions.tools.file_manipulate import attach_file_manipulate_tools
 from ..functions.tools.graph_authoring import attach_graph_tools
 from ..functions.tools.suite_tools import attach_suite_tools
+from ..functions.import_reach import import_reach_warning
 from ..functions.self_modify import user_plugin_root
 from ..functions.tools.recall_tool import attach_recall_tool
 from ..functions.embeddings import embedder_for
@@ -345,6 +346,21 @@ class SilkToolBoxNode(ActiveNode):
                 writes = True
                 writable = [str(plugin_root)]
 
+        # Every file tool is sandboxed; `import` is not. A writable root
+        # that Python will import from is a deferred grant of the whole
+        # process's authority, redeemable by anything that imports it --
+        # D77 covers the `load_suite` path, and this is the residue it
+        # does not: a root chosen inside the venv, inside Weave, or
+        # anywhere on sys.path, granted without the file-permissions UI
+        # ever suggesting that much (G21). Reported, never refused: the
+        # legitimate case is real (D76 plugin authoring writes into an
+        # importable tree on purpose).
+        self._import_reach = (
+            import_reach_warning(writable or roots) if writes else ""
+        )
+        if self._import_reach:
+            log.warning(self._import_reach)
+
         sandbox = FileToolSandbox(
             root_dir=roots[0],
             allowed_paths=list(roots),
@@ -465,8 +481,13 @@ class SilkToolBoxNode(ActiveNode):
             self._refresh_overview(catalog)
             roots = self._get_cached_value("root_paths") or []
             categories = ", ".join(self._tool_tree.categories())
+            reach = getattr(self, "_import_reach", "")
             self._widget_core.push_display(
                 "status",
                 f"{len(catalog)} tools in {categories or 'no categories'} · "
-                f"{len(roots)} sandbox root(s).",
+                f"{len(roots)} sandbox root(s)."
+                # The warning goes where the root count already is: this
+                # is a property of the roots the user just chose, and a
+                # log line alone is a warning nobody reads (G21).
+                + ("\n! " + reach if reach else ""),
             )
