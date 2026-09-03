@@ -591,7 +591,7 @@ the reasoning is in [the tool system section](architecture/08-tool-system.md#hoo
 off; `HOOK_WRAP_TOOL_VALIDATE` joins it as the other middleware seam that
 can refuse a call before it happens.
 
-### T3. Multi-agent budgeting
+### T3. Multi-agent budgeting — *closed*
 
 A fan-out can share one `UsageLimits`, but there is no per-worker
 sub-budget: one greedy worker can exhaust the shared budget and every
@@ -599,8 +599,16 @@ other worker in the fan-out starts getting `USAGE_LIMIT` events.
 
 **Decided (semantics only):** spec §13 (D26) — a global cap plus optional
 per-worker sub-budgets, stated now so the compaction and approval work do
-not have to guess, implemented after the core surface. The gap is that
-nothing is built; the design question is closed.
+not have to guess, implemented after the core surface.
+
+**Closed (2026-09-02) by building it.** `SubBudget` is a `UsageLimits`
+with a parent; `nest(shared, own)` combines them and `run_subagent` calls
+it instead of choosing between them. A worker claims from its own budget
+first and then the shared one, refunding itself if the parent refuses, so
+it is never billed for what it did not get and cannot raise the global
+ceiling. The greedy worker now exhausts its own share and the others keep
+theirs. Still absent, and not a T3 question: any *node* that constructs a
+`UsageLimits` at all.
 
 **Correction (2026-08-30):** this entry assumed the *shared* half already
 worked. It does not. `UsageLimits` (`functions/usage_limits.py`) is a plain

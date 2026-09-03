@@ -41,6 +41,7 @@ from .stream_events import (
     EventToolCall,
 )
 from .tool_calling import tool_call_instructions
+from .usage_limits import nest
 
 log = get_logger("SilkSubagent")
 
@@ -84,9 +85,10 @@ class AgentSpec:
     system_prompt: str = ""
     max_rounds: Optional[int] = None
     gen_params: dict[str, Any] = field(default_factory=dict)
-    #: Optional shared budget. When an orchestrator passes one UsageLimits into
-    #: every worker run, a fan-out of delegations respects a single global cap
-    #: instead of each sub-agent getting its own fresh allowance.
+    #: This worker's own caps. An orchestrator's shared budget does not
+    #: replace them: with both, these become a ``SubBudget`` *inside* the
+    #: shared cap, so one greedy worker cannot spend the fan-out's whole
+    #: allowance and no worker can raise the global ceiling (D26, T3).
     usage_limits: Optional[Any] = None
 
     def is_runnable(self) -> tuple[bool, str]:
@@ -173,7 +175,7 @@ def run_subagent(
             spec.model_handle,
             system_prompt=system_prompt,
             history=history if history is not None else [],
-            usage_limits=usage_limits or spec.usage_limits,
+            usage_limits=nest(usage_limits, spec.usage_limits),
             session_id=session_id or str(uuid.uuid4()),
         )
         engine.clear_stop()

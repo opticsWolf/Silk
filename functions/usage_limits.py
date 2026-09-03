@@ -11,6 +11,16 @@ record, collectively overrunning the limit the object exists to enforce
 the ``reserve_*`` methods do the check **and** the record inside it -- those
 are what callers on the hot path use. ``check_*`` / ``record_*`` remain for
 callers that genuinely need the two halves apart.
+
+**Nesting (spec D26, closes T3).** One shared cap answers "the fan-out may
+not cost more than this" and nothing else: a greedy worker can still spend
+the whole allowance and leave the rest of the fan-out with nothing but
+``USAGE_LIMIT`` events. :class:`SubBudget` is the second half -- a worker's
+own caps *inside* the shared one. It claims from itself first, then from
+its parent, and refunds itself if the parent refuses, so a worker can
+never be charged for a request it was not allowed to make. Both caps bind:
+whichever is exhausted first is the one the worker hears about, and no
+sub-budget can raise the global ceiling.
 """
 from __future__ import annotations
 
@@ -175,6 +185,150 @@ class UsageLimits:
             self._input_tokens_used = snapshot.get("_input_tokens_used", 0)
             self._request_count = snapshot.get("_request_count", 0)
             self._tool_call_count = snapshot.get("_tool_call_count", 0)
+
+
+    # -- Nesting (spec D26) -----------------------------------------------
+
+    def _refund(self, *, output_tokens: int = 0, input_tokens: int = 0,
+                requests: int = 0, tool_calls: int = 0) -> None:
+        """Give back what was claimed a moment ago and cannot be spent.
+
+        Only :class:`SubBudget` uses this, and only to undo its *own*
+        claim when its parent refuses. Counters never go below zero: a
+        refund of something that was never claimed is a bug, and reading
+        it as a negative allowance would hide it.
+        """
+        with self._lock:
+            self._output_tokens_used = max(
+                0, self._output_tokens_used - output_tokens)
+            self._input_tokens_used = max(
+                0, self._input_tokens_used - input_tokens)
+            self._request_count = max(0, self._request_count - requests)
+            self._tool_call_count = max(0, self._tool_call_count - tool_calls)
+
+
+@dataclass
+class SubBudget(UsageLimits):
+    """One worker's own caps, inside a shared one (spec D26, T3).
+
+    Every check consults both, and every reservation claims from both --
+    this budget first, because it is uncontended, then the parent. If the
+    parent refuses, this one refunds itself before the exception leaves,
+    so a worker is never charged for what it did not get.
+
+    Ordering is deliberate: claiming the parent first and this one second
+    would leave the *shared* counter transiently over-charged, which is
+    the counter other threads read.
+    """
+
+    parent: Any = None
+
+    # â”€â”€ checks: both ceilings bind â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+    def check_output_tokens(self, tokens: int) -> None:
+        super().check_output_tokens(tokens)
+        if self.parent is not None:
+            self.parent.check_output_tokens(tokens)
+
+    def check_input_tokens(self, tokens: int) -> None:
+        super().check_input_tokens(tokens)
+        if self.parent is not None:
+            self.parent.check_input_tokens(tokens)
+
+    def check_request(self) -> None:
+        super().check_request()
+        if self.parent is not None:
+            self.parent.check_request()
+
+    def check_tool_calls(self, count: int = 1) -> None:
+        super().check_tool_calls(count)
+        if self.parent is not None:
+            self.parent.check_tool_calls(count)
+
+    # â”€â”€ reservations: mine, then the shared one, or neither â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+    def reserve_request(self) -> None:
+        with self._lock:
+            UsageLimits.check_request(self)
+            self.record_request()
+        if self.parent is None:
+            return
+        try:
+            self.parent.reserve_request()
+        except UsageLimitExceeded:
+            self._refund(requests=1)
+            raise
+
+    def reserve_tool_calls(self, count: int = 1) -> None:
+        with self._lock:
+            UsageLimits.check_tool_calls(self, count)
+            self.record_tool_calls(count)
+        if self.parent is None:
+            return
+        try:
+            self.parent.reserve_tool_calls(count)
+        except UsageLimitExceeded:
+            self._refund(tool_calls=count)
+            raise
+
+    def reserve_output_tokens(self, tokens: int) -> None:
+        with self._lock:
+            UsageLimits.check_output_tokens(self, tokens)
+            self.record_output_tokens(tokens)
+        if self.parent is None:
+            return
+        try:
+            self.parent.reserve_output_tokens(tokens)
+        except UsageLimitExceeded:
+            self._refund(output_tokens=tokens)
+            raise
+
+    def reserve_input_tokens(self, tokens: int) -> None:
+        with self._lock:
+            UsageLimits.check_input_tokens(self, tokens)
+            self.record_input_tokens(tokens)
+        if self.parent is None:
+            return
+        try:
+            self.parent.reserve_input_tokens(tokens)
+        except UsageLimitExceeded:
+            self._refund(input_tokens=tokens)
+            raise
+
+    def snapshot(self) -> dict:
+        """This worker's counters, plus the shared ones it is spending."""
+        body = super().snapshot()
+        if self.parent is not None:
+            body["shared"] = self.parent.snapshot()
+        return body
+
+
+def nest(shared: Any, own: Any) -> Any:
+    """The budget a worker actually runs under (spec D26).
+
+    Either half may be missing: a fan-out with only a global cap behaves
+    exactly as it did before sub-budgets existed, and a worker with only
+    its own caps and no orchestrator keeps them. With both, the worker's
+    caps become a :class:`SubBudget` of the shared one -- *inside* it,
+    never beside it, because a per-worker allowance that could exceed the
+    global cap would not be a sub-budget at all.
+
+    An ``own`` that is already a :class:`SubBudget` of this parent is
+    returned unchanged, so re-entering a run does not nest twice.
+    """
+    if own is None:
+        return shared
+    if shared is None:
+        return own
+    if isinstance(own, SubBudget) and own.parent is shared:
+        return own
+    return SubBudget(
+        output_tokens_limit=own.output_tokens_limit,
+        input_tokens_limit=own.input_tokens_limit,
+        request_limit=own.request_limit,
+        tool_calls_limit=own.tool_calls_limit,
+        parent=shared,
+    )
 
 
 class UsageLimitExceeded(Exception):

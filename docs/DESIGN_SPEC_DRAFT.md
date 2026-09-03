@@ -1102,11 +1102,31 @@ and A is what handles it.
 
 ## 13. Budgets
 
-**D26. Specify nested budgets; build later.** The intended semantics: a
-global cap plus optional per-worker sub-budgets. Stated now so the compaction
-and approval work do not have to guess, implemented after the core surface.
-Today a fan-out shares one `UsageLimits` and one greedy worker can starve the
-rest (**T3**).
+**D26. Nested budgets. Built 2026-09-02.** The semantics were stated first
+so the compaction and approval work did not have to guess: a global cap plus
+optional per-worker sub-budgets. Both halves now exist.
+
+`SubBudget` is a `UsageLimits` with a parent. Every check consults both
+ceilings, and every reservation claims from the worker's own budget first
+-- it is uncontended -- then from the shared one, refunding itself if the
+parent refuses. That order matters: claiming the parent first would leave
+the *shared* counter transiently over-charged, and the shared counter is
+the one other threads read. A worker is therefore never billed for a
+request it was not allowed to make, and no sub-budget can raise the global
+ceiling; whichever cap is hit first is the one the worker hears about.
+
+`nest(shared, own)` is where the two meet, and `run_subagent` calls it
+instead of choosing: with only a global cap a fan-out behaves exactly as it
+did before, with only its own caps a lone worker keeps them, and with both
+the worker's become a sub-budget *inside* the shared one. Nesting is
+idempotent, so re-entering a run cannot stack sub-budget on sub-budget.
+This closes **T3**: a greedy worker exhausts its own share and the rest of
+the fan-out keeps theirs.
+
+What is *not* built is a budget widget. No node constructs a `UsageLimits`
+today -- not for the global cap either -- so budgets travel through
+`AgentSpec.usage_limits` and the orchestrator's shared instance. When a
+surface lands it lands once, for both halves.
 
 ---
 
@@ -1987,9 +2007,10 @@ not a guarantee and a ledger handle closed late loses its final snapshot.
     six hot-reload phases had all shipped; Silk improving Silk stays out, T10).
 
 **Later:** embeddings for `recall` (vector half of §17 — needs an
-embedding producer; the GGUF pool can serve one); nested budgets (D26);
-BM25 or its removal (G2); the unwired-event
-dispositions (D15); the D47 mechanisms not selected by the measurement --
+embedding producer; the GGUF pool can serve one); a budget *surface* --
+the nesting mechanism is built (D26) but no node constructs a
+`UsageLimits`, for either half; the D47 mechanisms not selected by the
+measurement --
 kept described rather than deleted, since the rule that skips one today
 selects it as soon as the graph shape changes.
 
@@ -2006,7 +2027,7 @@ selects it as soon as the graph shape changes.
 | G14 / T8 — compaction absent | §12 |
 | G15 — prompt-prefix reuse unconfigured/unmeasured | §12 (D41; measurement is Phase 1) |
 | T1 — approval state design, reuse vs parallel | §7 (D30–D31: one inline gate hook, no state to design; only durable grants persist) |
-| T3 — multi-agent budgeting | §13 (specified, not built) |
+| T3 — multi-agent budgeting | §13 (D26: `SubBudget` + `nest`, built 2026-09-02) |
 | T4 — plan discovery policy | §11 |
 | G2 — BM25 is a keyword alias | §6 (forced into scope by discovery) |
 

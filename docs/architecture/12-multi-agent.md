@@ -48,11 +48,23 @@ isn't warranted.
 dict), an optional `toolset` (a `ToolBox` from `build_toolset`; `None` means
 pure chat, where tool fences are treated as final output), a `role`,
 `name`/`description` (what the orchestrator advertises to its model),
-`system_prompt`, `max_rounds`, `gen_params`, and an optional **shared**
-`usage_limits`. Sharing one `UsageLimits` across a fan-out means the whole
-delegation respects a single global budget instead of each sub-agent getting
-its own fresh allowance. `is_runnable()` validates the handle has a usable
-GGUF model. **`SubagentResult`** carries the reply text, `ok`, `error`, and
+`system_prompt`, `max_rounds`, `gen_params`, and an optional
+`usage_limits`. `is_runnable()` validates the handle has a usable GGUF
+model.
+
+**Budgets nest (D26, closes T3).** Sharing one `UsageLimits` across a
+fan-out makes the whole delegation respect a single global cap — and
+nothing else, so one greedy worker could spend it all and leave the rest
+of the fan-out with `USAGE_LIMIT` events. A spec's own `usage_limits` is
+therefore not an *alternative* to the shared cap: `run_subagent` calls
+`nest(shared, own)`, and with both present the worker's caps become a
+`SubBudget` **inside** the shared one. It claims from itself first (it is
+uncontended), then from the parent, refunding itself if the parent
+refuses — so a worker is never billed for a request it was not allowed to
+make, the shared counter other threads read is never transiently
+over-charged, and no sub-budget can raise the global ceiling. Either half
+may be absent, and nesting is idempotent, so a re-entered run does not
+stack sub-budget on sub-budget. **`SubagentResult`** carries the reply text, `ok`, `error`, and
 the `tool_calls` trace.
 
 ### `functions/messaging.py` — `AgentMessage`
