@@ -34,12 +34,14 @@ from PySide6.QtCore import Qt, QEvent, Signal, Slot
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPushButton,
     QVBoxLayout,
     QWidget,
 )
 
 from weave.widgetcore import WidgetCore, PortRole
+from weave.widgetcore.binding_policy import debounced
 from weave.node.threaded import ThreadedManualNode
 from weave.node import VerticalSizePolicy
 from weave.registry import register_node
@@ -69,6 +71,7 @@ from ..functions.decision_seam import (
 )
 from ..functions.grants import SCOPE_ALWAYS, SCOPE_ONCE, SCOPE_RUN
 from ..functions.graph_engine import GraphEngine
+from ..functions.usage_limits import describe_budget, parse_budget
 from ..functions.hooks import (
     HOOK_AFTER_MODEL_RESPONSE,
     HOOK_AFTER_RUN,
@@ -146,6 +149,12 @@ class SilkAgentNode(ThreadedManualNode):
         self._canvas_seam: Optional[MainThreadCall] = None
         self._canvas_author: Optional[CanvasAuthor] = None
         self._pending_decision: Optional[dict] = None
+        #: This run's caps, built once from the budget field and handed
+        #: to whoever asks first -- the Orchestrator needs the object
+        #: before the engine exists, and both must count into the same
+        #: one. ``None`` between runs (D26).
+        self._run_budget: Optional[Any] = None
+        self._run_budget_built: bool = False
         self._emit_event: Optional[Any] = None
 
         # ── Ports ──
@@ -166,6 +175,10 @@ class SilkAgentNode(ThreadedManualNode):
         # this run; it can never widen it, and it cannot switch confinement
         # back on (D18).
         self.add_input("permissions", datatype="file_permissions")
+        # A ceiling for the run, in text, because a run that may cost
+        # anything is the default and someone has to be able to say
+        # otherwise without writing Python (D26). Wired input wins.
+        self.add_input("budget", datatype="string")
 
         self.add_output("response", datatype="string")
         # Clean A2A: the reply wrapped as a self-describing AgentMessage
@@ -254,6 +267,26 @@ class SilkAgentNode(ThreadedManualNode):
         form.addWidget(self._decision_box)
         self._widget_core.register_widget(
             "decision", self._decision_box, role=PortRole.INTERNAL,
+            add_to_layout=False,
+        )
+
+        # The run's ceiling. Empty means uncapped, which is what every
+        # run did before this field existed; anything unreadable stops
+        # the run rather than quietly running without the cap.
+        self.edit_budget = QLineEdit()
+        self.edit_budget.setPlaceholderText(
+            "Budget (empty = no cap), e.g. requests=20, tools=50, output=8k"
+        )
+        self.edit_budget.setToolTip(
+            "Caps for this run, comma separated: requests, tool_calls, "
+            "output_tokens, input_tokens. '8k' means 8000. An "
+            "unreadable budget refuses the run."
+        )
+        form.addWidget(QLabel("Budget:"))
+        form.addWidget(self.edit_budget)
+        self._widget_core.register_widget(
+            "budget", self.edit_budget, role=PortRole.INPUT,
+            datatype="string", default="", policy=debounced(300),
             add_to_layout=False,
         )
 
@@ -492,6 +525,31 @@ class SilkAgentNode(ThreadedManualNode):
 
     # ── Worker thread ────────────────────────────────────────────────
 
+    def take_run_budget(self, inputs: Dict[str, Any]) -> Optional[Any]:
+        """This run's :class:`UsageLimits`, built once (spec D26).
+
+        The Orchestrator needs the object before ``compute`` builds an
+        engine, because the same instance is what every worker spends
+        from -- a fan-out whose orchestrator and workers counted into
+        two objects would have a cap that means nothing. So whoever
+        asks first builds it and the other gets the same one; it is
+        released at the end of the run, since counters that survived
+        into the next run would make a second run start exhausted.
+
+        Raises:
+            ValueError: if the field cannot be read. Callers turn this
+                into a refused run.
+        """
+        if not self._run_budget_built:
+            self._run_budget = parse_budget(inputs.get("budget"))
+            self._run_budget_built = True
+        return self._run_budget
+
+    def release_run_budget(self) -> None:
+        """Forget this run's counters; the next run starts with its own."""
+        self._run_budget = None
+        self._run_budget_built = False
+
     def compute(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
         self._last_run_ok = False
         model_handle = inputs.get("model_obj")
@@ -517,6 +575,17 @@ class SilkAgentNode(ThreadedManualNode):
         if not prompt:
             self.compute_error.emit("Empty task prompt.")
             return {"response": "Error: empty task prompt."}
+
+        # A budget nobody can read is not a budget. Refusing here --
+        # before the role is bound or a token is spent -- is the whole
+        # point: running anyway would run *without* the cap that was
+        # asked for, and the run would look like it obeyed one (D26).
+        try:
+            budget = self.take_run_budget(inputs)
+        except ValueError as exc:
+            self.release_run_budget()
+            self.compute_error.emit(f"Budget: {exc}")
+            return {"response": f"Error: budget not readable - {exc}"}
 
         toolset = inputs.get("toolset")
         role = inputs.get("role") or DEFAULT_ROLE
@@ -713,7 +782,10 @@ class SilkAgentNode(ThreadedManualNode):
                 system_prompt=system_prompt,
                 history=self._history,
                 session_id=self._session_id,
+                usage_limits=budget,
             )
+            if budget is not None:
+                log.info(f"Run budget: {describe_budget(budget)}.")
             engine.clear_stop()
 
             loop = AgentLoop(
@@ -863,6 +935,10 @@ class SilkAgentNode(ThreadedManualNode):
                 self._canvas_seam = None
             self._canvas_author = None
             self._emit_event = None
+            # The budget is the run's, not the node's: a second run
+            # inheriting the first one's counters would start already
+            # spent (D26).
+            self.release_run_budget()
             self.decision_settled.emit("")
             # A stopped or timed-out run never answers what it asked, and a
             # row for an agent that is no longer running is a button that

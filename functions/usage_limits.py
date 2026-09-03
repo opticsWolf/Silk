@@ -347,3 +347,108 @@ def _format_tokens(tokens: int) -> str:
 def _format_tool_calls(count: int) -> str:
     """Format tool call count for error messages."""
     return f"{count:,}"
+
+
+# ── the surface: text a person types, on a node (spec D26) ──────────────────
+#
+# The nesting mechanism existed before anything constructed a budget: every
+# cap had to be built in Python, so in a running graph there were no caps at
+# all. These two functions are the whole surface -- a node keeps one string
+# field, and a run either has the caps that string names or does not start.
+
+#: What may be written on the left of an ``=``. The long names are the
+#: dataclass fields without their ``_limit`` suffix; the short ones are what
+#: people actually type. Nothing here is a prefix match: ``req=5`` is a typo,
+#: and a typo that silently means "no cap" is the failure this surface exists
+#: to prevent.
+_BUDGET_KEYS: dict[str, str] = {
+    "requests": "request_limit",
+    "request": "request_limit",
+    "turns": "request_limit",
+    "tool_calls": "tool_calls_limit",
+    "tools": "tool_calls_limit",
+    "output_tokens": "output_tokens_limit",
+    "output": "output_tokens_limit",
+    "input_tokens": "input_tokens_limit",
+    "input": "input_tokens_limit",
+}
+
+
+def _budget_number(raw: str, key: str) -> int:
+    """``8k`` → 8000. Rejects zero, negatives and anything unreadable."""
+    text = raw.strip().lower().replace("_", "").replace(",", "")
+    scale = 1
+    if text.endswith("k"):
+        scale, text = 1_000, text[:-1]
+    elif text.endswith("m"):
+        scale, text = 1_000_000, text[:-1]
+    try:
+        value = int(text) * scale
+    except ValueError:
+        raise ValueError(f"{key}: {raw.strip()!r} is not a number") from None
+    if value <= 0:
+        raise ValueError(
+            f"{key}: {value} is not a budget. Leave the field empty for no "
+            f"cap; a cap of zero would refuse the run's first request."
+        )
+    return value
+
+
+def parse_budget(text: Any) -> UsageLimits | None:
+    """Read ``requests=20, output=8k`` into a :class:`UsageLimits`.
+
+    Blank text is ``None`` -- no cap, which is what every run did before
+    there was a field to type in, and what most runs still want.
+
+    Raises:
+        ValueError: naming the part that could not be read, and what may be
+            written. Deliberately *not* forgiving: the caller asked for a
+            ceiling, and a misspelled key quietly parsed as "unlimited"
+            would be a budget that is not a budget (D77's shape).
+    """
+    body = str(text or "").strip()
+    if not body:
+        return None
+
+    limits: dict[str, int] = {}
+    for chunk in body.replace("\n", ",").replace(";", ",").split(","):
+        part = chunk.strip()
+        if not part:
+            continue
+        if "=" not in part and ":" not in part:
+            raise ValueError(
+                f"{part!r} is not a limit. Write one per comma, as "
+                f"name=number -- for example 'requests=20, output=8k'."
+            )
+        key, _, raw = part.replace(":", "=").partition("=")
+        field_name = _BUDGET_KEYS.get(key.strip().lower())
+        if field_name is None:
+            raise ValueError(
+                f"{key.strip()!r} is not a limit name. Accepted: "
+                f"{', '.join(sorted(set(_BUDGET_KEYS)))}."
+            )
+        value = _budget_number(raw, key.strip().lower())
+        if field_name in limits and limits[field_name] != value:
+            raise ValueError(
+                f"{key.strip()!r} sets {field_name} twice, to "
+                f"{limits[field_name]} and {value}."
+            )
+        limits[field_name] = value
+    return UsageLimits(**limits)
+
+
+def describe_budget(limits: Any) -> str:
+    """A short human line for a node's status: ``requests 20, output 8,000``."""
+    if limits is None:
+        return "no budget"
+    parts = []
+    for label, attr in (
+        ("requests", "request_limit"),
+        ("tool calls", "tool_calls_limit"),
+        ("output", "output_tokens_limit"),
+        ("input", "input_tokens_limit"),
+    ):
+        value = getattr(limits, attr, None)
+        if value:
+            parts.append(f"{label} {value:,}")
+    return ", ".join(parts) if parts else "no budget"

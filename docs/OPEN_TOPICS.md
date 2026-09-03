@@ -607,8 +607,11 @@ it instead of choosing between them. A worker claims from its own budget
 first and then the shared one, refunding itself if the parent refuses, so
 it is never billed for what it did not get and cannot raise the global
 ceiling. The greedy worker now exhausts its own share and the others keep
-theirs. Still absent, and not a T3 question: any *node* that constructs a
-`UsageLimits` at all.
+theirs. The surface followed the same day, because a mechanism nothing
+constructs is a mechanism nobody has: the Agent/Orchestrator node carries a
+**Budget** field for the shared cap and the Agent Spec node one for a
+worker's share (`requests=20, tool_calls=50, output=8k`, empty for no cap).
+An unreadable field refuses the run rather than running uncapped.
 
 **Correction (2026-08-30):** this entry assumed the *shared* half already
 worked. It does not. `UsageLimits` (`functions/usage_limits.py`) is a plain

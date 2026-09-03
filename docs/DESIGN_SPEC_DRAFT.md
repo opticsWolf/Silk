@@ -1123,10 +1123,25 @@ idempotent, so re-entering a run cannot stack sub-budget on sub-budget.
 This closes **T3**: a greedy worker exhausts its own share and the rest of
 the fan-out keeps theirs.
 
-What is *not* built is a budget widget. No node constructs a `UsageLimits`
-today -- not for the global cap either -- so budgets travel through
-`AgentSpec.usage_limits` and the orchestrator's shared instance. When a
-surface lands it lands once, for both halves.
+**The surface, built the same day.** A mechanism nothing constructs is a
+mechanism nobody has: until the field existed, every cap had to be written
+in Python, so a *running graph* had no caps at all. The Agent node (and so
+the Orchestrator, which is one) and the Agent Spec node each carry one
+text field, read by `parse_budget`: `requests=20, tool_calls=50,
+output=8k`, empty for no cap. Four names, four short aliases, `k`/`m`
+suffixes, and no prefix matching.
+
+Three things follow from what a budget is *for*. An unreadable field
+**refuses the run** -- before the role is bound or a token is spent --
+because running anyway would run without the cap that was asked for while
+looking like it obeyed one; on the Agent Spec node the same answer means
+the worker is not added, since a registered worker gets delegated to.
+The orchestrator's budget is *one object* shared with its workers,
+including its own requests, because a cap it spent from separately would
+not be a cap on the fan-out. And it is the **run's**, not the node's: the
+counters are released when the run ends, or a second run would start
+already spent. `AgentSpec.usage_limits` is the worker's own field, and
+`nest` puts it inside the shared one exactly as above.
 
 ---
 
@@ -2007,10 +2022,8 @@ not a guarantee and a ledger handle closed late loses its final snapshot.
     six hot-reload phases had all shipped; Silk improving Silk stays out, T10).
 
 **Later:** embeddings for `recall` (vector half of §17 — needs an
-embedding producer; the GGUF pool can serve one); a budget *surface* --
-the nesting mechanism is built (D26) but no node constructs a
-`UsageLimits`, for either half; the D47 mechanisms not selected by the
-measurement --
+embedding producer; the GGUF pool can serve one); the D47 mechanisms not
+selected by the measurement --
 kept described rather than deleted, since the rule that skips one today
 selects it as soon as the graph shape changes.
 

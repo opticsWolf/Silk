@@ -64,7 +64,18 @@ refuses — so a worker is never billed for a request it was not allowed to
 make, the shared counter other threads read is never transiently
 over-charged, and no sub-budget can raise the global ceiling. Either half
 may be absent, and nesting is idempotent, so a re-entered run does not
-stack sub-budget on sub-budget. **`SubagentResult`** carries the reply text, `ok`, `error`, and
+stack sub-budget on sub-budget.
+
+Both halves are typed on a node, not in Python: the Agent/Orchestrator
+node's **Budget** field is the shared cap (the orchestrator's own requests
+count against it), the Agent Spec node's is that worker's share, and
+`parse_budget` reads both — `requests=20, tool_calls=50, output=8k`, empty
+for no cap. An unreadable field refuses the run (or, on a spec, leaves the
+worker out), because a budget that quietly parses as "unlimited" is the
+one failure the field exists to prevent. Counters are released when the run
+ends, so a second run does not inherit the first one's spending.
+
+**`SubagentResult`** carries the reply text, `ok`, `error`, and
 the `tool_calls` trace.
 
 ### `functions/messaging.py` — `AgentMessage`

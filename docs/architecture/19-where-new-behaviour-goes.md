@@ -35,6 +35,7 @@
 | Let an agent recall work from another project | wire that folder in as a second sandbox root — `recall` reads the history ledger of every root the box was given and writes only to the working one, so crossing projects is visible and never a default (§22 q7) |
 | Keep two agents from clobbering each other's file | pass `expected_sha256` to `write_file` (or use `edit_file`'s anchors) — the sandbox never consults claims as write policy, because a permission that depends on another agent's runtime state is one nobody configured (§22 q8) |
 | Find out why a fan-out feels slow | the Pool Monitor's flags line and `snapshot()["serialization"]` — one server serves one request at a time (D43), and the queue is counted rather than hidden (§22 q1c) |
+| Cap what a run may cost | the Agent/Orchestrator node's **Budget** field (`requests=20, output=8k`); a worker's own share goes on its Agent Spec node and nests inside it (D26) |
 | Stop one worker eating the fan-out's budget | give its `AgentSpec` a `usage_limits`; `run_subagent` nests it inside the orchestrator's shared cap rather than replacing it (D26) |
 | Require a human before a tool runs | the `tool_approval` catalog hook (risk band or tool names) — the same middleware the `signoff` policy uses |
 | Let a user say "don't ask again" | a `remember` scope on the decision: run-scoped in the gate closure, or a durable grant in `~/.weave/silk/grants.json` |

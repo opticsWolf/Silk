@@ -41,6 +41,7 @@ from .silk_ports import (  # noqa: F401
 )
 from ..functions.role import DEFAULT_ROLE
 from ..functions.subagent import AgentSpec
+from ..functions.usage_limits import describe_budget, parse_budget
 
 log = get_logger("SilkAgentSpec")
 
@@ -72,6 +73,8 @@ class SilkAgentSpecNode(ActiveNode):
         self.add_input("role", datatype="silk_role")
         # Speciality text is widget-backed but also wireable (BIDIRECTIONAL).
         self.add_input("description", datatype="string")
+        # This worker's own caps, wireable like the speciality text.
+        self.add_input("budget", datatype="string")
         # Chain input: the workers accumulated so far (optional first link).
         self.add_input("agents_in", datatype="silk_agents")
         self.add_output("agents", datatype="silk_agents")
@@ -101,6 +104,25 @@ class SilkAgentSpecNode(ActiveNode):
         self._widget_core.register_widget(
             "description", self._edit_desc, role=PortRole.BIDIRECTIONAL,
             datatype="string", default="", add_to_layout=False,
+        )
+
+        # This worker's own share. With an orchestrator budget it
+        # nests inside it, so a greedy worker exhausts its share and
+        # the rest of the fan-out keeps theirs (D26, T3).
+        self._edit_budget = QLineEdit()
+        self._edit_budget.setPlaceholderText(
+            "empty = only the orchestrator's cap, e.g. requests=5"
+        )
+        self._edit_budget.setToolTip(
+            "This worker's own caps, comma separated: requests, "
+            "tool_calls, output_tokens, input_tokens. They narrow the "
+            "orchestrator's shared budget; they can never widen it."
+        )
+        form.addRow("Budget:", self._edit_budget)
+        self._widget_core.register_widget(
+            "budget", self._edit_budget, role=PortRole.INPUT,
+            datatype="string", default="", policy=debounced(300),
+            add_to_layout=False,
         )
 
         self._label_status = QLabel("No model connected.")
@@ -133,6 +155,15 @@ class SilkAgentSpecNode(ActiveNode):
             )
             return {"agents": chain}
 
+        try:
+            budget = parse_budget(inputs.get("budget"))
+        except ValueError as exc:
+            # Same answer as an invalid model: the worker is not added. A
+            # worker registered without the caps someone typed would be
+            # delegated to and run uncapped (D26).
+            self._sync_status = f"Budget not readable ({exc}) - worker not added."
+            return {"agents": chain}
+
         name = str(inputs.get("worker_name") or "").strip()
         role = inputs.get("role") or DEFAULT_ROLE
         spec = AgentSpec(
@@ -141,11 +172,13 @@ class SilkAgentSpecNode(ActiveNode):
             role=role,
             name=name or f"worker{len(chain) + 1}",
             description=str(inputs.get("description") or "").strip(),
+            usage_limits=budget,
         )
         self._sync_status = (
             f"Worker '{spec.name}' ready "
             f"({'with toolset' if spec.toolset is not None else 'chat-only'}, "
-            f"role '{getattr(role, 'id', '?')}'). {len(chain) + 1} in chain."
+            f"role '{getattr(role, 'id', '?')}', {describe_budget(budget)}). "
+            f"{len(chain) + 1} in chain."
         )
         return {"agents": chain + [spec]}
 

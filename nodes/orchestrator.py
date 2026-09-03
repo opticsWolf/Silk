@@ -125,6 +125,17 @@ class SilkOrchestratorNode(SilkAgentNode):
         toolset = inputs.get("toolset")
         workers = list(inputs.get("workers") or [])
         max_depth = self.delegation_depth(inputs)
+        # The fan-out's shared ceiling, and the orchestrator's own: one
+        # object, because a cap the orchestrator counted into separately
+        # from its workers would not be a cap on the fan-out at all. A
+        # worker that carries its own caps nests inside this one (D26).
+        # An unreadable budget is not diagnosed here -- the agent's own
+        # compute refuses the run and says why; taking None keeps that the
+        # single place the message comes from.
+        try:
+            budget = self.take_run_budget(inputs)
+        except ValueError:
+            budget = None
 
         if workers and toolset is None:
             log.warning(
@@ -139,10 +150,12 @@ class SilkOrchestratorNode(SilkAgentNode):
             if "delegate" in getattr(toolset, "tools", {}):
                 set_orchestrator_workers(
                     toolset, workers, max_depth=max_depth,
+                    usage_limits=budget,
                 )
             else:
                 attach_orchestrator_tools(
                     toolset, workers=workers, max_depth=max_depth,
+                    usage_limits=budget,
                 )
 
         return super().compute(inputs)
