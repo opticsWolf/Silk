@@ -528,8 +528,19 @@ class PlanRef:
                        label=str(value.get("label") or ""))
         return None
 
-    def store(self, **kwargs: Any) -> "SqliteTaskStore":
-        """The store this reference names."""
+    def store(self, **kwargs: Any) -> Any:
+        """The store this reference names, on the backend that wrote it.
+
+        The file extension is the backend (``.macrame`` is a ledger,
+        anything else SQLite), so a reference stays one dataclass with
+        nothing extra to keep in step -- and a plan named before it exists
+        still lands on the backend its name asks for. Imported here rather
+        than at module scope because `ledger` imports this module.
+        """
+        if self.db_path and str(self.db_path).lower().endswith(".macrame"):
+            from .plan_discovery import open_store
+
+            return open_store(self.root or ".", self.db_path, **kwargs)
         return SqliteTaskStore(self.root or ".", db_path=self.db_path or None,
                                **kwargs)
 

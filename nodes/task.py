@@ -30,6 +30,7 @@ from weave.registry import register_node
 from weave.logger import get_logger
 
 from .silk_ports import SILK_PLAN_TYPE  # noqa: F401
+from ..functions.plan_discovery import scan_all
 from ..functions.task_store import PlanRef, SqliteTaskStore
 
 log = get_logger("SilkTask")
@@ -154,7 +155,7 @@ class SilkTaskNode(ActiveNode):
             return {"plan": None}
 
         try:
-            rows = SqliteTaskStore.scan_all(root)
+            rows = scan_all(root)
         except OSError as exc:
             rows = []
             log.debug(f"Plan scan of {root} failed: {exc}")
@@ -204,10 +205,20 @@ class SilkTaskNode(ActiveNode):
 
 
 def _plan_path(root: str, stem: str):
-    """Where a named plan file goes: beside the root, else under .silk/plan."""
+    """Where a named plan file goes: beside the root, else under .silk/plan.
+
+    The suffix follows the backend this process asked for, because since
+    T4's discovery went backend-blind the suffix is *how* a plan says
+    which store opens it. Naming a plan on a process running the ledger
+    and then reading it back through SQLite is the one mistake this
+    removes.
+    """
     from pathlib import Path
 
+    from ..functions.ledger import BACKEND_LEDGER, requested_backend
+
+    suffix = ".macrame" if requested_backend() == BACKEND_LEDGER else ".db"
     base = Path(root).resolve()
     if SqliteTaskStore._writable_dir(base):
-        return base / f"{stem}.db"
-    return base / ".silk" / "plan" / f"{stem}.db"
+        return base / f"{stem}{suffix}"
+    return base / ".silk" / "plan" / f"{stem}{suffix}"

@@ -1661,11 +1661,23 @@ instant as a read.
 
 Not built: **D63's worker branches** (`on_branch`, fork/abandon,
 promotion by re-assertion), which need the fan-out orchestrator to have
-a lineage to fork from -- a §15 change, not a storage one. And the
-default backend is still `sqlite`: plan *discovery* is file-shaped
-(`PlanRef`, `scan_all`, the D58 hub all look for `plan-*.db`), so
-flipping the default is a discovery-shaped change of its own. The ledger
-is opt-in per process until then.
+a lineage to fork from -- a §15 change, not a storage one.
+
+The discovery half is **done (2026-09-03)**. `functions/plan_discovery.py`
+scans both kinds of plan file into one list and lets **the extension name
+the backend**: `plan-*.db` is SQLite, `ledger.macrame` / `plan-*.macrame`
+is a ledger, and `history.macrame` is the root's memory rather than one of
+its plans. Nothing new is stored and nothing has to be kept in step -- a
+row that came out of a scan reopens by reading its own path, which is what
+`PlanRef.store()` now does, and a named plan outranks whatever backend the
+process prefers (opening "the plan I was given" through some other reader
+is opening the wrong file). The Task node names new plans with the suffix
+its backend asks for.
+
+The default backend stays `sqlite`, but as a *choice* rather than a
+blocker: flipping it makes every graph with no Task node create a ledger
+plan, and that is a data decision to make when the ledger extra is
+something an install has rather than opts into.
 
 *Placement (default, revisable):* one **task ledger per sandbox root**
 (working dir), preserving T4/D58 discovery. Whether *history* shares that
@@ -2064,9 +2076,10 @@ not a guarantee and a ledger handle closed late loses its final snapshot.
 7. `functions/ledger.py` (§17, D62–D66): `LedgerRegistry`, `TaskLedger`
     behind the existing task-store protocol, `HistoryLedger` + `recall`
     tool (FTS5 first). Preceded by declaring dependencies (G5) — the
-    ledger is Silk's first declared binary dependency. **Done 2026-09-02** (D63's worker
-    branches excepted, and the default backend still `sqlite` pending
-    ledger-aware plan discovery).
+    ledger is Silk's first declared binary dependency. **Done 2026-09-02**
+    (D63's worker branches excepted). Ledger-aware plan discovery landed
+    2026-09-03; the default backend stays `sqlite` as a choice rather than
+    a blocker.
 8. Graph authoring (§18, D69–D74): the `MainThreadCall` seam generalised
     from D49, the whitelist widget on the ToolBox node, the six tools, the
     self-modification guard. Strictly after the Phase 2 seam — it is the

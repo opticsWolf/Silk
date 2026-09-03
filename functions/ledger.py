@@ -1352,13 +1352,14 @@ def _bulk(db: Any, edges: list) -> None:
 
 # ── choosing a backend, loudly (D66) ─────────────────────────────────────
 
-#: Which task backend to use: ``ledger`` or ``sqlite``. The default is
-#: ``sqlite`` for now -- not because the ledger is unfinished, but because
-#: plan *discovery* is still file-shaped: T4's `PlanRef`, `scan_all` and
-#: the D58 hub all look for ``plan-*.db``. Flipping the default is a
-#: separate, discovery-shaped change; until then the ledger is opt-in per
-#: process and everything above the store is already backend-blind (which
-#: is what `tests/test_silk_task_ledger.py` pins).
+#: Which task backend to use: ``ledger`` or ``sqlite``. Still ``sqlite``,
+#: but the reason has changed. Discovery is no longer file-shaped in the
+#: SQLite sense -- `functions/plan_discovery.py` scans both kinds and lets
+#: the extension name the backend (T4) -- so what remains is a default,
+#: not a blocker: flipping it makes every graph with no Task node create
+#: a ledger plan, which is a data decision for the user to make once the
+#: ledger extra is something a Silk install has rather than opts into.
+#: Ask for it per process, or name a ``.macrame`` plan on a Task node.
 BACKEND_ENV = "SILK_TASK_BACKEND"
 BACKEND_LEDGER = "ledger"
 BACKEND_SQLITE = "sqlite"
@@ -1386,6 +1387,15 @@ def open_task_store(root: str | os.PathLike, *, plan: Any = None,
 
     ref = PlanRef.coerce(plan)
     want = (backend or requested_backend()).lower()
+
+    # A named plan outranks a default. The reference names a *file*, and
+    # since T4's discovery went backend-blind the file's extension names
+    # the backend that wrote it -- so opening "the plan I was given" on
+    # whatever backend the environment happens to prefer would open the
+    # wrong file, or the right file with the wrong reader.
+    if ref is not None and ref.is_explicit:
+        return ref.store()
+
     if want == BACKEND_LEDGER:
         if available():
             return TaskLedger(root, registry=registry)
@@ -1394,7 +1404,7 @@ def open_task_store(root: str | os.PathLike, *, plan: Any = None,
             "falling back to the SQLite task store",
             BACKEND_LEDGER, unavailable_reason(),
         )
-    if ref is not None and (ref.is_explicit or ref.root):
+    if ref is not None and ref.root:
         return ref.store()
     return SqliteTaskStore(root=root)
 

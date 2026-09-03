@@ -256,6 +256,20 @@ all look for `plan-*.db`. Flipping the default is a separate,
 discovery-shaped change; until it happens the ledger is opt-in per
 process, and everything above the store is already backend-blind.
 
+### `functions/plan_discovery.py` — which plans exist, on either backend
+
+Everything above the store went backend-blind with D66; discovery did not,
+and that is the whole reason the ledger stayed opt-in per process. It is
+blind now, by the cheapest available means: **the extension names the
+backend.** `plan-*.db` is SQLite, `*.macrame` is a ledger,
+`history.macrame` is the root's memory and not a plan at all. `scan_all`
+returns one newest-first list of both kinds with a `backend` field added
+to the existing row shape; `open_store` / `load_plan` reopen a row through
+whatever wrote it; `PlanRef.store()` does the same for a named plan, which
+is why a Task node reference needs no new field. A ledger plan under a
+process without the extra is one log line and no rows — never a lane that
+silently is not there.
+
 ### `functions/task_board.py` — the multi-agent projection (D58)
 
 N independent top-level agents share no event port and never will, so

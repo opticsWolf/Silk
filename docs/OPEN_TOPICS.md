@@ -756,7 +756,19 @@ stop cross-discovering. `SqliteTaskStore.scan_all()` (additive, read-only)
 lists every plan under a root with its goal and open-task count — the Task
 node's dropdown today, the Task Hub's scan under D58/D60 next.
 
-Tests: `tests/test_silk_plan_identity.py`, `tests/test_silk_task_node.py`.
+**Second closure (2026-09-03): discovery is backend-blind.** The note
+above required whatever policy T4 settled on to keep both readers
+coherent; §17 then added a second *backend* under the same protocol, and
+discovery was the one layer still built out of `plan-*.db`.
+`functions/plan_discovery.py` scans both kinds into one newest-first list
+with a `backend` field, and the file extension is what says which store
+opens a row -- so the Task node's dropdown, the D58 hub's lanes and
+`PlanRef` all work on a ledger plan without any of them learning what a
+ledger is. `history.macrame` is excluded by name: it is the root's
+memory, not one of its plans.
+
+Tests: `tests/test_silk_plan_identity.py`, `tests/test_silk_task_node.py`,
+`tests/test_silk_plan_discovery.py`.
 (The `Sign-Off` node named in the original entry is deleted by D32; the Plan
 Viewer is the only remaining plan consumer.)
 

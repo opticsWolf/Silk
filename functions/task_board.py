@@ -26,8 +26,9 @@ from __future__ import annotations
 
 from typing import Any, Iterable, Optional
 
+from .plan_discovery import load_plan as _load_plan, scan_all
 from .stream_events import EventType
-from .task_store import Plan, SqliteTaskStore, open_task_ids
+from .task_store import Plan, open_task_ids
 
 #: Lanes, in board order. ``dropped`` is deliberately last and usually
 #: empty -- a rescoped task is history, not work.
@@ -64,7 +65,9 @@ def scan_roots(roots: Iterable[Any]) -> list[dict]:
         if not text:
             continue
         try:
-            found = SqliteTaskStore.scan_all(text)
+            # Backend-blind (T4): a lane is a plan file, and its
+            # extension says which store opens it.
+            found = scan_all(text)
         except OSError:
             # An unreachable root is one missing lane, not a dead board.
             continue
@@ -79,10 +82,7 @@ def scan_roots(roots: Iterable[Any]) -> list[dict]:
 
 def load_plan(row: dict) -> Optional[Plan]:
     """The plan a scan row points at, or ``None`` if it will not open."""
-    try:
-        return SqliteTaskStore(row["root"], db_path=row["db_path"]).load()
-    except Exception:      # noqa: BLE001 - a bad file is an empty lane
-        return None
+    return _load_plan(row)
 
 
 # ── Projection ───────────────────────────────────────────────────────────
