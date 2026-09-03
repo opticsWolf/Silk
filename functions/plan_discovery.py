@@ -70,7 +70,7 @@ def _ledger_rows(root: "str | Path", registry: Any = None) -> list[dict]:
         return []
     if not ledger_mod.available():
         # Say it once, and only when there is something to miss.
-        log.info(
+        log.warning(
             "silk: %d ledger plan(s) under %s are not readable (%s)",
             len(files), root, ledger_mod.unavailable_reason(),
         )

@@ -1425,7 +1425,10 @@ def open_history(root: str | os.PathLike, *,
     result that reads like "nothing happened".
     """
     if not available():
-        log.info("silk: no history ledger (%s); recall is unavailable",
-                 unavailable_reason())
+        # Error rather than a note: unlike the task store, history has no
+        # fallback to degrade to. Recall is simply gone, and a run that
+        # expects memory gets none.
+        log.error("silk: no history ledger (%s); recall is unavailable",
+                  unavailable_reason())
         return None
     return HistoryLedger(root, registry=registry)

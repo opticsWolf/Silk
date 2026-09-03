@@ -958,12 +958,38 @@ alike, exposed as the `Silk Orchestrator` node's editable `max_depth` port.
 Recorded chiefly so the divergence stops being re-discovered. Stub kept for
 inbound links.
 
-### T6. HTML rendering floor
+### T6. HTML rendering floor — CLOSED
 
 `plan_render` degrades to `None` (→ plain text in the Plan Viewer) when
-`mordant` is missing. Decide the minimum rendering guarantee: plain text
-always, or `mordant` as a soft requirement with a visible notice when the
-styled path is unavailable. Untouched by the spec.
+`mordant` is missing. The question was the minimum rendering guarantee:
+plain text always, or `mordant` as a soft requirement with a visible
+notice when the styled path is unavailable.
+
+**Decided and built 2026-09-03: plain markdown is the floor, and the
+degradation is a log line — not a widget.** Every plan stays legible with
+nothing installed; `mordant` is an upgrade (task-list checkboxes, emoji
+shortcodes, mermaid, highlighting), never a requirement.
+
+The second half is the part worth keeping: a missing optional dependency
+is an *install* fact, not a property of the user's graph. A permanent
+notice on the node would put it in front of someone who may not be able
+to act on it, every time they open the canvas — so `renderer_notice()`
+goes to the log, once per process, and the viewer shows only the plan.
+Now a general rule in
+[18 — Design rules](architecture/18-design-rules.md#design-rules).
+
+The level says how bad it is, and that generalised past this case: a
+missing dependency **with** a fallback is a `warning` — nothing is
+broken, but the surface is quietly worse than it should be — and one
+**without** a fallback is an `error`, because the capability is simply
+gone. `mordant`, the `gguf` header package and the SQLite task store are
+the first kind; the history ledger is the second, since no ledger means
+no `recall` at all and an empty search must not read as "nothing
+happened".
+
+An *installed* renderer that raises is a third case and stays a warning:
+the fallback is the same, but that silence was not earned — it is a bug
+somewhere, not a choice someone made at install time.
 
 ### T7. Durable event sink (JSONL per run) — CLOSED
 

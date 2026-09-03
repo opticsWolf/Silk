@@ -2321,7 +2321,8 @@ Silk's first declared binary dependency; G9 (type coverage) closed --
 three live bugs in error paths; T5 (delegation depth)
 resolved and built (D55); T7 (durable event sink) built and
 closed (D85), the call finally forced by compaction; T6 (HTML floor)
-still open by decision, not by oversight.
+closed by deciding plain markdown is the guarantee and a missing optional
+dependency is a log line rather than a widget.
 
 **G12 (version metadata) gains a second reason and stays cheap.** §19 makes
 suite identity operational rather than cosmetic: a reload report, a

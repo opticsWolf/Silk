@@ -378,7 +378,9 @@ class GGUFLNode(ThreadedManualNode):
         try:
             return read_gguf_meta_fallback(path_str)
         except ImportError:
-            log.debug("The 'gguf' python package is missing. Skipping dynamic limits.")
+            log.warning("The 'gguf' python package is missing, so context "
+                        "and layer limits are not clamped to this model's "
+                        "own header; the spinbox defaults stand instead.")
         except Exception as exc:
             log.debug(f"Failed to read GGUF metadata for limit clamping: {exc}")
         return None, None
