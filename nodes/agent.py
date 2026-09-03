@@ -33,6 +33,7 @@ from typing import Any, ClassVar, Dict, List, Optional, cast
 from PySide6.QtCore import Qt, QEvent, Signal, Slot
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import (
+    QCheckBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -53,6 +54,7 @@ from weave.widgets.sync_button import SyncButton
 
 from .silk_ports import GGUF_MODEL_TYPE, SILK_ROLE_TYPE, SILK_TOOLSET_TYPE  # noqa: F401
 from ..functions.agent_loop import AgentLoop, DEFAULT_MAX_ROUNDS
+from ..functions.event_sink import RunSink
 from ..functions.approval import bind_run_seam, headless_refusals
 from ..functions.graph_author import CanvasBinding, RunScope, bind_canvas
 from ..functions.self_modify import (
@@ -117,7 +119,10 @@ class SilkAgentNode(ThreadedManualNode):
     # Bumped on any change to what this node persists or how its
     # ports are shaped; `node_state_api` is what says old state can
     # no longer be restored (G20). 1 = the shape this spec settled on.
-    node_version = 1
+    # 2: the `event_log` port (T7, D85). Same `node_state_api`: an older
+    # state simply has no entry for it and restores with the box off,
+    # which is also the default.
+    node_version = 2
 
     # Weave declares `_widget_core` as `WidgetCoreLike` -- the subset the
     # *dataflow engine* relies on. A node uses the widget-facing whole
@@ -125,6 +130,10 @@ class SilkAgentNode(ThreadedManualNode):
     # the concrete `WidgetCore` the base class assigns. The narrowing is a
     # declaration for the typechecker, not a runtime change (G9).
     _widget_core: WidgetCore
+
+    #: This run's durable event log, or None when the box is off
+    #: (T7, D85). Opened by the first event, closed with the run.
+    _run_sink: Optional[RunSink] = None
 
     # Worker → main-thread bridges (V6 R11.1).
     chunk_streamed = Signal(str)
@@ -193,6 +202,10 @@ class SilkAgentNode(ThreadedManualNode):
         # anything is the default and someone has to be able to say
         # otherwise without writing Python (D26). Wired input wins.
         self.add_input("budget", datatype="string")
+        # The run log switch, wirable like every other setting: a graph
+        # that turns recording on for a batch of runs should not need
+        # someone to tick a box first (T7, D85).
+        self.add_input("event_log", datatype="bool")
 
         self.add_output("response", datatype="string")
         # Clean A2A: the reply wrapped as a self-describing AgentMessage
@@ -282,6 +295,24 @@ class SilkAgentNode(ThreadedManualNode):
         self._widget_core.register_widget(
             "decision", self._decision_box, role=PortRole.INTERNAL,
             add_to_layout=False,
+        )
+
+        # A durable account of the run (T7, D85). Off by default: a run
+        # log is a file this node writes on the user's disk, and the
+        # honest default for that is "only when asked". What it records
+        # is shape and size, never text -- see `functions/event_sink.py`.
+        self.check_event_log = QCheckBox("Record run log (metadata only)")
+        self.check_event_log.setToolTip(
+            "Write one JSONL file per run to ~/.weave/silk/runs/: which "
+            "events happened, in what order, how big. No prompts, no "
+            "completions, no tool arguments -- only their names and "
+            "lengths. Compaction drops turns permanently, so this is the "
+            "only account of a long run's middle."
+        )
+        form.addWidget(self.check_event_log)
+        self._widget_core.register_widget(
+            "event_log", self.check_event_log, role=PortRole.INPUT,
+            datatype="bool", default=False, add_to_layout=False,
         )
 
         # The run's ceiling. Empty means uncapped, which is what every
@@ -662,6 +693,11 @@ class SilkAgentNode(ThreadedManualNode):
                     "agent_id": str(getattr(self, "unique_id", "") or ""),
                 }
 
+                # One file per run, opened by its first event and closed
+                # in the finally below (T7, D85).
+                sink = RunSink() if bool(inputs.get("event_log")) else None
+                self._run_sink = sink
+
                 def _emit_event(event: Any, **extra: Any) -> None:
                     """Put one typed event on the `events` port.
 
@@ -670,12 +706,14 @@ class SilkAgentNode(ThreadedManualNode):
                     the identity pair says which node produced the line once
                     two streams are merged (spec D60.1).
                     """
-                    self.emit_stream(
-                        "events",
-                        to_wire(event, run_id=run_id, seq=next(seq),
-                                **identity, **extra),
-                        throttle_ms=0,
-                    )
+                    wire = to_wire(event, run_id=run_id, seq=next(seq),
+                                   **identity, **extra)
+                    self.emit_stream("events", wire, throttle_ms=0)
+                    if sink is not None:
+                        # Redacted inside the sink, not here: the widget
+                        # on the other end of the port still wants the
+                        # whole event.
+                        sink.write(wire)
 
                 # Handed to subclasses (the Orchestrator node) so a worker's
                 # events can be re-emitted on this node's own stream.
@@ -979,6 +1017,9 @@ class SilkAgentNode(ThreadedManualNode):
                 self._canvas_seam = None
             self._canvas_author = None
             self._emit_event = None
+            if self._run_sink is not None:
+                self._run_sink.close()
+                self._run_sink = None
             # An identity left bound would file the next run's turns under
             # this run's id, and the ledger is append-only: a wrong turn
             # can only be superseded afterwards, never corrected.

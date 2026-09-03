@@ -30,3 +30,20 @@ markdown to HTML for the Plan Viewer via the *optional* `mordant` parser
 styles); when `mordant` is absent it returns `None` and the caller falls
 back to plain text — a missing optional dependency never breaks the graph.
 
+### The durable sink (T7, D85)
+
+`functions/event_sink.py` is the second consumer of that one stream. When
+the Agent node's **Record run log** box is ticked, every wire event is
+also appended to `~/.weave/silk/runs/<stamp>-<run>.jsonl`, one JSON
+object per line. It exists because compaction (§12) drops turns
+permanently: after a long run, this file is the only account of its
+middle.
+
+It redacts *more* than `to_wire` does, and deliberately: the wire form
+keeps a delta's text and a tool call's arguments, which is right for a
+widget showing the run it belongs to and wrong for a file that outlives
+it. Every free-text field becomes a length (`delta` → `delta_chars`),
+arguments become `tool_args_keys` + `tool_args_chars`. Off by default,
+capped per run (a final `sink_truncated` line says so), pruned to the
+newest 50 files, and disabled after one logged `OSError` — a log that
+damages the run it records is worse than no log.

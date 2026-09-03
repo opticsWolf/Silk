@@ -965,7 +965,7 @@ inbound links.
 always, or `mordant` as a soft requirement with a visible notice when the
 styled path is unavailable. Untouched by the spec.
 
-### T7. Durable event sink (JSONL per run)
+### T7. Durable event sink (JSONL per run) — CLOSED
 
 The event dicts already carry `event` / `ts` / `run_id` / `seq`
 ([Event streams](architecture/15-event-streams.md#event-streams)).
@@ -994,6 +994,23 @@ events); the raw `tool_events` firehose stays JSONL — events are a log,
 not belief. T7's open call (build it, and when) is unchanged, but its role
 is now defined rather than speculative, and D65 keeps the firehose out of
 the ledger by construction.
+
+**Built 2026-09-03** (`functions/event_sink.py`, spec D85). Compaction is
+what made the call: it drops turns permanently, so after a long run the
+events are the only account of its middle. One JSONL file per run under
+`~/.weave/silk/runs/`, in the wire vocabulary the `events` port already
+carries -- a second consumer of one stream, not a second stream.
+
+The content-free rule is applied *more* strictly than on the wire, which
+is the part worth remembering: `to_wire` drops the biggest content fields
+but a delta still carries its text and a tool call its arguments, and
+what is acceptable for a widget showing the run it belongs to is not
+acceptable for a file that outlives it. Every free-text field becomes a
+length (`delta` → `delta_chars`), a call's arguments become their key
+names and total size. Off by default (a checkbox on the Agent node),
+capped per run, pruned to the newest 50, and disabled-with-one-log-line
+on any `OSError`: a log that damages the run it records is worse than no
+log.
 
 ### T9. Graph authoring: how far does an agent's build authority go?
 

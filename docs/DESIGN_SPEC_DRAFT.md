@@ -1734,6 +1734,37 @@ something an install has rather than opts into.
 file or lives in a per-user memory ledger (`~/.weave/silk/memory.db`) for
 cross-project recall is open (§22 q7).
 
+**D85. The event firehose gets its file, and the call is made (closes
+T7).** D65 keeps the firehose out of the ledger; T7 has been holding the
+other half of that sentence -- *where it goes instead* -- as an open
+decision since before compaction existed. Compaction is what settles it:
+§12 drops turns to keep a run under its window, and the dropped range is
+unrecoverable, so after a long run the events are the only account of its
+middle. `functions/event_sink.py` writes one JSONL file per run under
+`~/.weave/silk/runs/`, one object per line, in the same wire vocabulary
+the `events` port carries (D2) -- the sink is a second consumer of a
+stream that already exists, not a second stream.
+
+Four rules, and the first is the one that makes the rest allowable.
+
+- **Metadata only, and *more* strictly than the wire.** `to_wire` drops
+  the biggest content fields, but a delta still carries its text and a
+  tool call its arguments -- fine for a widget that shows the run it
+  belongs to, not fine for a file that outlives it. The sink replaces
+  every free-text field with its length (`delta` -> `delta_chars`) and a
+  call's arguments with their key names and total size. What happened, in
+  what order, how big; never what it said. This is the content-free
+  observability rule from architecture/18, applied where it bites.
+- **Off unless asked.** A checkbox on the Agent node, default off. Silk
+  writing files on a user's disk because a run happened is not a default
+  anyone opted into.
+- **Bounded and pruned.** A cap per run (a final `sink_truncated` line
+  says so) and the newest 50 files kept, because one looping model must
+  not fill a disk and debugging never looks at the hundredth run back.
+- **A broken sink is a silent sink.** Any `OSError` disables it for the
+  rest of the run, logged once. A log that damages the run it records is
+  worse than no log.
+
 ---
 
 ## 18. Graph authoring -- the agent places nodes
@@ -2275,6 +2306,7 @@ selects it as soon as the graph shape changes.
 | G2 — BM25 is a keyword alias | §6 (forced into scope by discovery) |
 | G8 — stops not honoured mid-tool-batch | §7 (the gate's block, D38/D49) + `bind_stop` on the ToolBox — landed 2026-09-03 |
 | G20 (half) — no declared floor under the Weave internals Silk uses | §19 (D83, `functions/weave_contract.py`); versioning them stays Weave's call |
+| T7 — no durable account of a run once compaction drops its middle | §17 (D85, `functions/event_sink.py`); metadata only, off by default — landed 2026-09-03 |
 | G21 (residue 2) — MCP servers reach the filesystem outside Silk's sandbox | §19 (D84, `functions/mcp_reach.py`); reported per server, never refused — landed 2026-09-03 |
 
 G6 is no longer fully untouched: D40 makes a model-request error classifier a
@@ -2287,7 +2319,8 @@ G5 (dependency declaration) closed by the ledger's arrival, since it is
 Silk's first declared binary dependency; G9 (type coverage) closed --
 `functions/` and `nodes/` both typecheck clean, and the widening found
 three live bugs in error paths; T5 (delegation depth)
-resolved and built (D55); T6 (HTML floor) and T7 (durable event sink)
+resolved and built (D55); T7 (durable event sink) built and
+closed (D85), the call finally forced by compaction; T6 (HTML floor)
 still open by decision, not by oversight.
 
 **G12 (version metadata) gains a second reason and stays cheap.** §19 makes
