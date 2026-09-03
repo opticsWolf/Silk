@@ -2209,6 +2209,50 @@ MCP Server node's status line. Three rules, matching D71 and
     surface, not the plumbing. **Done 2026-09-02** (Weave's
     six hot-reload phases had all shipped; Silk improving Silk stays out, T10).
 
+### Where the phases stand — audited 2026-09-03
+
+Item by item against the tree, because a phase list nobody reconciles is
+a plan, not a record. **Both open items are the same open item**: the
+prefix measurement needs a live backend, and the mechanism it selects
+cannot be chosen before it runs.
+
+| Phase 1 | Landed in |
+|---|---|
+| 1. Invariant fixtures (D27) | `tests/silk_invariant_catalog.py`, `tests/test_silk_invariants.py` |
+| 2. Event vocabulary + one `events` port (D2, D3, D30) | `functions/event_format.py`, `functions/stream_events.py`; `tests/test_silk_event_vocabulary.py` |
+| 3. `outcome` on `EventRunResult` (G13) + G7's `limit_type`/`scope` | landed 2026-09-03 |
+| 4. `context_length` → loop (G14(c)) | `functions/agent_loop.py` (`context_length()`, forwarded per round) |
+| 5. Hook error family + registration validation (D15) | `functions/hooks.py`; `tests/test_silk_hook_error_family.py` |
+| 6. **Measure prefix reuse (D41, D47)** | *harness only*: `functions/prefix_stats.py`, `ModelPool.prefix_report()`. The numbers need a live backend — the one open Phase 1 item (G15, §22 q1b) |
+| 7. Model-request error classifier (D40) | `functions/model_errors.py` |
+| 8. `interrupt_requests=False` + no terminal `finish_reason` is an error (D43) | `functions/model_pool.py`, `functions/graph_engine.py`, `functions/agent_loop.py` |
+| 9. `delegate_parallel` made honest (D52, D53) | `functions/orchestrator.py` (sequential assignments, `finally` reset, same-worker refusal, `UsageLimits` lock); `tests/test_silk_delegation.py` |
+| 10. `on_event` / `should_stop` through `_run_one` (D54) | `functions/orchestrator.py` (`_ON_EVENT_ATTR`, `_SHOULD_STOP_ATTR`) |
+| 11. `agent` on the event envelope (D60(1)) | `functions/event_format.py` |
+| 12. Per-root write gate + `writes_files` (D67 tier 2, G19) | `functions/tools/file_locks.py`; `tests/test_silk_write_gate.py` |
+
+| Phase 2 | Landed in |
+|---|---|
+| 1. Per-tool binding + essential tier (D13, D14) | `functions/hooks.py`; `tests/test_silk_hook_binding.py` |
+| 2. Parked-state machinery deleted (D31–D33) | gone: no `signoff_node.py`, no `awaiting_signoff` / `pending_goal` / `signoff_*` columns; `functions/signoff.py` keeps the resolution rules only |
+| 3. Inline approval gate (D30, D11, D36–D39, D48–D50) | `functions/decision_seam.py`, `approval.py`, `grants.py`, `main_thread_call.py`, and the D82 floor in `approval_floor.py`; `tests/test_silk_decision_seam.py`, `test_silk_approval_gate.py`, `test_silk_approval_floor.py` |
+| 4. Spill hook, option A (D41, D57) | `functions/spill.py`; `tests/test_silk_spill.py` |
+| 5. D47 mechanism + I11 prefix rules | I11 is unconditional and landed (`functions/prefix_guard.py`); C's `Authorization` header landed 2026-09-03; A's corruption was fixed at the source (`_bound_sessions`, no `_session_instances`). **Which mechanism** waits on Phase 1 item 6 |
+| 6. Loop compaction (D24, D25, D40, D41) | `functions/compaction.py`; `tests/test_silk_compaction.py` |
+
+| Phase 3 | Landed in |
+|---|---|
+| 0. Delegation depth port (D55, T5) | `functions/orchestrator.py` `DEFAULT_MAX_DEPTH`, `max_depth` port |
+| 1. File access port + grant model (D16–D18) | `functions/file_grants.py`; `tests/test_silk_file_grants.py` |
+| 2. Discovery (D4–D6) | `functions/tool_discovery.py`, `tool_search.py` |
+| 3. MCP Node + Aggregator (D19–D22) | `functions/mcp_session.py`, `nodes/mcp_server.py`, `nodes/mcp_aggregator.py`, and D84's `mcp_reach.py` |
+| 4. Task Node (D23) | `nodes/task.py` |
+| 5. Task Hub (D58, D60(2)) | `nodes/task_hub.py` |
+| 6. Decision Inbox (D59) | `functions/decision_registry.py` + the dock |
+| 7. Ledger (D62–D66) | `functions/ledger.py` — D63's worker branches excepted (macrame-db exposes no branch primitive) |
+| 8. Graph authoring (D69–D74) | `functions/graph_author.py` |
+| 9. Self-modification (D75–D81) | `functions/self_modify.py`, `load_floor.py` |
+
 **Later:** the D47 mechanisms not selected by the measurement --
 kept described rather than deleted, since the rule that skips one today
 selects it as soon as the graph shape changes.
@@ -2238,9 +2282,12 @@ precondition of D24, and that classifier is what would let a future supervisor
 tell "the server died" from "the context overflowed". The restart itself stays
 out of scope.
 
-Untouched by this spec: G5 (dependency declaration),
-G9 (type coverage),
-T5 (delegation depth), T6 (HTML floor), T7 (durable event sink).
+Untouched by this spec when it was written, and where they now stand:
+G5 (dependency declaration) closed by the ledger's arrival, since it is
+Silk's first declared binary dependency; G9 (type coverage) half done --
+`functions/` typechecks clean, `nodes/` does not; T5 (delegation depth)
+resolved and built (D55); T6 (HTML floor) and T7 (durable event sink)
+still open by decision, not by oversight.
 
 **G12 (version metadata) gains a second reason and stays cheap.** §19 makes
 suite identity operational rather than cosmetic: a reload report, a
