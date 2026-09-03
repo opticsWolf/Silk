@@ -80,3 +80,15 @@ are idempotent: a conversation is bound or it is not, so neither a second
 request nor a second `Clear Context` can move the number anywhere it
 should not go. `release_session(session_id)` is the public way to unbind,
 and it reports whether it knew the session.
+
+**The queue is counted, not hidden (§22 q1c).** One server serves one
+request at a time (D43), so an orchestrator fan-out of eight workers is
+correct *and* sequential — which looks exactly like a hang. Scheduling
+stays the pool's business; legibility does not. `begin_request` /
+`end_request` now bracket a flight count, `snapshot()` carries
+`serialization` (`in_flight`, `peak_in_flight`, `queued_requests`,
+`serialising`), and the first request that has to wait logs one line
+saying so is correct. The Pool Monitor appends it to the flags line only
+after something has actually queued — a line that is always there is one
+nobody reads. This is the same answer D53 and §22 q1d gave: say it once,
+then count.

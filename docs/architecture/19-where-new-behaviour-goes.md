@@ -34,6 +34,7 @@
 | Scope a catalog hook to some tools only | `bind_tools` / `bind_categories` on its config in the existing hook selector — narrowing only, and observers only; a gate binds in code (§22 q5) |
 | Let an agent recall work from another project | wire that folder in as a second sandbox root — `recall` reads the history ledger of every root the box was given and writes only to the working one, so crossing projects is visible and never a default (§22 q7) |
 | Keep two agents from clobbering each other's file | pass `expected_sha256` to `write_file` (or use `edit_file`'s anchors) — the sandbox never consults claims as write policy, because a permission that depends on another agent's runtime state is one nobody configured (§22 q8) |
+| Find out why a fan-out feels slow | the Pool Monitor's flags line and `snapshot()["serialization"]` — one server serves one request at a time (D43), and the queue is counted rather than hidden (§22 q1c) |
 | Require a human before a tool runs | the `tool_approval` catalog hook (risk band or tool names) — the same middleware the `signoff` policy uses |
 | Let a user say "don't ask again" | a `remember` scope on the decision: run-scoped in the gate closure, or a durable grant in `~/.weave/silk/grants.json` |
 | Give agents the tools of an MCP server | a `Silk MCP Server` node per server (it owns the session), optionally a `Silk MCP Aggregator` to switch individual tools off, into the ToolBox node's `mcp` input (D19–D22) |

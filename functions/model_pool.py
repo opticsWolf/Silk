@@ -253,6 +253,14 @@ class GGUFModelPool:
         self._prefix_drain = LogDrain(self._log_path)
         self._prefix_lock = threading.Lock()
 
+        # How much of the fan-out is actually running at once (§22 q1c).
+        # One server means requests queue inside it; correct, and invisible
+        # unless someone counts. See _flight_begin.
+        self._in_flight = 0
+        self._peak_in_flight = 0
+        self._queued_requests = 0
+        self._queue_reported = False
+
         cmd = [sys.executable, "-m", "llama_cpp.server",
                "--config_file", self._config_path]
         log.info(
@@ -448,16 +456,58 @@ class GGUFModelPool:
         """
         with self._prefix_lock:
             self._prefix_drain.drain()
+        self._flight_begin()
 
     def end_request(
         self, session_id: str = "default", wall_s: Optional[float] = None
     ) -> None:
         """Fold this request's log lines into the meter."""
+        self._flight_end()
         with self._prefix_lock:
             lines = self._prefix_drain.drain()
             self._prefix_meter.record_lines(
                 lines, session=session_id, wall_s=wall_s
             )
+
+    # -- serialization, made visible (spec D43, §22 q1c) ------------------
+    #
+    # One server means one request at a time: a fan-out of eight workers is
+    # correct and silently sequential. Correct-but-looks-hung is the same
+    # failure D53 and §22 q1d answered, and with the same answer -- say it
+    # once, then count. Nothing here changes what the pool *does*; it only
+    # stops the queue being invisible.
+
+    def _flight_begin(self) -> None:
+        with self._lock:
+            self._in_flight += 1
+            depth = self._in_flight
+            self._peak_in_flight = max(self._peak_in_flight, depth)
+            queued = depth > 1
+            if queued:
+                self._queued_requests += 1
+            first = queued and not self._queue_reported
+            if first:
+                self._queue_reported = True
+        if first:
+            log.info(
+                f"Requests to {Path(self._model_path).name} are serialising: "
+                f"{depth} in flight on one server (D43). This is correct, not "
+                "a hang -- later ones are counted, not logged."
+            )
+
+    def _flight_end(self) -> None:
+        with self._lock:
+            self._in_flight = max(0, self._in_flight - 1)
+
+    def serialization_report(self) -> dict:
+        """What the queue behind the one server looks like right now."""
+        with self._lock:
+            return {
+                "in_flight": self._in_flight,
+                "peak_in_flight": self._peak_in_flight,
+                "queued_requests": self._queued_requests,
+                "serialising": self._queued_requests > 0,
+            }
 
     def prefix_report(self) -> dict:
         """D47's three numbers so far; ``None`` where there is no data."""
@@ -486,4 +536,7 @@ class GGUFModelPool:
                 # The number the context design hangs on, surfaced where the
                 # pool is already being watched (D41; G15).
                 "prefix_reuse": self.prefix_report(),
+                # What a fan-out actually got: one server, one request at a
+                # time. Reported where the pool is already watched (§22 q1c).
+                "serialization": self.serialization_report(),
             }

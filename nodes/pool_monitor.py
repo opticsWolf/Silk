@@ -20,6 +20,27 @@ from weave.registry import register_node
 from weave.widgets.sync_button import SyncButton
 
 
+def queue_note(info: dict) -> str:
+    """What to add to the flags line about requests waiting (§22 q1c).
+
+    One server serves one request at a time (D43), so a fan-out queues.
+    That is correct and it looks like a hang, which is the failure D53
+    named. Nothing is shown until it actually happens -- a line that is
+    always there is one nobody reads.
+    """
+    queue = info.get("serialization") or {}
+    if not queue.get("serialising"):
+        return ""
+    return (
+        "  \u00b7  queued: {in_flight} in flight, peak {peak_in_flight}, "
+        "{queued_requests} waited".format(
+            in_flight=queue.get("in_flight", 0),
+            peak_in_flight=queue.get("peak_in_flight", 0),
+            queued_requests=queue.get("queued_requests", 0),
+        )
+    )
+
+
 @register_node
 class PoolMonitorNode(ThreadedManualNode):
     """Reads pool state from a model handle and emits a status dict."""
@@ -145,7 +166,7 @@ class PoolMonitorNode(ThreadedManualNode):
         )
 
         clear_flag = "clear-on-return: on" if info.get("clear_on_return") else "clear-on-return: off"
-        self._display_update.emit("flags", clear_flag)
+        self._display_update.emit("flags", clear_flag + queue_note(info))
 
         return {"pool_status": info}
 

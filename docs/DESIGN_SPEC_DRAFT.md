@@ -2052,10 +2052,23 @@ need a `__version__` to name. Still trivial; now load-bearing.
    (RAM vs disk); if C, whether the backend is chosen by the Role, by the
    Agent node, or by a pool-side rule keyed on session, and what happens
    when a named backend is down.
-1c. Whether session affinity (mechanism A) is the pool's business alone or
+1c. ~~Whether session affinity (mechanism A) is the pool's business alone or
    needs a visible surface — an orchestrator fan-out that silently serializes
    is correct but looks hung, and D43 means it already does this today with
-   no indication.
+   no indication.~~ **Answered (2026-09-02):** it needs a surface, and the
+   surface is a count -- the same answer D53 and q1d reached, for the same
+   reason. Scheduling stays entirely the pool's business: nothing here
+   changes what runs when. But the pool now counts requests in flight
+   (`_flight_begin` / `_flight_end` around the existing request seam),
+   reports `serialization` in `snapshot()` -- `in_flight`,
+   `peak_in_flight`, `queued_requests`, `serialising` -- and logs **one**
+   line the first time a request has to wait, saying it is correct rather
+   than hung. The Pool Monitor node appends that to its flags line only
+   once something has actually queued, because a line that is always there
+   is one nobody reads. This holds whichever of D47's mechanisms wins:
+   affinity that serializes is legible instead of mysterious, and if
+   mechanism C splits the load across backends the count simply falls to
+   zero.
 1d. ~~Whether a *headless* run should fail loudly rather than deny quietly
    (D48).~~ **Answered (2026-09-02):** once, with a count. Denying stays
    the behaviour -- the refusal text each call gets is unchanged, because
