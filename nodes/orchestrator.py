@@ -31,7 +31,7 @@ from typing import Any, ClassVar, Dict, List, Optional
 
 from PySide6.QtWidgets import QLabel, QSpinBox
 
-from weave.widgetcore import PortRole
+from weave.widgetcore import PortRole, WidgetCore
 from weave.node import VerticalSizePolicy
 from weave.registry import register_node
 from weave.logger import get_logger
@@ -52,6 +52,12 @@ log = get_logger("SilkOrchestrator")
 @register_node
 class SilkOrchestratorNode(SilkAgentNode):
     """Autonomous agent that delegates sub-tasks to a roster of worker agents."""
+    # Weave declares `_widget_core` as `WidgetCoreLike` -- the subset the
+    # *dataflow engine* relies on. A node uses the widget-facing whole
+    # (`register_widget`, `push_display`, `apply_port_value`), which is
+    # the concrete `WidgetCore` the base class assigns. The narrowing is a
+    # declaration for the typechecker, not a runtime change (G9).
+    _widget_core: WidgetCore
 
     #: How deep delegation may nest. ``2`` lets the orchestrator call a worker
     #: that itself delegates once; a true cycle is still refused by the chain

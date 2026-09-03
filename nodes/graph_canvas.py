@@ -34,7 +34,7 @@ from weave.logger import get_logger
 from ..functions.graph_author import (
     OP_CONNECT, OP_DESCRIBE, OP_DISCONNECT, OP_LIST, OP_PLACE, OP_REMOVE,
     OP_SET_VALUE, OP_SETTINGS, check_settable, coerce_value, describe_class,
-    describe_instance,
+    describe_instance, node_title, set_node_title,
 )
 from ..functions.main_thread_call import CallRequest, MainThreadCall
 from ..functions.self_modify import (
@@ -204,7 +204,7 @@ class CanvasAuthor(QObject):
         return {"ok": True, "value": {
             "id": str(getattr(node, "unique_id", "")),
             "class_name": type(node).__name__,
-            "title": str(getattr(node, "title", "") or ""),
+            "title": node_title(node),
             "settings": rows,
         }}
 
@@ -212,7 +212,7 @@ class CanvasAuthor(QObject):
     def _bindings(node: Any) -> list:
         """The node's widget bindings, flattened. Main thread only."""
         core = getattr(node, "_widget_core", None)
-        rows = []
+        rows: list[dict] = []
         if core is None:
             return rows
         connected = {str(getattr(port, "name", ""))
@@ -257,23 +257,27 @@ class CanvasAuthor(QObject):
                     "error": f"'{class_name}' is not a registered node class"}
         position = args.get("position") or [0.0, 0.0]
         try:
-            node = node_cls()
+            # `BaseControlNode` takes a title positionally; every
+            # *registered* class defaults it, and only registered classes
+            # reach here (NODE_REGISTRY resolved the name above).
+            node = node_cls()  # type: ignore[call-arg]
         except Exception as exc:  # noqa: BLE001
             return {"ok": False,
                     "error": f"{class_name} could not be created: {exc}"}
         title = str(args.get("title") or "").strip()
         if title:
-            try:
-                node.title = title
-            except Exception:  # noqa: BLE001 - a node that fixes its title
-                pass
+            # Before the snapshot below, so undo restores the title with
+            # the node. `node.title = ...` -- what this used to do --
+            # wrote an attribute the canvas never reads (see
+            # `set_node_title`), so the agent's title was silently lost.
+            set_node_title(node, title)
         canvas.add_node(node, (float(position[0]), float(position[1])))
 
         uid, cls_name, state, npos = capture_node_snapshot(node)
         canvas.undo_manager.push(
             AddNodeCommand(cls_name, state, uid, npos, default_registry_map()))
         return {"ok": True, "value": {"id": str(uid), "class_name": cls_name,
-                                      "title": str(getattr(node, "title", "")),
+                                      "title": node_title(node),
                                       "position": list(npos)}}
 
     def _set_value(self, canvas: Any, args: dict) -> dict:

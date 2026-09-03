@@ -34,18 +34,15 @@ graphs and presets stay shareable by construction.
 from __future__ import annotations
 
 import asyncio
-import json
-import os
 import threading
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Callable, Optional
 
 from weave.logger import get_logger
 
 # D22 lives in one place now: remote model backends need the same rule
 # (D45), and a second copy of it would be a second place to get it wrong.
-from .credentials import SECRETS_FILE, missing_credential, resolve_credential
+from .credentials import missing_credential, resolve_credential
 from .mcp_reach import reach_notice
 
 

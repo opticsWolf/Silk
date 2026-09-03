@@ -92,6 +92,12 @@ def _format_turn(turn: dict) -> str:
 @register_node
 class ChatDisplayNode(ThreadedNode):
 
+    # Weave declares `_widget_core` as `WidgetCoreLike` -- the subset the
+    # *dataflow engine* relies on. A node uses the widget-facing whole
+    # (`register_widget`, `push_display`, `apply_port_value`), which is
+    # the concrete `WidgetCore` the base class assigns. The narrowing is a
+    # declaration for the typechecker, not a runtime change (G9).
+    _widget_core: WidgetCore
     display_updated = Signal(str)
 
     node_class: ClassVar[str] = "Display"

@@ -43,6 +43,12 @@ NEWEST = "(newest under root)"
 @register_node
 class SilkTaskNode(ActiveNode):
     """Explicit plan identity: which plan, and where it lives."""
+    # Weave declares `_widget_core` as `WidgetCoreLike` -- the subset the
+    # *dataflow engine* relies on. A node uses the widget-facing whole
+    # (`register_widget`, `push_display`, `apply_port_value`), which is
+    # the concrete `WidgetCore` the base class assigns. The narrowing is a
+    # declaration for the typechecker, not a runtime change (G9).
+    _widget_core: WidgetCore
 
     node_class: ClassVar[str] = "AI"
     node_subclass: ClassVar[str] = "Agents"
@@ -119,7 +125,8 @@ class SilkTaskNode(ActiveNode):
         return str(inputs.get("root") or "").strip()
 
     @staticmethod
-    def plan_ref(root: str, choice: str, name: str, rows: List[dict]) -> PlanRef:
+    def plan_ref(root: str, choice: Optional[str], name: Optional[str],
+                 rows: List[dict]) -> PlanRef:
         """The reference these inputs name (D23).
 
         Three cases, and the third is the one that matters: an existing

@@ -390,6 +390,77 @@ def _port_specs(node_cls: Any, side: str) -> list[dict]:
     return specs
 
 
+def node_title(node: Any) -> str:
+    """What the canvas *shows* for this node.
+
+    A Weave node has no `title` attribute: the constructor takes one, the
+    header renders `node.name` when there is one and its own text
+    otherwise (`weave/node/components.py`), and `NodeTitleCommand` writes
+    both. Reading `node.title` -- which is what graph authoring did --
+    returned an attribute nobody sets, so every described node was
+    titleless unless something had assigned that attribute by hand.
+    """
+    name = getattr(node, "name", None)
+    if callable(name):
+        try:
+            name = name()
+        except Exception:  # noqa: BLE001 - a node mid-teardown
+            name = None
+    if name:
+        return str(name)
+    header = getattr(node, "header", None)
+    label = getattr(header, "_title", None)
+    for reader in ("toolTip", "toPlainText"):
+        fn = getattr(label, reader, None)
+        if callable(fn):
+            try:
+                text = fn()
+            except Exception:  # noqa: BLE001
+                text = ""
+            if text:
+                return str(text)
+    return str(getattr(node, "title", "") or "")
+
+
+def set_node_title(node: Any, title: str) -> bool:
+    """Rename a node the way the canvas does, or report that it did not.
+
+    Same order as `NodeTitleCommand._apply_title`: the model first
+    (`set_name`, else `name`), then the header text, then the layout that
+    reads it. Called *before* the placement snapshot is captured, so undo
+    restores the title with the node rather than losing it.
+    """
+    applied = False
+    setter = getattr(node, "set_name", None)
+    if callable(setter):
+        try:
+            setter(title)
+            applied = True
+        except Exception:  # noqa: BLE001
+            applied = False
+    if not applied and hasattr(node, "name"):
+        try:
+            node.name = title
+            applied = True
+        except (AttributeError, TypeError):
+            applied = False   # read-only, or a method by that name
+
+    label = getattr(getattr(node, "header", None), "_title", None)
+    if label is not None:
+        try:
+            label.setToolTip(title)
+            label.setPlainText(title)
+            header = node.header
+            recalc = getattr(header, "_recalculate_layout", None)
+            if callable(recalc):
+                recalc()
+            header.update()
+            applied = True
+        except Exception:  # noqa: BLE001 - a node not yet on a scene
+            pass
+    return applied
+
+
 def describe_instance(node: Any) -> dict:
     """One live node as `describe_graph` returns it (D69).
 
@@ -402,7 +473,7 @@ def describe_instance(node: Any) -> dict:
     return {
         "id": str(getattr(node, "unique_id", "")),
         "class_name": type(node).__name__,
-        "title": str(getattr(node, "title", "") or ""),
+        "title": node_title(node),
         "position": [float(pos.x()), float(pos.y())] if pos is not None else None,
         "inputs": [_live_port(p) for p in getattr(node, "inputs", []) or []],
         "outputs": [_live_port(p) for p in getattr(node, "outputs", []) or []],

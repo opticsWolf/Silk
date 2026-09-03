@@ -72,6 +72,12 @@ class SeparatorLine(QFrame):
 @register_node
 class GGUFLNode(ThreadedManualNode):
     """Loads GGUF models into a thread-safe pool via llama.cpp on a worker thread."""
+    # Weave declares `_widget_core` as `WidgetCoreLike` -- the subset the
+    # *dataflow engine* relies on. A node uses the widget-facing whole
+    # (`register_widget`, `push_display`, `apply_port_value`), which is
+    # the concrete `WidgetCore` the base class assigns. The narrowing is a
+    # declaration for the typechecker, not a runtime change (G9).
+    _widget_core: WidgetCore
 
     node_class:           ClassVar[str]                 = "AI"
     node_subclass:        ClassVar[str]                 = "Loaders"
@@ -83,6 +89,11 @@ class GGUFLNode(ThreadedManualNode):
 
     # Emitted from the probe worker thread; queued back onto the GUI thread.
     _probe_ready = Signal(str, object)
+
+    #: The pool snapshot the worker took, handed to the GUI thread by
+    #: `on_evaluate_finished`. Declared because it is written on one
+    #: thread and read on another, and a `hasattr` probe is not a type.
+    _pending_pool_info: Optional[dict] = None
 
     def __init__(self, title: str = "GGUF Loader", **kwargs: Any) -> None:
         super().__init__(title=title, **kwargs)
@@ -480,7 +491,7 @@ class GGUFLNode(ThreadedManualNode):
         log.debug("Evaluate Finished: Resetting button state.")
         self._update_button_idle()
         # Update KV cache progress bar if we have pending pool info.
-        if hasattr(self, "_pending_pool_info") and self._pending_pool_info is not None:
+        if self._pending_pool_info is not None:
             self._progress_kv.setEnabled(True)
             self._btn_refresh_kv.setEnabled(True)
             self._refresh_kv_progress(self._pending_pool_info)
@@ -506,9 +517,12 @@ class GGUFLNode(ThreadedManualNode):
             except Exception as exc:
                 log.debug(f"KV refresh failed: {exc}")
 
-    def _cleanup_after_worker(self) -> None:
+    def _cleanup_after_worker(self, skip_results: bool = False) -> None:
+        # See the Agent node: Weave passes `skip_results=True` on the
+        # cancelled-result path, and an override without it turns that
+        # into a TypeError.
         self._update_button_idle()
-        super()._cleanup_after_worker()
+        super()._cleanup_after_worker(skip_results=skip_results)
 
     def compute(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
         if not LLAMA_CPP_AVAILABLE:

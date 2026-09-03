@@ -2284,8 +2284,9 @@ out of scope.
 
 Untouched by this spec when it was written, and where they now stand:
 G5 (dependency declaration) closed by the ledger's arrival, since it is
-Silk's first declared binary dependency; G9 (type coverage) half done --
-`functions/` typechecks clean, `nodes/` does not; T5 (delegation depth)
+Silk's first declared binary dependency; G9 (type coverage) closed --
+`functions/` and `nodes/` both typecheck clean, and the widening found
+three live bugs in error paths; T5 (delegation depth)
 resolved and built (D55); T6 (HTML floor) and T7 (durable event sink)
 still open by decision, not by oversight.
 

@@ -49,6 +49,12 @@ log = get_logger("SilkAgentSpec")
 @register_node
 class SilkAgentSpecNode(ActiveNode):
     """Names a model+toolset+role bundle as a delegatable worker agent."""
+    # Weave declares `_widget_core` as `WidgetCoreLike` -- the subset the
+    # *dataflow engine* relies on. A node uses the widget-facing whole
+    # (`register_widget`, `push_display`, `apply_port_value`), which is
+    # the concrete `WidgetCore` the base class assigns. The narrowing is a
+    # declaration for the typechecker, not a runtime change (G9).
+    _widget_core: WidgetCore
 
     node_class: ClassVar[str] = "AI"
     node_subclass: ClassVar[str] = "Agents"
@@ -145,12 +151,10 @@ class SilkAgentSpecNode(ActiveNode):
         chain = list(inputs.get("agents_in") or [])
 
         model_handle = inputs.get("model_obj")
-        valid_model = (
-            isinstance(model_handle, dict)
-            and model_handle.get("backend") == "gguf"
+        if not isinstance(model_handle, dict) or not (
+            model_handle.get("backend") == "gguf"
             and ("model" in model_handle or "pool" in model_handle)
-        )
-        if not valid_model:
+        ):
             self._sync_status = (
                 "No valid GGUF model connected — this worker is not added."
             )

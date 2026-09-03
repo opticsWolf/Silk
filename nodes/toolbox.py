@@ -21,7 +21,8 @@ tool with a structured detail preview.
 """
 
 from functools import partial
-from typing import Any, ClassVar, Dict, List, Optional
+from pathlib import Path
+from typing import Any, ClassVar, Dict, List, Optional, Union
 
 from PySide6.QtWidgets import QCheckBox, QComboBox, QFormLayout, QLabel, QSpinBox
 
@@ -63,6 +64,12 @@ _ALL_CATEGORIES = "All categories"
 @register_node
 class SilkToolBoxNode(ActiveNode):
     """Builds a ToolBox with sandboxed tool groups for downstream agents."""
+    # Weave declares `_widget_core` as `WidgetCoreLike` -- the subset the
+    # *dataflow engine* relies on. A node uses the widget-facing whole
+    # (`register_widget`, `push_display`, `apply_port_value`), which is
+    # the concrete `WidgetCore` the base class assigns. The narrowing is a
+    # declaration for the typechecker, not a runtime change (G9).
+    _widget_core: WidgetCore
 
     node_class: ClassVar[str] = "AI"
     node_subclass: ClassVar[str] = "Agents"
@@ -327,7 +334,10 @@ class SilkToolBoxNode(ActiveNode):
         # working root (cwd for toolchain processes, relative-path base).
         writes = bool(inputs.get("enable_write") or
                       inputs.get("enable_manipulate"))
-        writable: List[str] = []
+        # `str | Path` because that is what the sandbox accepts; a
+        # `list[str]` is not a `list[str | Path]` to a typechecker, and
+        # the widening is free here.
+        writable: List[Union[str, Path]] = []
         if inputs.get("enable_self_modify", False):
             # D76: the agent authors plugins in its own root, and that
             # root is the only place the load verb will look. Adding it

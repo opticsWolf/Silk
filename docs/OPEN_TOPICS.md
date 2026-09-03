@@ -14,7 +14,7 @@ stays only until the code lands.
 G1 and G8 closed with the work below them, G4 recorded as long since
 done, and G3's duplicated heading demoted to the "as first written"
 subsection it always was. Still open:
-G6 (pool recovery, supervisor out of scope), G9's `nodes/` half,
+G6 (pool recovery, supervisor out of scope),
 G15/D47 (blocked on a live-backend measurement, §22 q1b), G20 (the Weave
 contract). G21 keeps only its inherent residue: both halves are built
 (`import_reach.py`, `mcp_reach.py`), and what stays is that a heuristic
@@ -319,12 +319,13 @@ lock, then set the event. Stop calls `cancel()` on it **directly** — routing
 Stop through the consumer loop cannot work, because that loop is not running
 while the gate blocks.
 
-### G9. Type coverage is scoped to `functions/`
+### G9. Type coverage is scoped to `functions/` — CLOSED
 
-mypy is configured with `files = ["functions"]` — deliberate staged
+mypy was configured with `files = ["functions"]` — deliberate staged
 adoption per the `pyproject.toml` comment ("widen `files` as more modules
-gain types"). `nodes/` and `widgets/` are untyped. Tracked here so the
-intentional gap doesn't become an accidental one.
+gain types"). `nodes/` was untyped. Tracked here so the intentional gap
+didn't become an accidental one. **Closed 2026-09-03**: `files` is now
+`["functions", "nodes"]` and the whole scope reports clean.
 
 **The scope is clean as of 2026-09-03**, which it had never actually
 been: `functions/` reported 209 errors. 136 of them were one missing
@@ -343,9 +344,39 @@ both sat in error paths where nothing would have noticed:
   `except asyncio.TimeoutError` beside it, so a server that ignored
   `terminate` was never killed and the context exit raised instead.
 
-The `nodes/` half remains open (313 errors, mostly Qt-shaped) and remains
-deliberate — but it is now a widening of something that passes, rather
-than of something that was never run.
+**The `nodes/` half followed on 2026-09-03**, and it repeated the
+`functions/` shape exactly: of 313 errors, 273 were one missing
+declaration. Weave types `_widget_core` as `WidgetCoreLike` — the subset
+the *dataflow engine* relies on — while a node uses the widget-facing
+whole it is actually handed. Declaring `_widget_core: WidgetCore` on each
+node class left 40; two Weave-side annotations (below) left 19; and the
+rest were real. Three were live bugs, again all in paths nobody exercises
+often:
+
+- `SilkAgentNode._cleanup_after_worker` and `GGUFLNode._cleanup_after_worker`
+  both overrode the base with **no `skip_results` parameter**. Weave calls
+  it as `_cleanup_after_worker(skip_results=True)` when a result arrives
+  for a cancelled or disabled node, so the cleanup path raised `TypeError`
+  on exactly the runs that were already going wrong.
+- `SilkTaskHubNode._rescan` called `self.execute()`. `execute` is
+  `ManualNode`'s slot; the hub is a plain `ThreadedNode`, so the rescan
+  button raised `AttributeError` instead of rescanning. It is
+  `set_dirty("rescan")` now.
+- Graph authoring wrote and read `node.title`, an attribute Weave never
+  renders: the header shows `node.name` when there is one and its own
+  text otherwise, and `NodeTitleCommand` writes both. Every agent-placed
+  node was titleless on the canvas while `place_node` reported the title
+  it had asked for. `graph_author.node_title` / `set_node_title` now do
+  what the canvas does, called *before* the placement snapshot so undo
+  keeps the title. Covered by `tests/test_silk_node_titles.py`.
+
+Two of the findings were Weave's, not Silk's, and were fixed in Weave
+because both were annotations contradicting the runtime:
+`registry.NodeCls` named `ActiveNode | ManualNode` where registration is
+duck-typed over `BaseControlNode` — rejecting the whole `ThreadedNode`
+family at type-check time while accepting it at runtime — and
+`register_node` is now generic, so a decorated class keeps its own type
+instead of being erased to the alias.
 
 ### G10. `EventStart.system_prompt` is never set — *closed*
 

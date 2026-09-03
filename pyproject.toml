@@ -64,7 +64,15 @@ plugins = ["pydantic.mypy"]
 # Scoped adoption: only the modules in `files` report; imports of the
 # not-yet-typed rest (and of the Weave framework) are followed silently.
 follow_imports = "silent"
-files = ["functions"]
+# `nodes` joined `functions` on 2026-09-03 (G9). The Qt layer was left out
+# originally because the noise floor was 313 errors -- 273 of them one
+# missing declaration, not 273 findings. With `_widget_core` declared as
+# the concrete `WidgetCore` each node is handed, what was left was small
+# and real: two `_cleanup_after_worker` overrides that dropped the base's
+# `skip_results` keyword, a Task Hub rescan calling a slot its base class
+# does not have, and graph authoring writing a title attribute the canvas
+# never reads.
+files = ["functions", "nodes"]
 ignore_missing_imports = true
 warn_unused_ignores = true
 no_implicit_optional = true

@@ -40,6 +40,12 @@ LOG_CAPACITY = 200
 @register_node
 class SilkHookMonitorNode(ThreadedNode):
     """Rolling log + counters over an agent's hook-fed event stream."""
+    # Weave declares `_widget_core` as `WidgetCoreLike` -- the subset the
+    # *dataflow engine* relies on. A node uses the widget-facing whole
+    # (`register_widget`, `push_display`, `apply_port_value`), which is
+    # the concrete `WidgetCore` the base class assigns. The narrowing is a
+    # declaration for the typechecker, not a runtime change (G9).
+    _widget_core: WidgetCore
 
     node_class: ClassVar[str] = "Display"
     node_subclass: ClassVar[str] = "Agents"

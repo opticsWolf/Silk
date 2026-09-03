@@ -49,6 +49,12 @@ log = get_logger("SilkTaskHub")
 @register_node
 class SilkTaskHubNode(ThreadedNode):
     """Kanban projection over every plan under the graph's sandbox roots."""
+    # Weave declares `_widget_core` as `WidgetCoreLike` -- the subset the
+    # *dataflow engine* relies on. A node uses the widget-facing whole
+    # (`register_widget`, `push_display`, `apply_port_value`), which is
+    # the concrete `WidgetCore` the base class assigns. The narrowing is a
+    # declaration for the typechecker, not a runtime change (G9).
+    _widget_core: WidgetCore
 
     node_class: ClassVar[str] = "Display"
     node_subclass: ClassVar[str] = "Agents"
@@ -126,8 +132,12 @@ class SilkTaskHubNode(ThreadedNode):
         Plans move because *agents* write to them, not because this node's
         inputs changed, so a hub with no way to re-read would go stale the
         moment the graph settled.
+
+        `set_dirty` rather than `execute()`: `execute` is the *manual*
+        node's slot, and this hub is a plain `ThreadedNode`, so the button
+        raised `AttributeError` instead of rescanning.
         """
-        self.execute()
+        self.set_dirty("rescan")
 
     # ── Ingestion ─────────────────────────────────────────────────────
 

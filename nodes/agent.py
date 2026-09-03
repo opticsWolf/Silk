@@ -28,9 +28,10 @@ import copy
 import itertools
 import uuid
 from contextlib import ExitStack
-from typing import Any, ClassVar, Dict, List, Optional
+from typing import Any, ClassVar, Dict, List, Optional, cast
 
 from PySide6.QtCore import Qt, QEvent, Signal, Slot
+from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -117,6 +118,13 @@ class SilkAgentNode(ThreadedManualNode):
     # ports are shaped; `node_state_api` is what says old state can
     # no longer be restored (G20). 1 = the shape this spec settled on.
     node_version = 1
+
+    # Weave declares `_widget_core` as `WidgetCoreLike` -- the subset the
+    # *dataflow engine* relies on. A node uses the widget-facing whole
+    # (`register_widget`, `push_display`, `apply_port_value`), which is
+    # the concrete `WidgetCore` the base class assigns. The narrowing is a
+    # declaration for the typechecker, not a runtime change (G9).
+    _widget_core: WidgetCore
 
     # Worker → main-thread bridges (V6 R11.1).
     chunk_streamed = Signal(str)
@@ -341,8 +349,9 @@ class SilkAgentNode(ThreadedManualNode):
 
     def eventFilter(self, obj: Any, event: QEvent) -> bool:
         if obj == self.text_prompt._text_edit and event.type() == QEvent.Type.KeyPress:
-            if event.key() in (Qt.Key_Return, Qt.Key_Enter):
-                if event.modifiers() & Qt.ShiftModifier:
+            key_event = cast(QKeyEvent, event)
+            if key_event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                if key_event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
                     return False
                 self.execute()
                 return True
@@ -422,7 +431,7 @@ class SilkAgentNode(ThreadedManualNode):
                 previous = getattr(self, "_pulse_waveform_before", None)
                 if previous:
                     self.set_pulse_waveform(previous)
-                    self._pulse_waveform_before = None
+                    self._pulse_waveform_before = ""
         except AttributeError:      # pragma: no cover - host without the mixin
             log.debug("Node has no pulse animation; waiting state is silent")
 
@@ -507,9 +516,13 @@ class SilkAgentNode(ThreadedManualNode):
             # Edge-trigger downstream agents / sinks in the network.
             self.pulse("done", payload=True)
 
-    def _cleanup_after_worker(self) -> None:
+    def _cleanup_after_worker(self, skip_results: bool = False) -> None:
+        # The keyword is not decoration: Weave calls this with
+        # `skip_results=True` when a result arrives for a cancelled or
+        # disabled node, and an override without it raises TypeError on
+        # exactly the path that is already going wrong.
         self.btn_run.set_label("Run Agent")
-        super()._cleanup_after_worker()
+        super()._cleanup_after_worker(skip_results=skip_results)
 
     def cleanup(self) -> None:
         self.cancel_compute()
