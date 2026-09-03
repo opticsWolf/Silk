@@ -2063,6 +2063,38 @@ own side of the ladder -- an older `node_version` with the same
 `state_api` restores clean, and an unknown Silk class resolves MISSING
 carrying the suite that would supply it.
 
+**D84. An MCP server's reach is its process's reach, and the canvas must
+say so (G21 residue 2).** Every file tool Silk registers is sandboxed: a
+root list, narrowing-only grants (D16-D18) rendered on a port, locks
+across agents (D67). An MCP server (§10) is a **separate process**. It
+writes wherever its own operating-system authority allows, Silk neither
+sandboxes it nor sees the write, and the `file_permissions` port sitting
+on the same canvas describes none of it. G21's first residue was silence
+about which sandbox roots Python will import from; this is silence about
+a reach the sandbox never covered at all.
+
+Silk cannot narrow it -- the authority was granted when the user launched
+the server. `functions/mcp_reach.py` closes the gap the only way that is
+honest: it reads the tool list the server advertises, and where a tool
+looks filesystem-shaped it says so, once per server, in the log and in the
+MCP Server node's status line. Three rules, matching D71 and
+`import_reach.py` before it.
+
+- **It reports, it never refuses.** A filesystem MCP server is a
+  legitimate thing to mount; refusing one would be Silk re-deciding a
+  question the user answered by configuring it.
+- **Silence is not a promise.** The classifier is a heuristic over
+  someone else's naming, so the notice says these *look like* filesystem
+  access -- never that they are the only ones. A server that hides a
+  write behind `sync_state` is not reported, and the text does not claim
+  otherwise.
+- **A verb needs a subject.** `create_issue` and `list_repos` are not
+  filesystem access. A notice that fires on every tracker server is one
+  people learn to scroll past, so a hint counts only alongside a
+  filesystem word (`file`, `path`, `directory`, `disk`); names and prose
+  descriptions are both evidence, stemmed so "saves the file" reaches the
+  same hint `save_file` does.
+
 ---
 
 ## 20. Phasing
@@ -2199,6 +2231,7 @@ selects it as soon as the graph shape changes.
 | G2 — BM25 is a keyword alias | §6 (forced into scope by discovery) |
 | G8 — stops not honoured mid-tool-batch | §7 (the gate's block, D38/D49) + `bind_stop` on the ToolBox — landed 2026-09-03 |
 | G20 (half) — no declared floor under the Weave internals Silk uses | §19 (D83, `functions/weave_contract.py`); versioning them stays Weave's call |
+| G21 (residue 2) — MCP servers reach the filesystem outside Silk's sandbox | §19 (D84, `functions/mcp_reach.py`); reported per server, never refused — landed 2026-09-03 |
 
 G6 is no longer fully untouched: D40 makes a model-request error classifier a
 precondition of D24, and that classifier is what would let a future supervisor

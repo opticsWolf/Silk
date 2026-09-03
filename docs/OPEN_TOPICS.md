@@ -13,10 +13,12 @@ stays only until the code lands.
 **Last audited:** 2026-09-03 — register reconciled against the code:
 G1 and G8 closed with the work below them, G4 recorded as long since
 done, and G3's duplicated heading demoted to the "as first written"
-subsection it always was. Still open: G5 (dependency declaration),
+subsection it always was. Still open:
 G6 (pool recovery, supervisor out of scope), G9's `nodes/` half,
 G15/D47 (blocked on a live-backend measurement, §22 q1b), G20 (the Weave
-contract), G21 (write authority over an importable directory).
+contract). G21 keeps only its inherent residue: both halves are built
+(`import_reach.py`, `mcp_reach.py`), and what stays is that a heuristic
+over someone else's tool names cannot promise completeness.
 
 Legend:
 
@@ -203,7 +205,7 @@ the main risk control for a change of the spec's size. Note the spec does
 *not* ask for characterization fixtures on the sign-off park path: that path
 is deleted (D31), not refactored, so pinning it would be wasted work.
 
-### G5. Runtime dependencies are declared nowhere
+### G5. Runtime dependencies are declared nowhere — CLOSED
 
 `pyproject.toml` has no `[project]` table: the repo is designed to run in
 place as a Weave submodule, so runtime dependencies (PySide6,
@@ -568,7 +570,7 @@ three pays for itself, and the correct response is to stop.
 size and backing if B is selected; who chooses the backend, and the
 down-backend path, if C is.
 
-### G21. Write authority over an importable directory is process authority
+### G21. Write authority over an importable directory is process authority — REPORTED
 
 Every file tool is sandboxed; `import` is not. Module-level code in a file the
 agent wrote runs with the **full authority of the Weave process** -- network,
@@ -578,7 +580,10 @@ file was written. So a sandbox root that is on the import path is a
 
 Spec **D77** is the mitigation, not a fix: always-approve with a floor no
 preset can lower, the diff shown at approval time, and validation moved into
-a subprocess *after* approval. Two residues stay open:
+a subprocess *after* approval. Two residues sat under it; both are now
+reported rather than silent (`functions/import_reach.py`,
+`functions/mcp_reach.py`), and neither is *closed* in the sense of the
+authority being narrowed -- Silk cannot narrow either one:
 
 - A user who registers a sandbox root that happens to be importable (inside
   the venv, inside `weave/`, anywhere on `sys.path`) has granted more than the
@@ -604,7 +609,19 @@ a subprocess *after* approval. Two residues stay open:
   entirely: they can write wherever their process can, and Silk neither
   sandboxes nor sees it. Already true today; §19 makes it consequential,
   because now something in the process is willing to import what appears on
-  disk.
+  disk. **Built 2026-09-03** (`functions/mcp_reach.py`, D84): when a server
+  is mounted, Silk reads the tool list it advertises and names the tools
+  that look filesystem-shaped -- writes and reads separately -- in the log
+  and in the MCP Server node's status line, with the reason spelt out:
+  an MCP server runs in its own process, so Silk's sandbox, grants and
+  locks do not apply to it. As with the first residue it reports and never
+  refuses, because a filesystem MCP server is a legitimate thing to mount.
+  The residue that remains is inherent, not a to-do: the classifier reads
+  someone else's names, so a server that hides a write behind `sync_state`
+  is not reported, and the notice says "look like" rather than claiming a
+  complete list. A verb alone is not a finding either (`create_issue`,
+  `delete_row`), because a notice that fires on every tracker server is one
+  people learn to ignore.
 
 ### G19. Toolchain subprocess writes bypass the file locks across agents — CLOSED
 

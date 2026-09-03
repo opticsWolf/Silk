@@ -122,6 +122,15 @@ them without knowing what MCP is.
   tool comes from. The prefix is Silk's: it is stripped again before the
   call goes out.
 
+- **Reach (D84)** — the role gate, the approval hook and the file sandbox
+  all sit *in this process*. The server does not. `functions/mcp_reach.py`
+  reads the tool list a server advertises at attach time and names the
+  tools that look filesystem-shaped, in the log and in the MCP Server
+  node's status line, so the `file_permissions` port on the same canvas
+  does not read as a description of the whole graph's file reach. It is a
+  heuristic over someone else's names: it reports, never refuses, and says
+  "look like" rather than claiming completeness.
+
 `load_mcp_toolsets(...)` and the ToolSet-level path remain for non-graph
 use.
 

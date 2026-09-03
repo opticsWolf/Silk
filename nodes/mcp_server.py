@@ -35,6 +35,7 @@ from weave.registry import register_node
 from weave.logger import get_logger
 
 from .silk_ports import MCP_SERVERS_TYPE  # noqa: F401
+from ..functions.mcp_reach import reach_notice
 from ..functions.mcp_session import (
     HTTP, SSE, STDIO, MCPBundle, MCPServerSpec, MCPSession,
 )
@@ -193,7 +194,12 @@ class SilkMCPServerNode(ActiveNode):
             return {"mcp": upstream}
 
         self._session = session
-        self._sync_status = session.status
+        # What this server can reach is not what the file-permissions port
+        # describes: it is another process, with its own authority (G21,
+        # D84). Reported where the sandbox settings are read, not buried
+        # in a log nobody has open.
+        notice = reach_notice(spec.id, session.tools)
+        self._sync_status = session.status + (f"\n! {notice}" if notice else "")
         return {"mcp": upstream.with_session(session)}
 
     # ── Main thread ───────────────────────────────────────────────────

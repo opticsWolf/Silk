@@ -46,6 +46,7 @@ from weave.logger import get_logger
 # D22 lives in one place now: remote model backends need the same rule
 # (D45), and a second copy of it would be a second place to get it wrong.
 from .credentials import SECRETS_FILE, missing_credential, resolve_credential
+from .mcp_reach import reach_notice
 
 
 log = get_logger("SilkMCP")
@@ -407,6 +408,12 @@ def attach_mcp_tools(
         if not session.connected:
             continue
         server = session.spec.id
+        # Said once per server, at the moment its tools become callable:
+        # an MCP server is a separate process, so the file sandbox on the
+        # canvas does not describe it (G21, D84).
+        notice = reach_notice(server, session.tools)
+        if notice:
+            log.warning(notice)
         for entry in session.tools:
             name = entry["name"]
             if selection is not None and not selection(server, name):
