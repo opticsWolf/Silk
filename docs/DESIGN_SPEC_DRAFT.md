@@ -699,9 +699,13 @@ the ledger's job, not the lock's.**
   claimed by another agent, alongside the static `file_permissions`
   narrowing) is recorded as an option, not built (§22 q8).
 - *Lost updates at the reasoning level* -- `edit_file`'s anchors already
-  catch the common case. If blind `write_file` overwrites ever bite in
-  practice, the remedy is a CAS precondition (optional expected-digest
-  argument), not longer lock holds.
+  catch the common case, and the blind-`write_file` half is now closed the
+  way this bullet said it would be (§22 q8): an optional `expected_sha256`
+  argument, compared **inside** the lock the write already takes, with
+  `absent` meaning "only if the file is not there yet". A mismatch refuses
+  and says which way it failed, so the model re-reads and re-applies
+  rather than clobbering. No longer lock holds, and no ownership in the
+  sandbox.
 
 ---
 
@@ -2119,10 +2123,38 @@ need a `__version__` to name. Still trivial; now load-bearing.
    tracks the pool's loaded model -- `recall` is FTS5-only today. That is
    on the "Later" list with the rest of the hybrid-search work, not a
    placement question.
-8. Whether the sandbox consults ledger claims as *dynamic* write policy
-   (D68) -- deny writes to paths another agent has claimed -- and whether a
-   claim then needs a release path and a timeout, which is approval-gate
-   territory (D38) rather than lock territory.
+8. ~~Whether the sandbox consults ledger claims as *dynamic* write policy
+   (D68).~~ **Answered (2026-09-02): no.** Three reasons, and the third is
+   the one that settles it.
+
+   *It is a permission surface nobody configured.* The sandbox is the
+   static ceiling a human set and can see (I6). A write that succeeds now
+   and is denied five minutes later, because a peer claimed a path,
+   depends on runtime state no node shows and no preset records. The same
+   graph would behave differently on two runs for a reason the user
+   cannot inspect.
+
+   *It hands the wrong side the authority.* An agent could claim a path
+   to deny its peers. Every other gate in Silk moves authority toward the
+   human (D10, D31, D77); this one would let the model narrow another
+   model's access, which is exactly backwards.
+
+   *The release path proves it is the wrong shape.* Without one, a
+   forgotten claim is a deadlock the user cannot see. With a timeout, a
+   claim that silently expires guarantees nothing, so it is a lock with
+   extra steps. With a human release it is the decision seam (D38/D48),
+   not the sandbox -- and the Decision Inbox already exists for the case
+   where a person must adjudicate.
+
+   What the option was *for* -- a blind `write_file` clobbering another
+   agent's change -- is answered by D68's own third bullet instead:
+   `write_file` takes an optional `expected_sha256` precondition, compared
+   inside the lock the write already holds, with `absent` meaning "only if
+   it does not exist yet". Optimistic concurrency, opted into per call,
+   with a refusal the model can act on -- the same shape `edit_file`'s
+   anchor check already has. Claims stay what D68 said they were: ledger
+   ownership, visible and auditable, and advisory between cooperating
+   agents.
 9. ~~Whether graph authoring (§18) ever gains **widget configuration** --
    an agent that can place a node but not set its values builds skeletons a
    human must finish.~~ **Answered (2026-09-02):** yes, as the narrow typed

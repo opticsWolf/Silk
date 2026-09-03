@@ -1,6 +1,7 @@
 """Write file tools: write_file, append_file, create_directory, edit_file, insert_text."""
 from __future__ import annotations
 
+import hashlib
 import os
 import tempfile
 from typing import TYPE_CHECKING, Any
@@ -20,6 +21,14 @@ if TYPE_CHECKING:
 class WriteFileArgs(BaseModel):
     path: str = Field(..., description="Path to write to (relative to sandbox root). Parent directories are created automatically.")
     content: str = Field(..., description="Content to write to the file.")
+    expected_sha256: str = Field(
+        "",
+        description=(
+            "Optional precondition: only write if the file's current "
+            "SHA-256 is exactly this. Use 'absent' to require that the "
+            "file does not exist yet. Leave empty for a blind overwrite."
+        ),
+    )
 
 
 class AppendFileArgs(BaseModel):
@@ -145,7 +154,20 @@ def _too_big(sandbox: "FileToolSandbox", data: str) -> str | None:
 
 # Ã¢â€â‚¬Ã¢â€â‚¬ Tool implementations Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
-def _write_file_impl(sandbox: "FileToolSandbox", path: str, content: str) -> str:
+#: What ``expected_sha256`` means when the file should not exist yet.
+ABSENT = "absent"
+
+
+def _digest(target: "Path") -> str:
+    """The file's SHA-256, or :data:`ABSENT` when there is no file."""
+    try:
+        return hashlib.sha256(target.read_bytes()).hexdigest()
+    except FileNotFoundError:
+        return ABSENT
+
+
+def _write_file_impl(sandbox: "FileToolSandbox", path: str, content: str,
+                     expected_sha256: str = "") -> str:
     try:
         sandbox.check_write()
         target = sandbox.resolve_path(path)
@@ -161,8 +183,31 @@ def _write_file_impl(sandbox: "FileToolSandbox", path: str, content: str) -> str
     if size_err:
         return size_err
 
+    # The compare-and-swap precondition (D68, §22 q8). Checked *inside*
+    # the lock the write already takes, so nothing can land between the
+    # comparison and the replace. This is the answer to blind overwrites
+    # between agents: an optimistic precondition the caller opts into,
+    # not a claim that makes one agent's write policy depend on another
+    # agent's runtime state.
+    expected = str(expected_sha256 or "").strip().lower()
     try:
         with sandbox.lock_paths(target):
+            if expected:
+                actual = _digest(target)
+                if actual != expected:
+                    rel = target.relative_to(sandbox.root_dir)
+                    if actual == ABSENT:
+                        found = "the file does not exist"
+                    elif expected == ABSENT:
+                        found = f"it already exists (sha256 {actual})"
+                    else:
+                        found = f"it is now sha256 {actual}"
+                    return (
+                        f"Error: '{rel}' does not match the precondition -- "
+                        f"{found}. Someone else changed it since you read "
+                        "it. Read it again and re-apply your change on top "
+                        "of what is there now."
+                    )
             _atomic_write(target, content)
     except OSError as e:
         return f"Error writing '{target}': {e}"
@@ -402,11 +447,16 @@ def attach_file_write_tools(toolbox: "ToolBox", sandbox: "FileToolSandbox") -> N
             "- Creates parent directories if they don't exist.\n"
             "- Overwrites the file if it already exists (written atomically).\n"
             "- Content size is capped by the sandbox's max_write_bytes policy.\n"
+            "- expected_sha256: optional. Pass the digest you read to "
+            "refuse the write if someone changed the file since -- use it "
+            "when another agent may be working in the same tree, or "
+            "'absent' to create a file only if it is not there yet.\n"
             f"\n{procedure_base}"
         ),
     )
-    def _write_file(db_pool: Any, user_session: dict, path: str, content: str) -> str:
-        return _write_file_impl(sandbox, path, content)
+    def _write_file(db_pool: Any, user_session: dict, path: str, content: str,
+                    expected_sha256: str = "") -> str:
+        return _write_file_impl(sandbox, path, content, expected_sha256)
 
     @toolbox.register(
         name="append_file",

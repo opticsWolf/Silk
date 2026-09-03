@@ -11,7 +11,7 @@ path, not in the prompt.
 | Module | Tools | Purpose |
 |---|---|---|
 | `tools/file_read.py` | `read_file`, `view_file`, `list_directory`, `find_files`, `search_files`, `file_info` | read-only, sandboxed file access |
-| `tools/file_write.py` | `write_file`, `append_file`, `create_directory`, `edit_file`, `insert_text` | sandboxed file mutation |
+| `tools/file_write.py` | `write_file`, `append_file`, `create_directory`, `edit_file`, `insert_text` | sandboxed file mutation; `write_file` takes an optional `expected_sha256` precondition (`absent` = create only), compared inside the write's own lock, so a blind overwrite of another agent's change can be refused rather than discovered later (§22 q8) |
 | `tools/file_manipulate.py` | `copy_file`, `move_file`, `delete_file`, `diff_files` | file operations |
 | `tools/ripgrep_tool.py` | `ripgrep_search` | fast recursive content search via the in-process `pyripgrep` binding (`pip install ripgrep-python`); `.gitignore`-aware; `content` / `files_with_matches` / `count` output modes; structured JSON results |
 | `tools/task_tracker.py` | `plan_start`, `plan_view`, `plan_history`, `task_add`, `task_update`, `task_complete`, `task_rescope`, `goal_revise`, `task_claim`, `request_signoff` | the agent's own task system: set a goal, grow/progress the task tree, park tasks for human sign-off |
