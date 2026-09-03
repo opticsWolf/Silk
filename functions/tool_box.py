@@ -86,6 +86,11 @@ class ToolBox:
         # Flat tools dict (legacy compatibility, kept for direct access)
         self.tools: dict[str, dict[str, Any]] = {}
 
+        # How to ask whether the run was stopped (G8). Bound by the loop
+        # for the length of a run; None means nothing can stop a batch,
+        # which is the right answer for a toolbox used outside a run.
+        self._should_stop: Optional[Callable[[], bool]] = None
+
         # Bash â†’ native-tool advice, populated from each tool's `replaces`.
         self._bash_index = BashHintIndex()
 
@@ -713,12 +718,53 @@ class ToolBox:
 
     # -- execution ------------------------------------------------------
 
+    def bind_stop(self, predicate: Optional[Callable[[], bool]]) -> None:
+        """Tell this toolbox how to ask whether the run was stopped (G8).
+
+        The loop binds the engine's flag for the length of a run and
+        unbinds it after: a ToolBox outlives any one run, and a stale
+        predicate would let a finished run's stop skip the next run's
+        calls. ``None`` clears it.
+        """
+        self._should_stop = predicate
+
+    def _stopped(self) -> bool:
+        """Whether the run this batch belongs to has been stopped."""
+        if self._should_stop is None:
+            return False
+        try:
+            return bool(self._should_stop())
+        except Exception:      # a predicate that broke is not a stop
+            return False
+
+    @staticmethod
+    def _not_run(call_id: str, name: str) -> dict:
+        """The result for a call the stop arrived before (G8).
+
+        A *result*, not an error: nothing failed, and the model must not
+        be nudged to retry something the user asked to stop. It is still a
+        result, because every call the model made needs one -- a batch
+        that answers three of four calls leaves the next request's message
+        list malformed.
+        """
+        return {
+            "tool_call_id": call_id,
+            "name": name,
+            "content": f"Not run: the run was stopped before '{name}' started.",
+        }
+
     async def execute_tool_calls_async(self, tool_calls: list[Any]) -> list[dict]:
         """
         Validate and run a batch of tool calls in parallel. Failures are
         returned as tool results (never raised) so the LLM can self-correct.
 
         Sequential tools are executed one at a time to avoid conflicts.
+
+        A stop is honoured *between* calls (G8): whatever is already
+        running keeps running -- its only bound is the registration
+        `timeout` -- but nothing further starts. That is the half of G8
+        this layer can honestly offer; the deliberate block, the approval
+        gate, is cancelled directly through the seam (D38, D49).
         """
         # Ensure external toolsets (MCP, etc.) are connected
         await self._enter_combined()
@@ -832,15 +878,26 @@ class ToolBox:
 
         # Execute parallel tasks concurrently
         if parallel_tasks:
-            parallel_results = await asyncio.gather(*[
-                self._safe_execute(id, name, meta, args)
-                for id, name, meta, args in parallel_tasks
-            ])
-            results.extend(parallel_results)
+            if self._stopped():
+                results.extend(self._not_run(id, name)
+                               for id, name, _meta, _args in parallel_tasks)
+            else:
+                parallel_results = await asyncio.gather(*[
+                    self._safe_execute(id, name, meta, args)
+                    for id, name, meta, args in parallel_tasks
+                ])
+                results.extend(parallel_results)
 
         # Execute sequential tasks one at a time
         if sequential_tasks:
             for id, name, meta, args in sequential_tasks:
+                # Checked per call, not once for the batch: a sequential
+                # run is exactly the case where the stop arrives while an
+                # earlier call is still going, and the rest of the queue
+                # is what there is still time not to start.
+                if self._stopped():
+                    results.append(self._not_run(id, name))
+                    continue
                 result = await self._safe_execute(id, name, meta, args)
                 results.append(result)
 

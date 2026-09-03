@@ -10,8 +10,13 @@ yet **built** and what is still **undecided**. An entry whose design question
 the spec has answered carries a **Decided** line citing its D-number and
 stays only until the code lands.
 
-**Last audited:** 2026-08-30 — reworked against the design spec, then
-re-audited against the dsh and pi harness reviews in `docs/references/`.
+**Last audited:** 2026-09-03 — register reconciled against the code:
+G1 and G8 closed with the work below them, G4 recorded as long since
+done, and G3's duplicated heading demoted to the "as first written"
+subsection it always was. Still open: G5 (dependency declaration),
+G6 (pool recovery, supervisor out of scope), G9's `nodes/` half,
+G15/D47 (blocked on a live-backend measurement, §22 q1b), G20 (the Weave
+contract), G21 (write authority over an importable directory).
 
 Legend:
 
@@ -255,7 +260,41 @@ to do about. The gap statement is kept below as the record.
 > the error message text. (Related: `count_prompt_tokens()` is a
 > best-effort estimate, so the input-token gate itself is approximate.)
 
-### G8. Stops are not honoured mid-tool-batch
+### G8. Stops are not honoured mid-tool-batch — CLOSED
+
+**Closed (2026-09-03).** Both halves are built, and they are different
+mechanisms because the two blocks are different things.
+
+The *deliberate* block -- the approval gate waiting on a human -- is
+cancelled through the seam directly: `SilkAgentNode.cancel_compute`
+calls `seam.cancel(...)` before the base implementation, every waiter
+denies with `CAUSE_CANCELLED`, and the run unwinds. That is D38/D49's
+ordering rule doing its job, and it is what made this a correctness
+requirement rather than a latency annoyance.
+
+The *incidental* block -- a batch of ordinary tool calls -- is honoured
+between calls: `AgentLoop` binds `engine.stop_requested` to the ToolBox
+for the length of the run (`bind_stop`, cleared in the same `finally`
+that emits `after_run`, because a ToolBox outlives any one run), and
+`execute_tool_calls_async` starts nothing further once it is set. A
+sequential queue is checked per call, which is the case the entry names.
+Every skipped call still returns a result -- a batch that answers three
+of four calls leaves the next request's message list malformed -- and
+that result is deliberately *not* an error: a stop is the user's
+decision, not something to nudge the model into retrying.
+
+What is still true, and is not a gap: a call **already running** runs to
+completion, bounded only by its registration `timeout`. Per-call
+cancellation would mean cancelling arbitrary third-party code mid-write,
+which is a much larger promise than Silk can keep for an MCP tool or a
+subprocess toolchain. The stop is honoured at the boundaries there are.
+
+Tests: `tests/test_silk_stop_mid_batch.py`,
+`tests/test_silk_decision_seam.py`.
+
+*Original text follows for the record.*
+
+#### G8, as first written
 
 `stop_requested()` is checked between rounds and at token boundaries
 inside the engine. A tool batch already in flight runs to completion;

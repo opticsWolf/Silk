@@ -15,9 +15,15 @@ deliberate: interactivity at run boundaries matches the sign-off pause and
 keeps the loop free of an inbox mechanism.
 
 **Stop semantics.** `loop.stop()` is cooperative, honoured at the next token
-boundary or between rounds. A tool batch already in flight runs to
-completion before the stop is observed — there is no per-call cancellation
-(OPEN_TOPICS G8).
+boundary, between rounds, and **between the calls of a tool batch**: the
+loop binds `engine.stop_requested` to the ToolBox for the length of a run
+(`bind_stop`), so a stopped run starts no further call and every skipped
+call comes back with a result rather than nothing. A call *already
+running* still runs to completion — there is no per-call cancellation, and
+its only bound is the registration `timeout`. The one block that is
+deliberate, the approval gate waiting on a human, is cancelled through the
+seam directly (D38, D49), because the consumer loop that polls for
+cancellation is not running while the gate blocks (OPEN_TOPICS G8).
 
 **How a run ends.** Today the stream carries no single "outcome" field; the
 terminal event(s) tell you how a run ended:

@@ -189,6 +189,15 @@ class AgentLoop:
         # the close would land outside it — before_run fired, after_run
         # never did. Found by the I2 fixture, which is what those fixtures
         # are for.
+        bind_stop = getattr(self.toolbox, "bind_stop", None)
+        if bind_stop is not None:
+            # For the length of this run, the toolbox can ask whether the
+            # user stopped it, so a batch does not start calls nobody is
+            # waiting for any more (G8). Unbound in the finally: a ToolBox
+            # outlives the run, and a stale flag would skip the next run's
+            # calls.
+            bind_stop(engine.stop_requested)
+
         try:
             yield EventStart(
                 settings=dict(gen_params),
@@ -203,6 +212,8 @@ class AgentLoop:
                 gen_params, tool_calls_made, tool_results_made, start_time,
             )
         finally:
+            if bind_stop is not None:
+                bind_stop(None)
             self._emit(
                 HOOK_AFTER_RUN,
                 final_text=self._final_text,

@@ -1613,7 +1613,7 @@ mechanism for the SQLite fallback backend (D66).
 |---|---|---|
 | Top-level agent (own run) | its turns, run/session concepts, status transitions on tasks it claimed | main |
 | Orchestrator | delegation edges; fork/abandon of worker branches | main + branch admin |
-| Fan-out worker | everything it does | **its own branch** (`worker/<correlation_id>`, via `on_branch`) |
+| Fan-out worker | everything it does | **its own branch** (`worker/<correlation_id>`, via `on_branch`) -- *unbuilt: macrame-db 0.9.0 has no branch primitive, see §17* |
 | Human (Task Hub / Sign-Off / decision UI) | sign-off assertions, goal revisions | main, high priority |
 | Compactor | supersession events | main |
 | Nobody | deletion -- archive path only (Macrame Doctrine V) | -- |
@@ -1696,8 +1696,22 @@ there: discrete facts as they happen, the turn's bookkeeping edges as one
 instant as a read.
 
 Not built: **D63's worker branches** (`on_branch`, fork/abandon,
-promotion by re-assertion), which need the fan-out orchestrator to have
-a lineage to fork from -- a §15 change, not a storage one.
+promotion by re-assertion). The reason recorded here was that they need
+the fan-out orchestrator to have a lineage to fork from -- a §15 change,
+not a storage one. **That was not the whole reason (checked 2026-09-03):**
+`macrame-db 0.9.0`, the version this depends on, exposes no branch
+primitive at all -- neither `macrame` nor `macrame.Database` has anything
+branch-shaped -- so `on_branch` is a call to a method that does not
+exist. D63's branch half is blocked on the library, not on §15.
+
+If worker isolation is wanted before the library grows one, the shape
+that *is* available is a tag rather than a branch: `EdgeAssertion` takes
+`properties`, so a worker's assertions can be stamped with its
+correlation id and a reader can filter on it. That gives the "whose work
+was this" question an answer and leaves abandonment as a filter rather
+than a discard. It is a weaker promise than a branch -- an abandoned
+worker's facts are still in the ledger, merely marked -- so it is written
+down here as the available alternative, not adopted.
 
 The discovery half is **done (2026-09-03)**. `functions/plan_discovery.py`
 scans both kinds of plan file into one list and lets **the extension name
@@ -2156,7 +2170,7 @@ precondition of D24, and that classifier is what would let a future supervisor
 tell "the server died" from "the context overflowed". The restart itself stays
 out of scope.
 
-Untouched by this spec: G5 (dependency declaration), G8 (mid-batch stops),
+Untouched by this spec: G5 (dependency declaration),
 G9 (type coverage),
 T5 (delegation depth), T6 (HTML floor), T7 (durable event sink).
 
