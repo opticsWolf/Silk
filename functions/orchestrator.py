@@ -450,7 +450,12 @@ def attach_orchestrator_tools(
         # RoleBinding refuses a second activation. Say so, with the fix,
         # instead of letting the second assignment fail obscurely (D52.1).
         seen: set[str] = set()
-        duplicates = sorted({w for w, _t, _c in items if w in seen or seen.add(w)})
+        duplicates_found: set[str] = set()
+        for worker, _t, _c in items:
+            if worker in seen:
+                duplicates_found.add(worker)
+            seen.add(worker)
+        duplicates = sorted(duplicates_found)
         if duplicates:
             return DelegateParallelResult(
                 ok=False,

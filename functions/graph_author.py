@@ -352,7 +352,7 @@ def describe_class(node_cls: Any) -> dict:
     """
     from weave.registry.metadata import get_description, get_display_name, get_tags
 
-    entry = {
+    entry: dict[str, Any] = {
         "class_name": getattr(node_cls, "__name__", ""),
         "display_name": get_display_name(node_cls),
         "description": (get_description(node_cls) or "").strip(),

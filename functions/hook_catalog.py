@@ -75,7 +75,11 @@ if TYPE_CHECKING:
 log = get_logger("SilkHooks")
 
 #: {event_name: [callables]} — the shape Role.hooks and the registry consume.
-HookMap = dict[str, list[Callable]]
+#: What a factory returns: events to registrations. An entry is
+#: either a bare callable or a :class:`HookEntry` carrying what it
+#: declares about itself (D13/D14) -- `register_hook_map` accepts
+#: both, and `bind_hook_map` turns the first into the second.
+HookMap = dict[str, list[Any]]
 
 
 @dataclass(frozen=True)
@@ -300,7 +304,11 @@ def _make_redact_secrets(config: Optional[BaseModel]) -> HookMap:
         except re.error as exc:
             log.warning(f"[hook:redact] invalid pattern {pattern!r} skipped: {exc}")
 
-    async def redact(handler: Callable = None, tool_name: str = "", **_kw: Any) -> Any:
+    async def redact(handler: Optional[Callable] = None, tool_name: str = "", **_kw: Any) -> Any:
+        if handler is None:  # middleware is always handed its next layer
+            raise TypeError(
+                "redact_secrets is middleware: it wraps a handler, so one must be given"
+            )
         result = await handler()
         if not isinstance(result, str) or not compiled:
             return result
@@ -340,7 +348,11 @@ def _make_tool_budget(config: Optional[BaseModel]) -> HookMap:
         total["count"] = 0
         per_tool.clear()
 
-    async def enforce(handler: Callable = None, tool_name: str = "", **_kw: Any) -> Any:
+    async def enforce(handler: Optional[Callable] = None, tool_name: str = "", **_kw: Any) -> Any:
+        if handler is None:  # middleware is always handed its next layer
+            raise TypeError(
+                "tool_budget is middleware: it wraps a handler, so one must be given"
+            )
         tool_count = per_tool.get(tool_name, 0)
         if total["count"] >= cfg.max_calls or (
             cfg.max_calls_per_tool and tool_count >= cfg.max_calls_per_tool
@@ -411,9 +423,13 @@ def _make_task_audit(config: Optional[BaseModel]) -> HookMap:
         return text.lower() in trivial
 
     async def enforce(
-        handler: Callable = None, tool_name: str = "",
+        handler: Optional[Callable] = None, tool_name: str = "",
         tool_args: Optional[dict] = None, **_kw: Any,
     ) -> Any:
+        if handler is None:  # middleware is always handed its next layer
+            raise TypeError(
+                "task_audit is middleware: it wraps a handler, so one must be given"
+            )
         # No `tool_name in _AUDIT_GUARDED` test here: the binding below says
         # which tools this applies to, and the registry does the filtering
         # (D13). The set is the same set; the difference is that it is now

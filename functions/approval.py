@@ -271,9 +271,13 @@ def attach_approval_gate(
                           note="granted from an approval prompt")
 
     async def gate(
-        handler: Callable = None, tool_name: str = "",
+        handler: Optional[Callable] = None, tool_name: str = "",
         tool_args: Optional[dict] = None, **_kw: Any,
     ) -> Any:
+        if handler is None:  # middleware is always handed its next layer
+            raise TypeError(
+                "the approval gate is middleware: it wraps a handler, so one must be given"
+            )
         args = dict(tool_args or {})
         if tool_name in ALWAYS_APPROVE:
             # The load verbs have a floor of their own (D77) that asks

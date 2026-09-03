@@ -111,7 +111,7 @@ class PresetStore(Generic[PresetT]):
                     f"{raw.get('name', '?')!r}: {exc}"
                 )
                 continue
-            self._presets[preset.name] = preset
+            self._presets[preset.name] = preset  # type: ignore[attr-defined]
 
     def _flush(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -134,7 +134,9 @@ class PresetStore(Generic[PresetT]):
         return self._presets.get(name)
 
     def upsert(self, preset: PresetT) -> None:
-        self._presets[preset.name] = preset
+        # Every preset model carries a `name`; the TypeVar's bound
+        # (BaseModel) is what cannot say so.
+        self._presets[preset.name] = preset  # type: ignore[attr-defined]
         self._flush()
 
     def remove(self, name: str) -> bool:

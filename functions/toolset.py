@@ -726,7 +726,9 @@ class DeferredLoadingToolset(ToolSet):
     ) -> ToolSet:
         return DeferredLoadingToolset(
             self._toolset.visit_and_replace(visitor),
-            self._tool_names,
+            # A frozenset is a Collection, not a Sequence; the constructor
+            # only ever iterates it, and order is not part of the meaning.
+            sorted(self._tool_names) if self._tool_names else None,
         )
 
 

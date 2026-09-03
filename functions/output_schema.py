@@ -159,7 +159,7 @@ class OutputSchema:
             "object": dict,
             "null": type(None),
         }
-        expected_python_type = type_map.get(expected_type)
+        expected_python_type: Any = type_map.get(expected_type)
         if expected_python_type is None:
             return True  # Unknown type, assume valid
         return isinstance(value, expected_python_type)

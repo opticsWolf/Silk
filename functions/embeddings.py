@@ -195,7 +195,8 @@ def embedder_for(handle: Any, name: str = "") -> Optional[Embedder]:
     base_url = getattr(pool, "base_url", "") if pool is not None else ""
     if base_url:
         client = getattr(pool, "client", None)
-        headers = client.headers() if hasattr(client, "headers") else None
+        get_headers = getattr(client, "headers", None)
+        headers = get_headers() if callable(get_headers) else None
         return ServerEmbedder(
             base_url, name=name or _pool_name(pool),
             model_alias=getattr(pool, "model_alias", "default") or "default",

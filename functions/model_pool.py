@@ -251,7 +251,7 @@ class GGUFModelPool:
         self._config_path: Optional[str] = None
         self._log_path: Optional[str] = None
         self._log_handle = None
-        self._participant = None
+        self._participant: Any = None   # the host's registration, or None
         # The context window the server was actually started with. The one
         # number a context budget is a fraction of; kept here because this
         # is where it stops being a request and becomes a fact (G14c).
@@ -401,6 +401,8 @@ class GGUFModelPool:
     # -- lifecycle --------------------------------------------------------
 
     def _read_log_tail(self, limit: int = 2000) -> str:
+        if not self._log_path:
+            return ""
         try:
             if self._log_handle is not None:
                 self._log_handle.flush()

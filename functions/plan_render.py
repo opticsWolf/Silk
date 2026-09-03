@@ -22,10 +22,10 @@ from __future__ import annotations
 from typing import Optional
 
 try:  # viewer-only optional dependency
-    import mordant  # type: ignore
+    import mordant
     MORDANT_AVAILABLE = True
 except Exception:  # noqa: BLE001 - any import failure => graceful fallback
-    mordant = None  # type: ignore[assignment]
+    mordant = None
     MORDANT_AVAILABLE = False
 
 

@@ -511,7 +511,9 @@ class BaseCapability(ABC):
         """
         from .toolset import PrefixedToolSet
 
-        return PrefixedToolSet(self, prefix)
+        # A capability is not a `ToolSet` by inheritance; it answers the
+        # same surface, which is all the wrapper ever calls.
+        return PrefixedToolSet(self, prefix)  # type: ignore[arg-type]
 
     # â”€â”€ Middleware hooks â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
@@ -688,10 +690,9 @@ class Capability(BaseCapability):
         super().__init__(id, description, defer_loading)
         self._tools = tools or []
         # Store instructions as a list for consistent handling by decorator
-        if instructions:
-            self._instructions: list[str | Callable[..., str]] = [instructions]
-        else:
-            self._instructions: list[str | Callable[..., str]] = []
+        self._instructions: list[str | Callable[..., str]] = (
+            [instructions] if instructions else []
+        )
         self._tool_plain_registry: list[Callable] = []
         self._tool_registry: list[Callable] = []
 
@@ -739,6 +740,7 @@ class Capability(BaseCapability):
     def tool_plain(
         self,
         func: Callable[..., Any],
+        /,
     ) -> Callable[..., Any]: ...
 
     @overload
@@ -824,6 +826,7 @@ class Capability(BaseCapability):
     def tool(
         self,
         func: Callable[..., Any],
+        /,
     ) -> Callable[..., Any]: ...
 
     @overload
@@ -912,12 +915,14 @@ class Capability(BaseCapability):
     def instructions(
         self,
         func: Callable[[RunContext], str],
+        /,
     ) -> Callable[[RunContext], str]: ...
 
     @overload
     def instructions(
         self,
         func: Callable[[], str],
+        /,
     ) -> Callable[[], str]: ...
 
     @overload

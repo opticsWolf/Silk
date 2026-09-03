@@ -245,6 +245,27 @@ adoption per the `pyproject.toml` comment ("widen `files` as more modules
 gain types"). `nodes/` and `widgets/` are untyped. Tracked here so the
 intentional gap doesn't become an accidental one.
 
+**The scope is clean as of 2026-09-03**, which it had never actually
+been: `functions/` reported 209 errors. 136 of them were one missing
+line — pydantic's mypy plugin was not enabled, so every `Field(None, …)`
+default read as a *required* argument — and enabling it left 72 real
+findings, now zero. Two were live bugs rather than annotation slop, and
+both sat in error paths where nothing would have noticed:
+
+- All four error-family hooks (`on_model_request_error` and its three
+  siblings, D15) iterated the registry and **called the `HookEntry`
+  record** instead of its `.callback`, so every recover-or-propagate
+  handler raised `TypeError` from inside the handler that exists to
+  recover. Covered now by `tests/test_silk_hook_error_family.py`.
+- `MCPTransport.__aexit__` called `Process.wait(timeout=5)`, which takes
+  no such argument; the `TypeError` was not caught by the
+  `except asyncio.TimeoutError` beside it, so a server that ignored
+  `terminate` was never killed and the context exit raised instead.
+
+The `nodes/` half remains open (313 errors, mostly Qt-shaped) and remains
+deliberate — but it is now a widening of something that passes, rather
+than of something that was never run.
+
 ### G10. `EventStart.system_prompt` is never set — *closed*
 
 **Closed (2026-09-02)** by §22 q3, and the answer was neither of the two

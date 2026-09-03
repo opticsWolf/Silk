@@ -311,9 +311,13 @@ def attach_spill_hook(
         return False
 
     async def spill_hook(
-        handler: Callable = None, tool_name: str = "",
+        handler: Optional[Callable] = None, tool_name: str = "",
         tool_args: Optional[dict] = None, **_kw: Any,
     ) -> Any:
+        if handler is None:  # middleware is always handed its next layer
+            raise TypeError(
+                "the spill hook is middleware: it wraps a handler, so one must be given"
+            )
         output = await handler()
         try:
             if isinstance(output, BaseModel):

@@ -59,7 +59,7 @@ _IMPORT_ERROR: Optional[BaseException] = None
 try:                                    # pragma: no cover - import shape
     import macrame as _macrame
 except BaseException as exc:            # noqa: BLE001 - a binary wheel can
-    _macrame = None                     #   fail to load, not just be absent
+    _macrame = None  # type: ignore[assignment]  # absent, not just unimported
     _IMPORT_ERROR = exc
 
 
@@ -107,7 +107,7 @@ class LedgerRegistry:
     def __init__(self) -> None:
         self._lock = threading.RLock()
         self._open: dict[str, _Entry] = {}
-        self._participant = None
+        self._participant: Any = None   # the host's registration, or None
 
     # ── the release protocol (spec D80) ───────────────────────────────
 
@@ -130,11 +130,16 @@ class LedgerRegistry:
         except Exception:  # noqa: BLE001 - a plugin must not need the host
             return
         install_shutdown_handlers()
+        def _close(timeout_s: float = 0.0) -> bool:
+            self.close_all()
+            return True
+
+        def _busy() -> Optional[str]:
+            return (f"{len(self._open)} ledger file(s) open"
+                    if self._open else None)
+
         self._participant = get_shutdown_registry().register(
-            "Macrame ledger handles",
-            lambda timeout_s=0.0: (self.close_all(), True)[1],
-            busy=lambda: (f"{len(self._open)} ledger file(s) open"
-                          if self._open else None),
+            "Macrame ledger handles", _close, busy=_busy,
         )
 
     # ── opening ───────────────────────────────────────────────────────

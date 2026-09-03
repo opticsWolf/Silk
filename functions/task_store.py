@@ -193,7 +193,7 @@ class _LedgerGate:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._closed = False
-        self._participant = None
+        self._participant: Any = None   # the host's registration, or None
         self._writing = 0
         self._retryable = False
 
@@ -602,7 +602,7 @@ class SqliteTaskStore:
         naming a plan that has not been created is how a Task node says
         *this* is where the next plan goes (D23).
         """
-        if self._explicit:
+        if self._explicit and self._db_path is not None:
             return self._db_path if self._db_path.exists() else None
         if self._db_path is not None and self._db_path.exists():
             return self._db_path
@@ -820,7 +820,7 @@ class SqliteTaskStore:
             )
         now = now or _now_iso()
         acceptance = list(acceptance or [])
-        if self._explicit:
+        if self._explicit and self._db_path is not None:
             # A Task node named this file (D23); the plan goes where the
             # graph says it goes, not into a freshly minted stem.
             self._db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1032,7 +1032,10 @@ class SqliteTaskStore:
                     return Conflict(0, "use task_rescope to drop a task "
                                     "(it requires a rationale)", task_id)
                 return Conflict(0, f"invalid status '{status}'", task_id)
-            sets, params = [], []
+            sets: list[str] = []
+            # `Any`: the trailing bind values are the plan id and the task
+            # id, and the plan id is unset until a plan exists.
+            params: list[Any] = []
             if status is not None:
                 sets.append("status=?"); params.append(status)
             if title is not None:
@@ -1093,7 +1096,10 @@ class SqliteTaskStore:
             if row["status"] == "dropped" and new_status == "dropped":
                 return Conflict(0, f"task '{task_id}' is already dropped", task_id)
             before = {"title": row["title"], "status": row["status"]}
-            sets, params = ["status=?", "updated_at=?"], [new_status, now]
+            sets: list[str] = ["status=?", "updated_at=?"]
+            # `Any`: the trailing bind values are the plan id and the task
+            # id, and the plan id is unset until a plan exists.
+            params: list[Any] = [new_status, now]
             if new_title is not None:
                 sets.insert(0, "title=?"); params.insert(0, new_title)
             params.extend([self._pid, task_id])

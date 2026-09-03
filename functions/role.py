@@ -193,10 +193,11 @@ class RoleBinding:
         return binding
 
     def _activate(self) -> None:
-        if getattr(self.toolbox, "_role_binding", None) is not None:
+        active = getattr(self.toolbox, "_role_binding", None)
+        if active is not None:
             raise RuntimeError(
                 f"ToolBox already has an active role "
-                f"'{self.toolbox._role_binding.role.id}'; deactivate it first."
+                f"'{active.role.id}'; deactivate it first."
             )
 
         # 1. Register the role's capabilities, honouring declared ordering.

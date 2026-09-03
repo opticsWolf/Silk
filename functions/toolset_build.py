@@ -110,12 +110,12 @@ def sandbox_from_permissions(
     # entry (including an explicit "blocked" override) beats an ancestor. Files
     # created after selection inherit the nearest granted directory, so the
     # agent's own writes and files a user drops in are covered automatically.
-    path_modes = {
+    path_modes: dict[Any, str] = {
         e["path"]: e["mode"]
         for e in entries
         if e.get("mode") in ("read", "read_write", "blocked")
     }
-    grants = any(m in ("read", "read_write") for m in path_modes.values())
+    any_grant = any(m in ("read", "read_write") for m in path_modes.values())
 
     # Root: prefer a declared root that survives the ceiling, else the
     # base root — never a root outside the ceiling.
@@ -133,7 +133,7 @@ def sandbox_from_permissions(
         kwargs["max_read_bytes"] = base.max_read_bytes
         kwargs["max_write_bytes"] = base.max_write_bytes
 
-    if not grants:
+    if not any_grant:
         # No readable grant = nothing visible.
         return FileToolSandbox(
             root_dir=root, read_enabled=False, write_enabled=False, **kwargs

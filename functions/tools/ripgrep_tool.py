@@ -25,7 +25,7 @@ if TYPE_CHECKING:
 # Guarded import so a deploy target without the native wheel doesn't break the
 # whole tools package Ã¢â‚¬â€ the tool still registers and reports a clear error.
 try:
-    import pyripgrep  # type: ignore
+    import pyripgrep
 
     _GREP: Any = pyripgrep.Grep()
     _ENGINE_ERROR: str | None = None

@@ -56,6 +56,11 @@ select = ["F", "E9", "W", "B"]
 
 [tool.mypy]
 python_version = "3.12"
+# Pydantic's plugin, because without it every `Field(None, ...)` default
+# reads as a *required* argument and a model built the ordinary way is
+# 136 false "missing named argument" errors -- enough noise to hide the
+# real findings underneath it (G9).
+plugins = ["pydantic.mypy"]
 # Scoped adoption: only the modules in `files` report; imports of the
 # not-yet-typed rest (and of the Weave framework) are followed silently.
 follow_imports = "silent"

@@ -54,7 +54,7 @@ log = get_logger("SilkGrants")
 #: representable on purpose: an explicit block on a path beats a granted
 #: ancestor, which is how a subtree is carved out of a larger grant.
 MODE_BLOCKED = "blocked"
-MODE_READ = "read"
+MODE_READ: Literal["read"] = "read"
 MODE_READ_WRITE = "read_write"
 
 MODES = (MODE_BLOCKED, MODE_READ, MODE_READ_WRITE)

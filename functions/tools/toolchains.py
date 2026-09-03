@@ -18,6 +18,8 @@ by the capability/risk axis (ToolSet / Role), not by path policy.
 """
 from __future__ import annotations
 
+import builtins
+
 import shutil
 import subprocess
 from contextlib import nullcontext
@@ -124,14 +126,25 @@ class ParamSpec(BaseModel):
     """One whitelisted, model-controllable parameter of a command."""
 
     name: str
-    type: Literal["str", "int", "bool", "path"] = "str"
+    #: What the model may put here. Named ``type`` on the wire, so the
+    #: annotation is quoted -- an unquoted `self.type` lookup reads as a
+    #: type alias to a checker.
+    type: "Literal['str', 'int', 'bool', 'path']" = "str"
     description: str = ""
     required: bool = False
     default: Any = None
     flag: Optional[str] = None   # None → positional; "--flag" → flagged
 
-    def python_type(self) -> type:
-        return {"str": str, "int": int, "bool": bool, "path": str}[self.type]
+    def python_type(self) -> "builtins.type":
+        """The Python type this parameter accepts.
+
+        The return annotation is qualified because the class has a field
+        called ``type``, and inside the class body that name is the field,
+        not the builtin.
+        """
+        kinds: dict[str, type] = {"str": str, "int": int, "bool": bool,
+                                  "path": str}
+        return kinds[str(self.type)]
 
 
 class CommandSpec(BaseModel):

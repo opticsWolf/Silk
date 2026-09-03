@@ -471,12 +471,15 @@ class ToolBox:
             # Detect async/sync once, at registration, instead of re-sniffing
             # the wrapper later.
             is_async = asyncio.iscoroutinefunction(func)
+            executable: Callable[..., Any]
             if is_async:
-                async def executable(**kwargs):
+                async def _async_executable(**kwargs):
                     return await func(self.db_pool, self.user_session, **kwargs)
+                executable = _async_executable
             else:
-                def executable(**kwargs):
+                def _sync_executable(**kwargs):
                     return func(self.db_pool, self.user_session, **kwargs)
+                executable = _sync_executable
 
             # Create a StaticToolSet for this tool
             toolset = StaticToolSet(
@@ -571,9 +574,9 @@ class ToolBox:
         loader = getattr(self, "_loader", None)
         if loader is None or loader.directory != _as_path(directory):
             loader = ToolLoader(directory)
-            self._loader = loader  # type: ignore[attr-defined]
+            self._loader = loader
         if context:
-            self._loader_context = dict(context)  # type: ignore[attr-defined]
+            self._loader_context = dict(context)
         return loader.sync(self, getattr(self, "_loader_context", {}))
 
     def refresh(self) -> "LoadReport":

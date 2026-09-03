@@ -777,9 +777,12 @@ class Hooks:
         error: Exception,
     ) -> Any:
         """Called when a model request fails (raise-to-propagate, return-to-recover)."""
-        for callback in self._registry._hooks.get(HOOK_ON_MODEL_REQUEST_ERROR, []):
+        # `_hooks` holds `HookEntry` records, not bare callables:
+        # calling the entry raised TypeError inside the handler
+        # that exists to recover from an error (D15).
+        for entry in self._registry._hooks.get(HOOK_ON_MODEL_REQUEST_ERROR, []):
             try:
-                result = callback(ctx=ctx, error=error)
+                result = entry.callback(ctx=ctx, error=error)
                 if result is not None:
                     if asyncio.iscoroutine(result):
                         return await result
@@ -808,9 +811,12 @@ class Hooks:
         error: Exception,
     ) -> str:
         """Called when tool execution fails (raise-to-propagate, return-to-recover)."""
-        for callback in self._registry._hooks.get(HOOK_ON_TOOL_EXECUTE_ERROR, []):
+        # `_hooks` holds `HookEntry` records, not bare callables:
+        # calling the entry raised TypeError inside the handler
+        # that exists to recover from an error (D15).
+        for entry in self._registry._hooks.get(HOOK_ON_TOOL_EXECUTE_ERROR, []):
             try:
-                result = callback(ctx=ctx, tool_name=tool_name, error=error)
+                result = entry.callback(ctx=ctx, tool_name=tool_name, error=error)
                 if result is not None:
                     if asyncio.iscoroutine(result):
                         return await result
@@ -826,9 +832,12 @@ class Hooks:
         error: Exception,
     ) -> Any:
         """Called when output validation fails (raise-to-propagate, return-to-recover)."""
-        for callback in self._registry._hooks.get(HOOK_ON_OUTPUT_VALIDATE_ERROR, []):
+        # `_hooks` holds `HookEntry` records, not bare callables:
+        # calling the entry raised TypeError inside the handler
+        # that exists to recover from an error (D15).
+        for entry in self._registry._hooks.get(HOOK_ON_OUTPUT_VALIDATE_ERROR, []):
             try:
-                result = callback(ctx=ctx, output=output, error=error)
+                result = entry.callback(ctx=ctx, output=output, error=error)
                 if result is not None:
                     if asyncio.iscoroutine(result):
                         return await result
@@ -844,9 +853,12 @@ class Hooks:
         error: Exception,
     ) -> Any:
         """Called when output processing fails (raise-to-propagate, return-to-recover)."""
-        for callback in self._registry._hooks.get(HOOK_ON_OUTPUT_PROCESS_ERROR, []):
+        # `_hooks` holds `HookEntry` records, not bare callables:
+        # calling the entry raised TypeError inside the handler
+        # that exists to recover from an error (D15).
+        for entry in self._registry._hooks.get(HOOK_ON_OUTPUT_PROCESS_ERROR, []):
             try:
-                result = callback(ctx=ctx, output=output, error=error)
+                result = entry.callback(ctx=ctx, output=output, error=error)
                 if result is not None:
                     if asyncio.iscoroutine(result):
                         return await result
@@ -874,74 +886,74 @@ class _HooksOn:
     def __init__(self, registry: HookRegistry) -> None:
         self._registry = registry
 
-    def before_model_request(self, func: Callable) -> Callable:
+    def before_model_request(self, func: Any) -> Any:
         """Register a before_model_request hook."""
         func._hook_event = HOOK_BEFORE_MODEL_REQUEST
         self._registry.register(HOOK_BEFORE_MODEL_REQUEST, func)
         return func
 
-    def after_model_request(self, func: Callable) -> Callable:
+    def after_model_request(self, func: Any) -> Any:
         """Register an after_model_request hook."""
         func._hook_event = HOOK_AFTER_MODEL_REQUEST
         self._registry.register(HOOK_AFTER_MODEL_REQUEST, func)
         return func
 
-    def after_model_response(self, func: Callable) -> Callable:
+    def after_model_response(self, func: Any) -> Any:
         """Register an after_model_response hook."""
         func._hook_event = HOOK_AFTER_MODEL_RESPONSE
         self._registry.register(HOOK_AFTER_MODEL_RESPONSE, func)
         return func
 
-    def on_model_request_error(self, func: Callable) -> Callable:
+    def on_model_request_error(self, func: Any) -> Any:
         """Register an on_model_request_error handler."""
         func._hook_event = HOOK_ON_MODEL_REQUEST_ERROR
         self._registry.register(HOOK_ON_MODEL_REQUEST_ERROR, func)
         return func
 
-    def before_tool_execute(self, func: Callable) -> Callable:
+    def before_tool_execute(self, func: Any) -> Any:
         """Register a before_tool_execute hook."""
         func._hook_event = HOOK_BEFORE_TOOL_EXECUTE
         self._registry.register(HOOK_BEFORE_TOOL_EXECUTE, func)
         return func
 
-    def after_tool_execute(self, func: Callable) -> Callable:
+    def after_tool_execute(self, func: Any) -> Any:
         """Register an after_tool_execute hook."""
         func._hook_event = HOOK_AFTER_TOOL_EXECUTE
         self._registry.register(HOOK_AFTER_TOOL_EXECUTE, func)
         return func
 
-    def wrap_tool_execute(self, func: Callable) -> Callable:
+    def wrap_tool_execute(self, func: Any) -> Any:
         """Register a wrap_tool_execute (middleware) hook."""
         func._hook_event = HOOK_WRAP_TOOL_EXECUTE
         func._is_middleware = True
         self._registry.register_middleware(HOOK_WRAP_TOOL_EXECUTE, func)
         return func
 
-    def on_tool_execute_error(self, func: Callable) -> Callable:
+    def on_tool_execute_error(self, func: Any) -> Any:
         """Register an on_tool_execute_error handler."""
         func._hook_event = HOOK_ON_TOOL_EXECUTE_ERROR
         self._registry.register(HOOK_ON_TOOL_EXECUTE_ERROR, func)
         return func
 
-    def before_run(self, func: Callable) -> Callable:
+    def before_run(self, func: Any) -> Any:
         """Register a before_run hook."""
         func._hook_event = HOOK_BEFORE_RUN
         self._registry.register(HOOK_BEFORE_RUN, func)
         return func
 
-    def after_run(self, func: Callable) -> Callable:
+    def after_run(self, func: Any) -> Any:
         """Register an after_run hook."""
         func._hook_event = HOOK_AFTER_RUN
         self._registry.register(HOOK_AFTER_RUN, func)
         return func
 
-    def on_output_validate_error(self, func: Callable) -> Callable:
+    def on_output_validate_error(self, func: Any) -> Any:
         """Register an on_output_validate_error handler."""
         func._hook_event = HOOK_ON_OUTPUT_VALIDATE_ERROR
         self._registry.register(HOOK_ON_OUTPUT_VALIDATE_ERROR, func)
         return func
 
-    def on_output_process_error(self, func: Callable) -> Callable:
+    def on_output_process_error(self, func: Any) -> Any:
         """Register an on_output_process_error handler."""
         func._hook_event = HOOK_ON_OUTPUT_PROCESS_ERROR
         self._registry.register(HOOK_ON_OUTPUT_PROCESS_ERROR, func)

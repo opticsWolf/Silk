@@ -45,8 +45,8 @@ try:
     from mcp.types import Tool as MCPTool
     MCP_AVAILABLE = True
 except ImportError:  # pragma: no cover - optional dependency
-    mcp_session = mcp_sse = mcp_http = None  # type: ignore[assignment]
-    MCPTool = Any  # type: ignore[assignment,misc]
+    mcp_session = mcp_sse = mcp_http = None
+    MCPTool = Any
     MCP_AVAILABLE = False
 
 from .toolset import ToolSet
@@ -197,7 +197,7 @@ class ResourceTemplate(BaseResource):
 
 
 @dataclass(kw_only=True)
-class ResourceLink:
+class ResourceLink:  # type: ignore[no-redef]
     """A resource link referenced in a prompt or tool call result.
 
     Unlike EmbeddedResource, this does not include the resource content directly.
@@ -228,7 +228,7 @@ class ResourceLink:
 
 
 @dataclass(kw_only=True)
-class EmbeddedResource:
+class EmbeddedResource:  # type: ignore[no-redef]
     """A resource embedded into a prompt or tool call result.
 
     Contains the actual resource content alongside its metadata.
@@ -511,8 +511,12 @@ class StdioTransport:
         if hasattr(self, '_process') and self._process:
             self._process.terminate()
             try:
-                await self._process.wait(timeout=5)
-            except asyncio.TimeoutError:
+                # `Process.wait()` takes no timeout -- passing one raised
+                # TypeError, which this `except` did not catch, so a
+                # server that ignored `terminate` was never killed and the
+                # exit raised instead.
+                await asyncio.wait_for(self._process.wait(), timeout=5)
+            except (asyncio.TimeoutError, ProcessLookupError):
                 self._process.kill()
 
     def get_streams(self) -> tuple[Any, Any]:
@@ -1040,12 +1044,8 @@ class MCPToolset(ToolSet):
         """
         use_task = bool((getattr(tool, 'tool_def', {}).get('metadata') or {}).get('task'))
         if self.process_tool_call is not None:
-            return await self.process_tool_call(
-                ctx,
-                lambda n, a, **kw: self.direct_call_tool(n, a, **kw),
-                name,
-                tool_args,
-            )
+            call: Any = lambda n, a, **kw: self.direct_call_tool(n, a, **kw)
+            return await self.process_tool_call(ctx, call, name, tool_args)
         return await self.direct_call_tool(name, tool_args, use_task=use_task)
 
     async def get_instructions(self) -> str | None:

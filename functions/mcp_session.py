@@ -177,7 +177,9 @@ class MCPServerSpec:
                 cwd=self.cwd or None,
             )
         else:
-            client = self.url
+            # A URL, where a stdio server is a transport object: the
+            # toolset takes either, and which one is the transport choice.
+            client = self.url            # type: ignore[assignment]
         return MCPToolset(
             client, id=self.id, headers=headers,
             allowed_tools=list(self.allowed_tools) if self.allowed_tools else None,
@@ -229,7 +231,7 @@ class MCPSession:
         self._thread: Optional[threading.Thread] = None
         self._ready = threading.Event()
         self._closing = False
-        self._participant = None
+        self._participant: Any = None   # the host's registration, or None
 
     # -- lifecycle -------------------------------------------------------
 
@@ -321,9 +323,12 @@ class MCPSession:
         except Exception:  # noqa: BLE001 - a plugin must not need the host
             return
         install_shutdown_handlers()
+        def _close(timeout_s: float = 0.0) -> bool:
+            self.close()
+            return True
+
         self._participant = get_shutdown_registry().register(
-            f"MCP server '{self.spec.id}'",
-            lambda timeout_s=0.0: (self.close(), True)[1],
+            f"MCP server '{self.spec.id}'", _close,
         )
 
     def close(self) -> None:

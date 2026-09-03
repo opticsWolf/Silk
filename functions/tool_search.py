@@ -24,7 +24,7 @@ import re
 from collections import Counter
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 
 #: BM25 term-frequency saturation and length normalisation. The defaults
@@ -315,8 +315,10 @@ class ToolSearch:
         Returns:
             A list of matching tool definitions.
         """
+        if self.search_fn is None:      # only reached with one installed
+            return []
         # Check if the result is a coroutine (async search function)
-        result = self.search_fn(queries, tool_defs)
+        result: Any = self.search_fn(queries, tool_defs)
         if asyncio.iscoroutine(result):
             # For sync usage, run the coroutine
             try:
@@ -374,6 +376,6 @@ class ToolSearch:
                 for tool in (cap.get_tools() or [])
             ]
             names = [name for name in names if name]
-            if not names or any(self.permits(name) for name in names):
+            if not names or any(self.permits(str(name)) for name in names):
                 allowed.append(cap)
         return allowed
