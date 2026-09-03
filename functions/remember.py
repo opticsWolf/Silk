@@ -42,6 +42,7 @@ from typing import Any, Optional
 from weave.logger import get_logger
 
 from .hooks import (
+    HOOK_AFTER_COMPACTION,
     HOOK_AFTER_MODEL_RESPONSE,
     HOOK_AFTER_RUN,
     HOOK_AFTER_TOOL_EXECUTE,
@@ -185,6 +186,34 @@ def attach_remember_hook(toolbox: Any, ledger: Any, *,
                 if value not in state["files"]:
                     state["files"].append(value)
 
+    def compacted(reason: str = "", turns_dropped: int = 0,
+                  tokens_before: Any = None, tokens_after: Any = None,
+                  summary_ref: str = "", **_kw: Any) -> None:
+        """Record the squeeze as an assertion, not as a deletion (D24/D25).
+
+        What is claimed is exactly what is known: a compaction happened in
+        this run, for this reason, dropping this many *history messages*
+        and leaving this many tokens. What is deliberately **not** claimed
+        is which remembered turns those messages were. The loop counts
+        messages -- tool results included -- and this hook counts turns it
+        chose to remember, and inventing a mapping between them would put
+        supersession edges into an append-only ledger that nothing could
+        later correct. The turns stay readable either way, which is the
+        point of recording history here at all.
+        """
+        if not state["run"]:
+            return
+        run = state["run"]
+        kept = int(state["index"])
+        rationale = (
+            f"{reason or 'compaction'}: {int(turns_dropped)} history "
+            f"messages dropped, {tokens_before} -> {tokens_after} tokens"
+            + (f", transcript at {summary_ref}" if summary_ref else "")
+        )
+        _guard("recording a compaction", lambda: ledger.compacted(
+            run, dropped=(), kept=kept, rationale=rationale,
+        ))
+
     def run_finished(final_text: str = "", **_kw: Any) -> None:
         if not state["run"]:
             return
@@ -202,6 +231,7 @@ def attach_remember_hook(toolbox: Any, ledger: Any, *,
         (HOOK_BEFORE_RUN, run_started),
         (HOOK_AFTER_MODEL_RESPONSE, answered),
         (HOOK_AFTER_TOOL_EXECUTE, tool_used),
+        (HOOK_AFTER_COMPACTION, compacted),
         (HOOK_AFTER_RUN, run_finished),
     ):
         toolbox.hooks.register(event, callback)

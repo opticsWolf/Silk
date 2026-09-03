@@ -190,6 +190,10 @@ port streams (D60); with nothing bound, nothing is remembered, because a
 turn no event can be joined to is a turn nobody finds. A ledger that
 raises is dropped for the rest of the run, once, out loud.
 
+A compaction reaches the same hook through `after_compaction`, and is
+recorded for what is actually known — reason, messages dropped, tokens
+before and after — without claiming which remembered turns were dropped.
+
 Writes are turn-shaped (D65): the run concept and its identity edges at
 start (`BYAGENT`, `INSESSION` — D60's observability plumbing and the
 ledger's keys are the same plumbing), then per turn one concept for the

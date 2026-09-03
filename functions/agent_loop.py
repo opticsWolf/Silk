@@ -27,6 +27,7 @@ from typing import Any, Optional
 
 from . import tool_calling
 from .hooks import (
+    HOOK_AFTER_COMPACTION,
     HOOK_AFTER_MODEL_REQUEST,
     HOOK_AFTER_MODEL_RESPONSE,
     HOOK_AFTER_RUN,
@@ -254,6 +255,17 @@ class AgentLoop:
             return False
         if event is None:
             return False
+        # A compaction is the one deliberate invalidation of the prefix
+        # (I11), so anything remembering this run has to hear about it --
+        # the event on the stream reaches a monitor, not a hook.
+        self._emit(
+            HOOK_AFTER_COMPACTION,
+            reason=reason,
+            turns_dropped=getattr(event, "turns_dropped", 0),
+            tokens_before=getattr(event, "tokens_before", None),
+            tokens_after=getattr(event, "tokens_after", None),
+            summary_ref=getattr(event, "summary_ref", ""),
+        )
         yield event
         return True
 

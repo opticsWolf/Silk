@@ -162,6 +162,23 @@ class GGUFLNode(ThreadedManualNode):
         form.addRow("Batch Size:", self.spin_batch)
         self._widget_core.register_widget("n_batch", self.spin_batch, role=PortRole.INTERNAL, datatype="int", default=512, add_to_layout=False)
 
+        # Embedding mode. A server started without this refuses
+        # /v1/embeddings, which is the right default for a chat model:
+        # embeddings are the vector half of memory (§17) and want their own,
+        # much smaller, model file. Load that one in a second GGUF Loader
+        # and wire it to the ToolSet's embedding_model port.
+        self.chk_embedding = QCheckBox()
+        self.chk_embedding.setToolTip(
+            "Serve embeddings from this model instead of chat. Wire it to a "
+            "Silk ToolSet's embedding_model port to give recall vector "
+            "search. A chat model loaded this way is not useful for chat."
+        )
+        form.addRow("Embedding Model:", self.chk_embedding)
+        self._widget_core.register_widget(
+            "embedding", self.chk_embedding, role=PortRole.INTERNAL,
+            datatype="bool", default=False, add_to_layout=False,
+        )
+
         self.chk_flash = QCheckBox()
         form.addRow("Flash Attention:", self.chk_flash)
         self._widget_core.register_widget("flash_attn", self.chk_flash, role=PortRole.INTERNAL, datatype="bool", default=False, add_to_layout=False)
@@ -531,6 +548,7 @@ class GGUFLNode(ThreadedManualNode):
             "n_threads": None if inputs.get("n_threads", -1) == -1 else inputs.get("n_threads"),
             "n_batch": inputs.get("n_batch", 512),
             "flash_attn": inputs.get("flash_attn", False),
+            "embedding": bool(inputs.get("embedding", False)),
             "use_mmap": inputs.get("use_mmap", True),
             "verbose": False,
         }

@@ -1497,6 +1497,16 @@ be joined to. And a ledger that raises is dropped for the rest of the run
 after one line: memory is a side effect of doing the work, never part of
 it.
 
+A compaction is remembered too, as an assertion rather than a deletion:
+the loop emits `after_compaction` (a new wired event — the compaction
+*event* on the stream reaches a monitor, not a hook), and the hook records
+why it happened, how many history messages went and what the token count
+fell to. What it deliberately does not claim is *which remembered turns*
+those messages were: the loop counts messages, tool results included, and
+the hook counts the turns it chose to remember. Inventing a mapping would
+put supersession edges nothing can later correct into an append-only
+ledger. The turns stay readable either way, which is the point.
+
 *Boundary:* the raw `tool_events` firehose does **not** go into the ledger
 -- events are a log, not belief. T7's JSONL sink remains their home. The
 ledger gets the distilled layer: turns, runs, task transitions, sign-offs,

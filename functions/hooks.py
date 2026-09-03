@@ -43,6 +43,13 @@ HOOK_AFTER_TOOL_EXECUTE = "after_tool_execute"
 HOOK_BEFORE_RUN = "before_run"
 HOOK_AFTER_RUN = "after_run"
 
+HOOK_AFTER_COMPACTION = "after_compaction"
+"""Fired when history was actually compacted (§12, D24/D25).
+
+The one deliberate invalidation Silk allows (I11), and therefore the one
+thing a memory of a run must be able to record: in the ledger a compaction
+is an assertion *about* earlier turns, not the destruction of them."""
+
 HOOK_TOOL_DENIED = "tool_denied"
 """Fired when the active role's filter blocks a tool call at dispatch.
 Audit/logging surface; the denied call never reaches the executable."""
@@ -79,6 +86,7 @@ HOOK_ON_OUTPUT_PROCESS_ERROR = "on_output_process_error"
 KNOWN_EVENTS = frozenset({
     HOOK_BEFORE_MODEL_REQUEST, HOOK_AFTER_MODEL_REQUEST,
     HOOK_AFTER_MODEL_RESPONSE, HOOK_ON_MODEL_REQUEST_ERROR,
+    HOOK_AFTER_COMPACTION,
     HOOK_BEFORE_TOOL_EXECUTE, HOOK_AFTER_TOOL_EXECUTE, HOOK_TOOL_DENIED,
     HOOK_ON_TOOL_VALIDATE_ERROR, HOOK_ON_TOOL_EXECUTE_ERROR,
     HOOK_ON_OUTPUT_VALIDATE_ERROR, HOOK_ON_OUTPUT_PROCESS_ERROR,
@@ -98,6 +106,7 @@ KNOWN_EVENTS = frozenset({
 WIRED_EVENTS = frozenset({
     HOOK_BEFORE_MODEL_REQUEST, HOOK_AFTER_MODEL_REQUEST,
     HOOK_AFTER_MODEL_RESPONSE, HOOK_ON_MODEL_REQUEST_ERROR,
+    HOOK_AFTER_COMPACTION,
     HOOK_BEFORE_TOOL_EXECUTE, HOOK_AFTER_TOOL_EXECUTE, HOOK_TOOL_DENIED,
     HOOK_ON_TOOL_VALIDATE_ERROR, HOOK_ON_TOOL_EXECUTE_ERROR,
     HOOK_ON_OUTPUT_VALIDATE_ERROR, HOOK_ON_OUTPUT_PROCESS_ERROR,
