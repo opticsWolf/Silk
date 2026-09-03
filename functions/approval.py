@@ -285,6 +285,11 @@ def attach_approval_gate(
             # put two dialogs in front of one call, and the stricter of
             # the two is not this one.
             return await handler()
+        if (toolbox.tools.get(tool_name) or {}).get("requires_approval"):
+            # Same reasoning for the registration flag (D81): its floor
+            # asks whatever the policy says, so a policy that also names
+            # the tool would only add a second dialog to the same call.
+            return await handler()
         ctype = _task_change(tool_name, args) if gated_tasks else None
 
         # Two domains, one call: the stricter answer wins. A tool that is

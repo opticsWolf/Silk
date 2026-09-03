@@ -27,7 +27,38 @@ stubs instead, because the spec and other entries link to their anchors.
 
 ## Identified gaps
 
-### G1. The `requires_approval` gate is a no-op
+### G1. The `requires_approval` gate is a no-op — CLOSED
+
+**Closed (2026-09-03).** The flag now carries its own gate.
+`functions/approval_floor.py` is a `wrap_tool_execute` middleware that
+asks whenever a tool was registered `requires_approval=True`, whatever
+the tool policy says, and `ToolBox.register` installs it on the first
+such registration -- so declaring the flag is the whole of what a tool
+author has to do. `_safe_execute`, where the TODO below used to sit,
+keeps the fail-closed half: a flagged tool in a toolbox with no floor at
+all is refused rather than run, which covers the tools a capability
+writes straight into `ToolBox.tools`.
+
+A grant may still pre-authorise a flagged call -- that is the difference
+from the load floor (D77), where no grant may cross the process-authority
+boundary. `requires_approval` is a tool author asking for a human, not
+that boundary.
+
+This was not only a stale TODO. D73 registers `remove_node` and
+`disconnect` with the flag and says "the approval gate already covers
+them -- no new approval machinery"; in fact the policy gate exists only
+when a Role or hook config configures one, and then sees only the tools
+that policy named, so in any graph without a tool policy the two
+destructive graph-authoring verbs ran unasked. Closing this found a
+second live bug behind it: `emit_middleware` handed the rest of the chain
+no kwargs when a middleware wrote the ordinary `await handler()`, so a
+pass-through disabled every gate behind it -- including the policy gate
+deferring to the load floor. Both are fixed and pinned
+(`tests/test_silk_approval_floor.py`).
+
+*Original text follows for the record.*
+
+#### G1, as first written
 
 `ToolBox._safe_execute` contains the entire gate — it is a `pass`:
 
@@ -111,7 +142,7 @@ then silently never fire. It cannot now: an unknown name raises
 
 *Original text follows for the record.*
 
-### G3. 11 of the 19 hook events are defined but never emitted
+#### G3, as first written
 
 `functions/hooks.py` declares 19 event constants; only 8 are actually
 fired (see the wiring table in [the tool system section](architecture/08-tool-system.md#hooks-and-middleware)).
@@ -140,7 +171,16 @@ middleware currently cannot observe or intervene in either phase.
 fail loudly instead of registering silently. The five `WRAP_*` events are
 explicitly **not** pruned pending review; their disposition is **T2**.
 
-### G4. No test suite
+### G4. No test suite — CLOSED
+
+**Closed.** `tests/` holds the suite the entry asked for, run as
+`python -m pytest tests -q` from the Weave root; every unit of work in
+this spec lands with the tests that pin it, and the invariant fixtures
+D27 asked for are in `tests/test_silk_invariants.py`.
+
+*Original text follows for the record.*
+
+#### G4, as first written
 
 There are no tests in the repository (no `tests/`, no `test_*.py` files).
 The runtime is explicitly headless-testable (design rule: no Qt in

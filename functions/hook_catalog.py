@@ -839,11 +839,22 @@ def attach_catalog_hooks(
             if getattr(tcfg, "durable_grants", False):
                 durable = GrantStore()
 
+        root = str(getattr(sandbox, "root_dir", "") or "")
         attach_approval_gate(
             toolbox, sandbox, task_policy=task_policy, tool_policy=tool_policy,
-            grants=durable,
-            project_root=str(getattr(sandbox, "root_dir", "") or ""),
+            grants=durable, project_root=root,
         )
+        # The floor under `requires_approval` (D81) is installed with the
+        # first flagged tool, before any of this is configured, so it has
+        # no grant store of its own. Re-attaching hands it the same one
+        # the policy gate got: a durable grant means the same thing to
+        # both, and without this the flag would be the one gated call a
+        # "don't ask again" never reached.
+        from .approval_floor import APPROVAL_FLOOR_ATTR, attach_approval_floor
+        if getattr(toolbox, APPROVAL_FLOOR_ATTR, None) is not None:
+            # Only ever a reconfiguration: the floor exists because a
+            # flagged tool does, never because hooks were configured.
+            attach_approval_floor(toolbox, grants=durable, project_root=root)
 
     existing = tuple(getattr(toolbox, "catalog_hook_names", ()))
     toolbox.catalog_hook_names = tuple(  # type: ignore[attr-defined]

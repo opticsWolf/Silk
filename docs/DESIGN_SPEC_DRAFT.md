@@ -543,6 +543,42 @@ exactly this -- `SESSION_FORMAT_VERSION = 0`, no compatibility promise, but
 the number is *there*. A declared pre-release stance beats an undeclared
 one.
 
+**D81. `requires_approval=True` carries its own gate (closes G1).** The
+registration flag is the *tool author's* half of the approval story, and it
+had no enforcement at all: `_safe_execute` held a `pass` with a TODO, and
+the only thing that ever asked was the policy gate of D30-D37 -- which is
+attached only when a Role or hook config configures one, and which then
+binds to the tools that policy named. D73 registers `remove_node` and
+`disconnect` with the flag and says the existing gate covers them; it did
+not, and in a graph with no tool policy those two destructive verbs ran
+unasked.
+
+- `functions/approval_floor.py` is a floor in the sense D77 established for
+  the load verbs: a `wrap_tool_execute` middleware that exists **because the
+  tool does**, not because a policy asked for one. It reads the flag at call
+  time (a capability may register a flagged tool mid-run), is essential and
+  forced outermost (I7, D37), and asks whatever the tool policy says.
+- **A grant may still pre-authorise it.** That is the line between this
+  floor and D77's: `requires_approval` is a tool author asking for a human,
+  not the process-authority boundary that no grant may cross.
+- **One call, one dialog.** The policy gate defers to the floor for a
+  flagged tool, exactly as it already defers to the load floor.
+- **Fail-closed at the execution site (D36).** A flagged tool in a toolbox
+  with no floor is refused rather than run -- which is what covers a tool
+  written straight into `ToolBox.tools` by a capability rather than through
+  `register`.
+- Registering a flagged tool installs the floor, so declaring the flag is
+  the whole of what a tool author has to do. A host with a grant store or a
+  fixed seam attaches it first and the registration finds it already there.
+
+Closing this exposed a second defect, in the middleware chain itself:
+`emit_middleware` handed the *rest* of the chain no kwargs when a middleware
+wrote the ordinary `await handler()`, so every gate behind a pass-through
+saw an anonymous call and let it by -- including the policy gate deferring to
+D77's load floor. The chain now forwards the layer's own kwargs, with a
+middleware's explicit overrides still winning (which is what lets one repair
+arguments).
+
 ---
 
 ## 8. Hooks

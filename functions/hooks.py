@@ -522,9 +522,19 @@ class HookRegistry:
             if index >= len(handlers):
                 return await innermost_fn(**kw)
             handler = handlers[index]
-            return await handler(
-                handler=lambda **k: _chain(index + 1, **k), **kw
-            )
+
+            def _next(**overrides: Any) -> Any:
+                # The context travels with the call. `await handler()` --
+                # what every pass-through middleware writes -- used to hand
+                # the *rest* of the chain no `tool_name` at all, so any
+                # middleware behind a pass-through saw an anonymous call
+                # and let it by. That is how the policy gate deferring to
+                # the load floor (D77) and to the requires_approval floor
+                # (D81) silently disabled both. Overrides still win, which
+                # is what lets a middleware repair arguments.
+                return _chain(index + 1, **{**kw, **overrides})
+
+            return await handler(handler=_next, **kw)
 
         return await _chain(0, **kwargs)
 

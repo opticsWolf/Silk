@@ -507,6 +507,14 @@ class ToolBox:
                 "risk": risk,
             }
 
+            if requires_approval:
+                # The flag arrives with its gate (D81). Declaring it is
+                # the whole of what a tool author has to do; a host that
+                # wants grants or a fixed seam attaches the floor itself
+                # first, and this then finds it already there.
+                from .approval_floor import ensure_approval_floor
+                ensure_approval_floor(self)
+
             # Index it for discovery. Without this a registered tool is
             # findable only if it is advertised, which is exactly backwards:
             # search exists to reach the tools the prompt does not carry
@@ -878,11 +886,19 @@ class ToolBox:
     async def _safe_execute(
         self, call_id: str, name: str, meta: dict, args: dict
     ) -> dict:
-        # Check requires_approval
+        # The flag is enforced by the floor in `approval_floor.py` (D81),
+        # which is middleware and has already run by the time execution
+        # reaches here. What is left at this site is the fail-closed half:
+        # a tool that declares it needs a human, in a toolbox where
+        # nothing can ask one, does not run. This is where G1's TODO sat.
         if meta.get("requires_approval"):
-            # TODO: Check approval status (stored in session or context)
-            # For now, skip approval check if not implemented
-            pass
+            from .approval_floor import APPROVAL_FLOOR_ATTR, NO_FLOOR_TEXT
+            if getattr(self, APPROVAL_FLOOR_ATTR, None) is None:
+                return self._error(
+                    call_id, name, NO_FLOOR_TEXT,
+                    error_type="approval_required",
+                    suggestion="Ask the user to run this step themselves.",
+                )
 
         # Emit before_tool_execute hook (Phase 2)
         self.hooks.emit(

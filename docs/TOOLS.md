@@ -65,8 +65,11 @@ Rules of the shape:
   model as tool errors (the reflection loop can then retry).
 - **`procedure`** — the model-facing usage text; keep it imperative and
   concrete.
-- **`risk`** — declared risk level; combined with `requires_approval=True`
-  for tools that should gate on the sign-off/approval path.
+- **`risk`** — declared risk level; a tool policy may gate a whole band.
+- **`requires_approval=True`** — this tool always asks the user first. It
+  needs no policy and no hook config: the flag installs its own floor
+  (D81), which asks on every call unless a grant pre-authorises the tool,
+  and refuses when the run has no way to ask.
 - **`replaces`** — `BashHint(command, native_call)` entries teach the model
   to prefer the native tool over a shell one-liner (e.g. `rg` →
   `ripgrep_search(...)`).
