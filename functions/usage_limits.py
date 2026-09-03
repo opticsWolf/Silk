@@ -225,25 +225,33 @@ class SubBudget(UsageLimits):
 
     # â”€â”€ checks: both ceilings bind â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
+    @staticmethod
+    def _shared(fn: Any, *args: Any) -> None:
+        """Consult the parent, and label a refusal as the shared one."""
+        try:
+            fn(*args)
+        except UsageLimitExceeded as exc:
+            raise UsageLimitExceeded(exc.message, scope="shared") from None
+
     def check_output_tokens(self, tokens: int) -> None:
         super().check_output_tokens(tokens)
         if self.parent is not None:
-            self.parent.check_output_tokens(tokens)
+            self._shared(self.parent.check_output_tokens, tokens)
 
     def check_input_tokens(self, tokens: int) -> None:
         super().check_input_tokens(tokens)
         if self.parent is not None:
-            self.parent.check_input_tokens(tokens)
+            self._shared(self.parent.check_input_tokens, tokens)
 
     def check_request(self) -> None:
         super().check_request()
         if self.parent is not None:
-            self.parent.check_request()
+            self._shared(self.parent.check_request)
 
     def check_tool_calls(self, count: int = 1) -> None:
         super().check_tool_calls(count)
         if self.parent is not None:
-            self.parent.check_tool_calls(count)
+            self._shared(self.parent.check_tool_calls, count)
 
     # â”€â”€ reservations: mine, then the shared one, or neither â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
@@ -255,9 +263,9 @@ class SubBudget(UsageLimits):
             return
         try:
             self.parent.reserve_request()
-        except UsageLimitExceeded:
+        except UsageLimitExceeded as exc:
             self._refund(requests=1)
-            raise
+            raise UsageLimitExceeded(exc.message, scope="shared") from None
 
     def reserve_tool_calls(self, count: int = 1) -> None:
         with self._lock:
@@ -267,9 +275,9 @@ class SubBudget(UsageLimits):
             return
         try:
             self.parent.reserve_tool_calls(count)
-        except UsageLimitExceeded:
+        except UsageLimitExceeded as exc:
             self._refund(tool_calls=count)
-            raise
+            raise UsageLimitExceeded(exc.message, scope="shared") from None
 
     def reserve_output_tokens(self, tokens: int) -> None:
         with self._lock:
@@ -279,9 +287,9 @@ class SubBudget(UsageLimits):
             return
         try:
             self.parent.reserve_output_tokens(tokens)
-        except UsageLimitExceeded:
+        except UsageLimitExceeded as exc:
             self._refund(output_tokens=tokens)
-            raise
+            raise UsageLimitExceeded(exc.message, scope="shared") from None
 
     def reserve_input_tokens(self, tokens: int) -> None:
         with self._lock:
@@ -291,9 +299,9 @@ class SubBudget(UsageLimits):
             return
         try:
             self.parent.reserve_input_tokens(tokens)
-        except UsageLimitExceeded:
+        except UsageLimitExceeded as exc:
             self._refund(input_tokens=tokens)
-            raise
+            raise UsageLimitExceeded(exc.message, scope="shared") from None
 
     def snapshot(self) -> dict:
         """This worker's counters, plus the shared ones it is spending."""
@@ -332,11 +340,19 @@ def nest(shared: Any, own: Any) -> Any:
 
 
 class UsageLimitExceeded(Exception):
-    """Raised when a usage limit is exceeded."""
+    """Raised when a usage limit is exceeded.
 
-    def __init__(self, message: str):
+    ``scope`` says *whose* ceiling this was: ``own`` for the budget the
+    caller holds, ``shared`` for the parent a :class:`SubBudget` spends
+    from. With nested budgets both can stop the same request, and the
+    difference is between *this worker asked for too much* and *the
+    fan-out is spent* -- which are different things to do about (G7).
+    """
+
+    def __init__(self, message: str, scope: str = "own"):
         super().__init__(message)
         self.message = message
+        self.scope = scope
 
 
 def _format_tokens(tokens: int) -> str:

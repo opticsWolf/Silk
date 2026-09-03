@@ -45,6 +45,7 @@ from .stream_events import (
     OUTCOME_COMPLETED,
     OUTCOME_ERROR,
     OUTCOME_STOPPED,
+    OUTCOME_USAGE_LIMITED,
     EventDelta,
     EventError,
     EventFinalResult,
@@ -269,6 +270,45 @@ class AgentLoop:
         yield event
         return True
 
+    def _stopped_by_budget(
+        self, exc: UsageLimitExceeded, limit_type: str, total_tokens: int,
+        start_time: float, tool_calls_made: list, tool_results_made: list,
+    ) -> Generator[AgentEvent, None, None]:
+        """End the run on a budget, and *say so* on the result (G7, G13).
+
+        This used to yield the limit and the error and return, so the run
+        produced no ``EventRunResult`` at all and ``usage_limited`` --
+        declared as an outcome since G13 -- was never once set. A consumer
+        was left inferring the ending from "is there an error and no
+        text", which is the inference G13 is about.
+
+        The text produced so far is still carried: a run stopped by its
+        budget half way through has said something, and throwing it away
+        would make the cap destructive rather than limiting.
+        """
+        yield EventUsageLimit(
+            limit_type=limit_type, scope=getattr(exc, "scope", "own"),
+        )
+        yield EventError(
+            error=str(exc), context="usage_limits", recoverable=False,
+        )
+        stats = self.engine.last_stats or {}
+        yield EventRunResult(
+            text=self._final_text,
+            tokens=int(stats.get("tokens", total_tokens) or 0),
+            input_tokens=int(stats.get("input_tokens", 0) or 0),
+            tps=float(stats.get("tps", 0.0) or 0.0),
+            finish_reason="usage_limit",
+            tool_calls=tool_calls_made,
+            tool_results=tool_results_made,
+            usage_stats={
+                "total_tokens": total_tokens,
+                "elapsed_s": time.time() - start_time,
+                **self.engine.usage_limits.snapshot(),
+            },
+            outcome=OUTCOME_USAGE_LIMITED,
+        )
+
     def _recover_or_stop(
         self, event: EventError, round_index: int,
     ) -> Generator[AgentEvent, None, bool]:
@@ -315,13 +355,28 @@ class AgentLoop:
             #    makes room and carries on. A no-op without a compactor.
             yield from self._maybe_compact(reason=REASON_PRESSURE)
 
-            # 1. Usage gates before each request.
+            # 1. Usage gates before each request. Separately, because a
+            #    shared `try` made both breaches report limit_type
+            #    "request" and left the message text as the only way to
+            #    tell them apart (G7) -- and "too many turns" and "this
+            #    prompt is too big" are different things to do about.
             try:
                 engine.usage_limits.check_request()
-                engine.usage_limits.check_input_tokens(engine.count_prompt_tokens())
             except UsageLimitExceeded as exc:
-                yield EventUsageLimit(limit_type="request")
-                yield EventError(error=str(exc), context="usage_limits", recoverable=False)
+                yield from self._stopped_by_budget(
+                    exc, "request", total_tokens, start_time,
+                    tool_calls_made, tool_results_made,
+                )
+                return
+            try:
+                engine.usage_limits.check_input_tokens(
+                    engine.count_prompt_tokens()
+                )
+            except UsageLimitExceeded as exc:
+                yield from self._stopped_by_budget(
+                    exc, "input_tokens", total_tokens, start_time,
+                    tool_calls_made, tool_results_made,
+                )
                 return
 
             # 2. Stream exactly one model response.
@@ -340,8 +395,10 @@ class AgentLoop:
                         tps=(total_tokens / elapsed) if elapsed > 0 else 0.0,
                     )
             except UsageLimitExceeded as exc:
-                yield EventUsageLimit(limit_type="output_tokens")
-                yield EventError(error=str(exc), context="usage_limits", recoverable=False)
+                yield from self._stopped_by_budget(
+                    exc, "output_tokens", total_tokens, start_time,
+                    tool_calls_made, tool_results_made,
+                )
                 return
             except Exception as exc:
                 if (yield from self._recover_or_stop(
@@ -406,10 +463,16 @@ class AgentLoop:
             #    from ```tool_call fences, or the engine's structured
             #    tool_calls when the model supports native tool calling.
             calls = self._transport.extract_calls(engine, full_text)
-            if engine.stop_requested():
-                outcome = OUTCOME_STOPPED
-                break
             if not calls or self.toolbox is None:
+                # The model answered and asked for nothing more: the run is
+                # finished, whether or not a stop arrived while it spoke.
+                # Calling that `stopped` made a delivered answer read as a
+                # cut-short one, and a consumer keying off the outcome (G13)
+                # would hand a complete result back as a failure.
+                break
+            if engine.stop_requested():
+                # Work was left: tools the model asked for that will not run.
+                outcome = OUTCOME_STOPPED
                 break
 
             try:
@@ -417,8 +480,10 @@ class AgentLoop:
                 # budget may be shared with sibling workers (spec D52.4).
                 engine.usage_limits.reserve_tool_calls(len(calls))
             except UsageLimitExceeded as exc:
-                yield EventUsageLimit(limit_type="tool_calls")
-                yield EventError(error=str(exc), context="usage_limits", recoverable=False)
+                yield from self._stopped_by_budget(
+                    exc, "tool_calls", total_tokens, start_time,
+                    tool_calls_made, tool_results_made,
+                )
                 return
 
             for call in calls:

@@ -86,6 +86,7 @@ from ..functions.messaging import AgentMessage
 from ..functions.role import DEFAULT_ROLE, RoleBinding
 from ..functions.task_store import plan_changed_event  # Qt-free
 from ..functions.stream_events import (
+    OUTCOME_COMPLETED,
     EventChatTurn,
     EventCompaction,
     EventDecisionRequest,
@@ -613,6 +614,9 @@ class SilkAgentNode(ThreadedManualNode):
         # Named before the try so the exit path can release this run's
         # decision rows even when the run never got as far as an id.
         run_id = ""
+        # How the run ended, taken from the result event rather than
+        # guessed from what came back (G13).
+        outcome = OUTCOME_COMPLETED
         # The write-watching middleware, when this run has the load verbs.
         change_entry = None
         try:
@@ -885,13 +889,26 @@ class SilkAgentNode(ThreadedManualNode):
                     run_error = event.error
                 elif isinstance(event, EventRunResult):
                     final_text = event.text
+                    outcome = event.outcome or OUTCOME_COMPLETED
 
             if run_error and not final_text:
                 self.compute_error.emit(run_error)
                 self.status_changed.emit(f"Failed: {run_error}")
                 return {"response": f"Error: {run_error}"}
 
-            self._last_run_ok = not self.is_compute_cancelled()
+            # How the run ended is a field, not an inference (G13). A run
+            # that exhausted its rounds or its budget has a final text and
+            # is not a success; reading "there is text" is what made those
+            # endings show as "Done." for as long as the field existed
+            # without a consumer.
+            self._last_run_ok = (
+                outcome == OUTCOME_COMPLETED and not self.is_compute_cancelled()
+            )
+            if outcome != OUTCOME_COMPLETED:
+                self.status_changed.emit(
+                    f"Ended: {outcome}"
+                    + (f" - {run_error}" if run_error else "")
+                )
             refused = (headless_refusals(toolset)
                        if toolset is not None else 0)
             if refused and self._last_run_ok:

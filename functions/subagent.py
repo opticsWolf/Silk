@@ -36,6 +36,7 @@ from .agent_loop import AgentLoop, DEFAULT_MAX_ROUNDS
 from .graph_engine import GraphEngine
 from .role import DEFAULT_ROLE, Role, RoleBinding
 from .stream_events import (
+    OUTCOME_COMPLETED,
     EventError,
     EventRunResult,
     EventToolCall,
@@ -194,6 +195,11 @@ def run_subagent(
 
         final_text = ""
         run_error: Optional[str] = None
+        # How the run ended, straight from the loop. A worker that hit
+        # max_rounds or its budget produces text, and reading "there is
+        # text, so it worked" is exactly how such a run used to be handed
+        # back to an orchestrator as a success (G13).
+        outcome = OUTCOME_COMPLETED
         rounds = 0
         tool_calls: list[dict[str, Any]] = []
 
@@ -208,8 +214,17 @@ def run_subagent(
                 run_error = event.error
             elif isinstance(event, EventRunResult):
                 final_text = event.text
+                outcome = event.outcome or OUTCOME_COMPLETED
                 rounds = len(event.tool_calls or ())
 
+        if outcome != OUTCOME_COMPLETED:
+            # Text *and* a reason: an orchestrator deciding what to do next
+            # needs the partial answer, and needs to know it is partial.
+            reason = run_error or f"the run ended {outcome}"
+            return SubagentResult(
+                text=final_text or f"Error: {reason}", ok=False, error=reason,
+                rounds=rounds, tool_calls=tool_calls,
+            )
         if run_error and not final_text:
             return SubagentResult(
                 text=f"Error: {run_error}", ok=False, error=run_error,

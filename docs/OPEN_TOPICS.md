@@ -197,13 +197,23 @@ pi uses) a **precondition of D24**. Silk has the tool-side half already
 requests. The classifier is also what a future supervisor would key off; the
 restart itself stays out of scope.
 
-### G7. `EventUsageLimit` cannot tell which cap fired
+### G7. `EventUsageLimit` cannot tell which cap fired — CLOSED
 
-The request-count and input-token gates share one `try`, and a breach of
-either yields `EventUsageLimit(limit_type="request")` followed by an
-`EventError` (`functions/agent_loop.py`). The only distinguishing signal is
-the error message text. (Related: `count_prompt_tokens()` is a
-best-effort estimate, so the input-token gate itself is approximate.)
+**Closed 2026-09-03.** The gates no longer share a `try`, so `limit_type`
+names the cap that actually refused (`request`, `input_tokens`,
+`output_tokens`, `tool_calls`). `EventUsageLimit` also gained `scope`:
+with nested budgets (D26) both this agent's own ceiling and the fan-out's
+shared one can stop the same request, and `UsageLimitExceeded` now carries
+which — `SubBudget` re-labels every refusal it catches from its parent as
+`shared`, on the check path and on the reserve path after the refund. *This
+worker asked for too much* and *the fan-out is spent* are different things
+to do about. The gap statement is kept below as the record.
+
+> The request-count and input-token gates share one `try`, and a breach of
+> either yields `EventUsageLimit(limit_type="request")` followed by an
+> `EventError` (`functions/agent_loop.py`). The only distinguishing signal is
+> the error message text. (Related: `count_prompt_tokens()` is a
+> best-effort estimate, so the input-token gate itself is approximate.)
 
 ### G8. Stops are not honoured mid-tool-batch
 
@@ -267,7 +277,28 @@ The package has no `__version__` (or equivalent), so a running graph
 cannot report which Silk commit it is running — only the submodule pin in
 the Weave checkout can. Trivial to add; useful for logs and bug reports.
 
-### G13. The `max_rounds` error is silently dropped by every consumer
+### G13. The `max_rounds` error is silently dropped by every consumer — CLOSED
+
+**Closed 2026-09-03.** `EventRunResult.outcome` had been declared and set
+for a while; what was missing was anyone reading it. Both consumers now do:
+`functions/subagent.py` returns `SubagentResult(ok=False, error=…)` for any
+outcome other than `completed`, carrying the partial text so an orchestrator
+can both use it and see that it is partial; `nodes/agent.py` sets
+`_last_run_ok` from the outcome and shows `Ended: <outcome>` rather than
+"Done.". Two corrections fell out of wiring it up:
+
+- A budget breach used to `return` after the limit and error events, so the
+  run produced **no `EventRunResult` at all** and `usage_limited` was never
+  once set. `AgentLoop._stopped_by_budget` now ends such a run properly,
+  with `finish_reason="usage_limit"`, the usage snapshot, and the text
+  produced so far — a cap should limit a run, not delete its answer.
+- A stop arriving while the model's *final* answer was in flight marked the
+  run `stopped`. With consumers keying off the outcome that turned a
+  delivered answer into a failure. `stopped` is now set only when there was
+  work left — tool calls the model asked for that will not run.
+
+The gap statement is kept below as the record.
+
 
 When the round budget is exhausted, the loop yields
 `EventError(context="agent_loop", recoverable=True)`

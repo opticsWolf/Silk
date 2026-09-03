@@ -200,7 +200,18 @@ anyway; doing it once is cheaper than three times.
 
 - `outcome: completed | stopped | usage_limited | error` on `EventRunResult`
   — closes G13. Consumers key off `outcome`, not off "is there a final text",
-  so a `max_rounds` abort stops reporting as a clean finish.
+  so a `max_rounds` abort stops reporting as a clean finish. **Landed
+  2026-09-03**, and wiring the readers up exposed two things the writer had
+  wrong: a budget breach returned without any `EventRunResult`, so
+  `usage_limited` was never once set (it now ends the run properly, carrying
+  the text produced so far — a cap limits a run, it does not delete its
+  answer); and a stop arriving while the *final* answer was in flight marked
+  the run `stopped`, which with real readers turned a delivered answer into a
+  failure. `stopped` now means work was left — tool calls that will not run.
+- `scope: own | shared` on `EventUsageLimit`, beside a `limit_type` that
+  finally names the right cap — closes G7. Under nested budgets (D26) both
+  ceilings can refuse the same request, and *this worker asked for too much*
+  is a different problem from *the fan-out is spent*.
 - `EventCompaction` — turns dropped, tokens before/after, summary reference.
   Content-free, per the observability rule.
 - `EventDecisionRequest` / `EventDecisionResponse` — see §7. One pair, not
@@ -1967,7 +1978,9 @@ not a guarantee and a ledger handle closed late loses its final snapshot.
    pinning.
 2. Unified event vocabulary + single `events` port, including the approval
    request / decision events and the dual emission path (D2, D3, D30).
-3. `outcome` on `EventRunResult` (G13).
+3. `outcome` on `EventRunResult` (G13) — **done 2026-09-03**, with the
+   `limit_type`/`scope` half of G7 alongside it, since the readers are the
+   same two consumers.
 4. Context-budget plumbing: `context_length` → loop (G14(c)).
 5. Hook error-family emission + registration validation (D15).
 6. **Measure prompt-prefix reuse** (D41, D47): `verbose` is already
@@ -2077,7 +2090,7 @@ selects it as soon as the graph shape changes.
 | G1 — approval gate is a no-op | §7 |
 | G3 / T2 — unwired hook events | §8 (closed: error family wired, one wrap wired, four deleted) |
 | G4 — no test suite | §14 |
-| G13 — `max_rounds` error silently dropped | §5 (`outcome`) |
+| G13 — `max_rounds` error silently dropped | §5 (`outcome`) — landed |
 | G14 / T8 — compaction absent | §12 |
 | G15 — prompt-prefix reuse unconfigured/unmeasured | §12 (D41; measurement is Phase 1) |
 | T1 — approval state design, reuse vs parallel | §7 (D30–D31: one inline gate hook, no state to design; only durable grants persist) |
@@ -2090,8 +2103,8 @@ precondition of D24, and that classifier is what would let a future supervisor
 tell "the server died" from "the context overflowed". The restart itself stays
 out of scope.
 
-Untouched by this spec: G5 (dependency declaration), G7
-(`EventUsageLimit` granularity), G8 (mid-batch stops), G9 (type coverage),
+Untouched by this spec: G5 (dependency declaration), G8 (mid-batch stops),
+G9 (type coverage),
 G11 (`OpenAIClientMock`
 name), T5 (delegation depth), T6 (HTML floor), T7 (durable event sink).
 

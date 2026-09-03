@@ -243,12 +243,19 @@ class EventUsageLimit:
 
     Attributes:
         timestamp: When the event was created.
-        limit_type: The type of limit that was exceeded.
+        limit_type: The type of limit that was exceeded — ``request``,
+            ``input_tokens``, ``output_tokens`` or ``tool_calls``.
+        scope: Whose budget refused it: ``own`` or ``shared`` (D26).
         limit_value: The limit value.
         current_value: The current usage value.
     """
     timestamp: datetime = field(default_factory=datetime.now)
     limit_type: str = ""
+    #: Whose cap it was: ``own`` for this agent's own budget, ``shared``
+    #: for the fan-out's. With nested budgets (D26) both can stop the same
+    #: request, and "which one" is the difference between *this worker
+    #: asked for too much* and *the fan-out is spent* (G7).
+    scope: str = "own"
     limit_value: int = 0
     current_value: int = 0
 
@@ -674,11 +681,13 @@ class EventBuilder:
         limit_type: str,
         limit_value: int,
         current_value: int,
+        scope: str = "own",
     ) -> EventUsageLimit:
         """Build an EventUsageLimit from raw data."""
         return EventUsageLimit(
             timestamp=datetime.now(),
             limit_type=limit_type,
+            scope=scope,
             limit_value=limit_value,
             current_value=current_value,
         )
