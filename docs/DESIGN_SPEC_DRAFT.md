@@ -1211,6 +1211,24 @@ the ToolBox execution path (role gate, structured errors, timeouts,
 sequential vs parallel), `SqliteTaskStore` concurrency, and the orchestrator
 guards.
 
+**As built (2026-09-09) — the suite split along the seam.** The runtime
+half — 44 files plus `silk_invariant_catalog.py`, 769 tests — lives in this
+repo's `tests/` and runs from the silk root (`python -m pytest tests -q`);
+`tests/conftest.py` imports the repo root as the package `silk`, whatever
+the checkout's directory is named, so the tests always test *this*
+checkout and a standalone clone runs them; `tests/_qt_subprocess.py`
+bootstraps the real-Qt checks that re-run themselves as a plain script.
+The 13 seam tests — a real `Canvas`, `weave.registry`, the shutdown
+registry — stay in Weave's `tests/`, which own the Qt teardown barrier
+(D36's race catalog needs it). Two import rules the split pinned down:
+tests import `silk.*`, never `weave.plugins.silk.*` (the host path would
+silently bind to a different checkout), and code inside the plugin
+imports its siblings relatively — five `functions/tools/` modules used to
+self-import through the host package (`from
+weave.plugins.silk.functions... import`), a bug the move surfaced; they
+are relative now, and `recall_tool`'s source-introspection test pins the
+relative form.
+
 **D42. A manual-drive gate for the approval seam.** D30 gives Silk its first
 real concurrency surface: a parked worker thread, a Qt thread resolving the
 decision, and Stop and the timeout racing that resolution. Invariant fixtures
@@ -1659,7 +1677,12 @@ task-store protocol** (`Plan` / `Task` / ops, `plan_to_json`,
 not change; `HistoryLedger` adds turns/runs and the `recall` search used by
 the memory tool. `macrame-db` is a **declared optional extra** -- Silk's
 first declared binary dependency, which forces the G5 fix as a
-precondition rather than a lingering gap. Absent, `SqliteTaskStore` remains
+precondition rather than a lingering gap. Floor `macrame-db>=0.16`
+(raised 2026-09-09, tested against 0.16.0): macrame 0.13.2 (W7.1, D-174)
+split the traversal `as_of` kwarg into the bitemporal pair
+`as_of_valid` / `as_of_recorded`, and `ledger.py::_when` names both —
+a time-travelling read here always wants the same instant on both
+halves. Absent, `SqliteTaskStore` remains
 the backend and history stays in-node: the graph degrades to today's
 behaviour, loudly (one log line), never silently.
 
@@ -1910,8 +1933,9 @@ and the grant in `widgets/node_whitelist.py` on the ToolBox node's
 `placeable_nodes` port. 40 tests: `tests/test_silk_main_thread_call.py` (the
 seam and D36's four failure paths), `tests/test_silk_graph_authoring.py`
 (default-deny, run scope, the self-modification walk) and
-`tests/test_silk_graph_canvas.py` (a real `Canvas`, in a subprocess, because
-D72's claim cannot be faked: the undo *is* the safety property). D74's hot-reload
+`tests/test_silk_graph_canvas.py` (in Weave's `tests/`, like every seam
+test) — a real `Canvas`, in a subprocess, because
+D72's claim cannot be faked: the undo *is* the safety property. D74's hot-reload
 interaction closed with it: `NodeWhitelistWidget` subscribes to the
 registry's listener and coalesces a load's burst of registrations into one
 rebuild, so a suite loaded into the running session is tickable without
@@ -2052,7 +2076,8 @@ since a registry-only load is meaningful headless -- after an out-of-process
 `weave_lint_check`, and the ToolBox node grew one **Plugin authoring**
 checkbox that adds `~/.weave/plugins` as the sandbox's only writable root when
 nothing else made it writable. 36 tests in
-`tests/test_silk_self_modification.py` (three of them D80's release
+`tests/test_silk_self_modification.py` (in Weave's `tests/`, like every
+seam test; three of them D80's release
 participants) plus three live-Qt checks in
 `tests/test_silk_graph_canvas.py`.
 
@@ -2250,7 +2275,7 @@ cannot be chosen before it runs.
 | Phase 1 | Landed in |
 |---|---|
 | 1. Invariant fixtures (D27) | `tests/silk_invariant_catalog.py`, `tests/test_silk_invariants.py` |
-| 2. Event vocabulary + one `events` port (D2, D3, D30) | `functions/event_format.py`, `functions/stream_events.py`; `tests/test_silk_event_vocabulary.py` |
+| 2. Event vocabulary + one `events` port (D2, D3, D30) | `functions/event_format.py`, `functions/stream_events.py`; `tests/test_silk_event_vocabulary.py` (Weave's `tests/`) |
 | 3. `outcome` on `EventRunResult` (G13) + G7's `limit_type`/`scope` | landed 2026-09-03 |
 | 4. `context_length` → loop (G14(c)) | `functions/agent_loop.py` (`context_length()`, forwarded per round) |
 | 5. Hook error family + registration validation (D15) | `functions/hooks.py`; `tests/test_silk_hook_error_family.py` |

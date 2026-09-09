@@ -242,6 +242,11 @@ is that "install the extra" is now actionable advice with a name and a
 version, which is what the runtime probes have been telling people to do
 without saying which package.
 
+*Update 2026-09-09.* The `ledger` extra's floor is now `macrame-db>=0.16`:
+macrame 0.13.2 (W7.1, D-174) split the traversal `as_of` kwarg into the
+bitemporal pair and `ledger.py::_when` names both halves. A `test` extra
+(`pytest`) was added when the runtime suite moved into this repo (see G4).
+
 ### G6. The model pool has no recovery when the server dies
 
 `GGUFModelPool` spawns one `llama_cpp.server` subprocess and waits for it
