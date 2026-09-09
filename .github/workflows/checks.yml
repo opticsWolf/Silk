@@ -35,14 +35,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check out the Weave companion
-        # Side-by-side clone (the dev layout tests/conftest.py knows);
-        # PYTHONPATH below makes `import weave` resolve to it.
-        uses: actions/checkout@v4
-        with:
-          repository: opticsWolf/Weave
-          ref: dev
-          path: Weave
+      - name: Clone the Weave companion
+        # A plain anonymous clone: the default GITHUB_TOKEN is scoped to
+        # this repo and cannot read another, even a public one. Side-by-side
+        # (the dev layout tests/conftest.py knows); PYTHONPATH below makes
+        # `import weave` resolve to it.
+        run: |
+          git clone --depth 1 --branch dev \
+            https://github.com/opticsWolf/Weave.git "$GITHUB_WORKSPACE/Weave"
 
       - uses: actions/setup-python@v5
         with:
