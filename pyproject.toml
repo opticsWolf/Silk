@@ -36,7 +36,13 @@ render = ["mordant>=0.2"]
 mcp = ["mcp>=1.2"]
 # The bitemporal ledger backend (§17, D62-D66). Optional by design: absent,
 # SqliteTaskStore stays the task store and history stays in the node.
-ledger = ["macrame-db>=0.9"]
+# Floor raised 2026-09-09: 0.13.2 split the traversal `as_of` kwarg into the
+# bitemporal pair (`as_of_valid`/`as_of_recorded`, macrame W7.1/D-174) —
+# `ledger.py` names both halves; tested against 0.16.0.
+ledger = ["macrame-db>=0.16"]
+# The runtime test suite (tests/, this repo). The seam tests that drive a
+# real Canvas or weave.registry live in the Weave tree's tests/ instead.
+test = ["pytest>=8"]
 
 [tool.ruff]
 target-version = "py312"
@@ -81,6 +87,12 @@ no_implicit_optional = true
 # Domain-specific lint config (python -m weave_lint [node|widget]).
 # mode = "relaxed"
 # ignore = []
+
+[tool.pytest.ini_options]
+# `pytest` bare from the repo root runs silk's own suite; imports resolve
+# to this checkout via tests/conftest.py. The Weave-side seam tests are
+# collected by the Weave tree's own pytest run.
+testpaths = ["tests"]
 
 [tool.weave_widget_lint]
 # mode = "relaxed"

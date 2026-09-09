@@ -418,7 +418,9 @@ and specific. `ruff check .`: **all checks passed** at the repo's own config
   partly closed (`weave_contract.py` exists and runs); G21 REPORTED with the mitigation
   named as mitigation. The one place the docs hedge ("test suite runs from the Weave
   root — `python -m pytest tests -q`; invariant fixtures in `tests/test_silk_invariants.py`")
-  is accurate: **this repo has no tests/ directory** — the suite lives in the Weave tree.
+  was accurate at review time; on 2026-09-09 the runtime half (44 files + the invariant
+  catalog) moved into this repo's `tests/`, with the 13 seam tests staying in Weave's
+  tree (G4's closure text documents the split).
 - `17-invariants.md` maps 1:1 onto enforcement sites verified above (I1 dispatch shape,
   I2 after_run-exactly-once, I3 loop-never-executes-tools, I4 double-sided role gate,
   I5 store-reads-never-mutate).
@@ -478,8 +480,9 @@ wiring**. Each new seam thickens the same bodies. The data-structure layer
 **Architecture: excellent — and verifiably so.** The layering rule holds under grep;
 the thread model doc matches the code line-for-line; failure semantics are designed
 (fail-closed, named causes, model-visible results); observability is content-free by
-construction; the docs cite code and the code cites decisions; ruff is clean; the test
-suite lives where the repo says it does (Weave root) and pins the invariants.
+construction; the docs cite code and the code cites decisions; ruff is clean; the
+runtime test suite now lives in this repo (`tests/`, 769 tests green) with the seam
+half in Weave's tree, and the invariant fixtures pin the invariants.
 
 **Watch items, priority order (unchanged from v1, now with deeper evidence):**
 

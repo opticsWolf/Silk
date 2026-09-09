@@ -46,7 +46,7 @@ from pydantic import BaseModel, Field
 # Absolute import: this module is exec'd by the ToolLoader as
 # ``dynamic_tools.graph_authoring`` (no parent package), so a ``..``
 # relative import would be "beyond top-level".
-from weave.plugins.silk.functions.graph_author import (
+from ..graph_author import (
     OP_CONNECT, OP_DESCRIBE, OP_DISCONNECT, OP_LIST, OP_PLACE, OP_REMOVE,
     OP_SET_VALUE, OP_SETTINGS, Refusal, RunScope, Whitelist, canvas_binding,
     check_self_modification,

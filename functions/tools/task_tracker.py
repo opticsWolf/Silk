@@ -33,8 +33,8 @@ from pydantic import BaseModel, Field, field_validator
 # ``dynamic_tools.task_tracker`` (no parent package), so a ``..`` relative import
 # would be "beyond top-level". Absolute resolution works in both load paths and
 # yields the same module object as a normal import (no duplicate class identity).
-from weave.plugins.silk.functions.ledger import open_task_store
-from weave.plugins.silk.functions.task_store import (
+from ..ledger import open_task_store
+from ..task_store import (
     Conflict, DEFAULT_ACTOR, LedgerClosed, plan_to_json, render_markdown,
 )
 

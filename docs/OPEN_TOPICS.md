@@ -185,6 +185,22 @@ explicitly **not** pruned pending review; their disposition is **T2**.
 this spec lands with the tests that pin it, and the invariant fixtures
 D27 asked for are in `tests/test_silk_invariants.py`.
 
+*Update 2026-09-09 — the suite split.* The runtime half moved into this
+repo: 44 test files + `silk_invariant_catalog.py` now live in `tests/`
+here, run as `python -m pytest tests -q` from the *silk* root. Imports
+resolve to this checkout through `tests/conftest.py` (the repo root is
+installed as the package `silk`, dir-name-independently) — never through
+`weave.plugins.silk`, so the suite always tests this checkout and a
+standalone clone runs it. The 13 seam tests that drive a real `Canvas`,
+`weave.registry` or the Weave shutdown registry stayed in Weave's
+`tests/`: they pin the Weave↔Silk contract and rely on Weave's conftest
+Qt teardown barrier. The move also surfaced a real bug: five
+`functions/tools/` modules self-imported through the host package
+(`from weave.plugins.silk.functions... import`), which silently bound
+to whatever checkout the path resolved to — they are relative now
+(`from ..ledger import`), and the source-introspection test pins the
+relative form.
+
 *Original text follows for the record.*
 
 #### G4, as first written

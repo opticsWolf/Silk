@@ -41,13 +41,13 @@ from pydantic import BaseModel, Field
 
 # Absolute import: this module may be exec'd by the ToolLoader without a
 # parent package, where a ``..`` relative import is "beyond top-level".
-from weave.plugins.silk.functions.graph_author import canvas_binding
-from weave.plugins.silk.functions.self_modify import (
+from ..graph_author import canvas_binding
+from ..self_modify import (
     OP_LIST_SUITES, OP_LOAD_SUITE, OP_RELAUNCH, OP_RELOAD_SUITE, annotate,
     capability_for, check_suite, clear_quarantine, find, suites,
     user_plugin_root,
 )
-from weave.plugins.silk.functions.suite_pins import (
+from ..suite_pins import (
     PinStore, annotate_pins, autoload_plan,
 )
 
@@ -95,7 +95,7 @@ def attach_suite_tools(toolbox: "ToolBox", sandbox: "FileToolSandbox",
     without it would be registering a way to run arbitrary code without a
     human, which is the one thing this section is about not doing.
     """
-    from weave.plugins.silk.functions.load_floor import attach_load_floor
+    from ..load_floor import attach_load_floor
 
     attach_load_floor(toolbox)
 

@@ -49,7 +49,7 @@ from pydantic import BaseModel, Field
 from pathlib import Path
 
 from weave.logger import get_logger
-from weave.plugins.silk.functions.ledger import (
+from ..ledger import (
     DISTRIBUTION, HistoryLedger, KIND_RUN, KIND_TURN, LedgerUnavailable,
     available, history_path, unavailable_reason,
 )

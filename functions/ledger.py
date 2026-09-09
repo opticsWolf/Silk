@@ -862,11 +862,17 @@ def _when(as_of) -> dict:
     Macrame refuses `as_of` without an attribute mode on purpose: the
     past's topology wearing the present's titles is a thing you can want
     and a terrible thing to get by accident. A time-travelling read here
-    always wants both to be the same instant.
+    always wants both to be the same instant — which, since macrame
+    0.13.2 (W7.1, D-174) split the one `as_of` kwarg into the bitemporal
+    pair, means naming both halves explicitly: validity and recording.
     """
     if as_of is None:
         return {}
-    return {"as_of": as_of, "attribute_mode": _macrame.AttributeMode.AT_TIME}
+    return {
+        "as_of_valid": as_of,
+        "as_of_recorded": as_of,
+        "attribute_mode": _macrame.AttributeMode.AT_TIME,
+    }
 
 
 def _concept(db: Any, concept_id: str, as_of=None) -> Optional[Any]:
