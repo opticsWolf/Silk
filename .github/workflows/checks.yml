@@ -1,15 +1,14 @@
 # Silk CI.
 #
-# The runtime half of the suite lives in this repo (G4's split): every
-# push runs ruff and the 769 runtime tests from the silk root. The 13
-# seam tests — a real Canvas, weave.registry, the shutdown registry —
-# belong to Weave's tree and run in Weave's CI instead.
-#
-# `import weave` must resolve: functions/ depends on weave.logger and
-# silk/__init__ imports weave._discovery (the D83 contract check runs at
-# import). CI clones Weave beside this checkout and points PYTHONPATH at
-# it — the companion branch this repo develops against; if Weave moves a
-# seam, this fails here rather than at someone's import.
+# Ruff only. The runtime test suite needs the Weave framework — `import
+# weave` (weave.logger in functions/, weave._discovery in silk/__init__
+# with the D83 contract check at import) — and Weave is a private repo,
+# so this workflow cannot fetch it: GITHUB_TOKEN is scoped to this repo
+# and an anonymous clone 404s. The suite therefore runs in Weave's CI,
+# where the submodule is checked out at the pinned commit and the
+# framework, its dependencies and Qt's runtime libraries are already
+# installed. Keep this job lint-only and let Weave's `pytest` steps own
+# the tests; revisit if Weave ever publishes.
 
 name: checks
 
@@ -24,9 +23,6 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # Nodes are QGraphicsItems; the widget checks build real docks, so Qt
-  # needs a platform plugin even headless — offscreen is the one that
-  # needs no display server.
   QT_QPA_PLATFORM: offscreen
 
 jobs:
@@ -34,15 +30,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Clone the Weave companion
-        # A plain anonymous clone: the default GITHUB_TOKEN is scoped to
-        # this repo and cannot read another, even a public one. Side-by-side
-        # (the dev layout tests/conftest.py knows); PYTHONPATH below makes
-        # `import weave` resolve to it.
-        run: |
-          git clone --depth 1 --branch dev \
-            https://github.com/opticsWolf/Weave.git "$GITHUB_WORKSPACE/Weave"
 
       - uses: actions/setup-python@v5
         with:
@@ -52,27 +39,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          # pyproject's [project] + extras, spelled out because this repo
-          # runs in place — there is no build backend, so `pip install .`
-          # is not the supported path (G5).
-          pip install "PySide6>=6.7" "pydantic>=2.7" pytest pytest-timeout ruff
-          pip install "mcp>=1.2" "macrame-db>=0.16" "mordant>=0.2"
-          # weave's own import floor (framework deps, cheap wheels).
-          pip install numpy scipy pillow markupsafe jinja2
-
-      - name: Install Qt's runtime libraries
-        # PySide6's wheels link against system libs the bare runner image
-        # does not ship; without these the import fails before any test.
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libegl1 libgl1 libxkbcommon-x11-0 \
-            libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
-            libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0
+          pip install "PySide6>=6.7" "pydantic>=2.7" ruff
 
       - name: ruff
         run: ruff check .
-
-      - name: pytest
-        env:
-          PYTHONPATH: ${{ github.workspace }}/Weave
-        run: python -m pytest tests -q --timeout=300
