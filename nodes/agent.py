@@ -107,7 +107,7 @@ from ..functions.stream_events import (
     EventToolResult,
     to_wire,
 )
-from ..functions.subagent import compose_system_prompt
+from ..functions.subagent import compose_system_prompt, handle_supports_tools
 
 log = get_logger("SilkAgent")
 
@@ -846,7 +846,9 @@ class SilkAgentNode(ThreadedManualNode):
                     event_hooks.append((event_name, callback))
 
             system_prompt = self._compose_system_prompt(
-                str(inputs.get("system_prompt") or ""), role, toolset
+                str(inputs.get("system_prompt") or ""), role, toolset,
+                native_tools=toolset is not None
+                and handle_supports_tools(model_handle),
             )
 
             engine = GraphEngine(
@@ -1092,10 +1094,12 @@ class SilkAgentNode(ThreadedManualNode):
         """Remove what :meth:`_attach_run_observers` installed. No-op here."""
 
     @staticmethod
-    def _compose_system_prompt(base: str, role: Any, toolset: Any) -> str:
+    def _compose_system_prompt(base: str, role: Any, toolset: Any,
+                               native_tools: bool = False) -> str:
         """base prompt + [ROLE] block + capability/procedure blocks + tool protocol.
 
         Delegates to the shared, Qt-free composer so the Agent node and the
         sub-agent runner build identical system prompts.
         """
-        return compose_system_prompt(base, role, toolset)
+        return compose_system_prompt(base, role, toolset,
+                                     native_tools=native_tools)

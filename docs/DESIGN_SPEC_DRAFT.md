@@ -1811,6 +1811,31 @@ cannot walk past is now caught and costs the tool hint alone, while a
 truncated file still raises, because the caller's answer to that is
 `gguf.GGUFReader`.
 
+**The prompt has to describe the protocol the loop will run.** A full agent
+run over the native transport surfaced that `compose_system_prompt` appended
+the fence instructions unconditionally, so a native run told the model to emit
+a `tool_call` fence while `NativeTransport.extract_calls` only ever pulled
+structured calls. A model that obeyed the prompt would have had its call read
+as final text -- the tool never runs, and the fence is what the user sees. The
+composer now takes `native_tools` and omits the block, with
+`handle_supports_tools` as the single question both it and `select_transport`
+ask, because two call sites deciding the protocol separately is how they drift
+apart. The catalog inside that block goes too: on the native path the model
+already has the full JSON schemas in `tools`, of which the prompt's
+one-line-per-tool list is a poorer copy. The discovery block stays, since
+tools reachable via `search_tools` are not on the wire. Measured at 1256 -> 383
+prompt characters, on every request of every round.
+
+Five models drove the native transport correctly end to end against LM Studio
+(Qwen3.5-4B/9B, Qwen3-Coder-25B, gemma-4-E4B, gpt-oss-20B), each chaining two
+tools where the second call needs the first's result. The control run is the
+argument for probing the template rather than defaulting: forced onto fences,
+gemma-4 emitted its own `<|tool_call>` template token, which the fence parser
+does not recognise, and the unparsed call leaked to the user as the answer. A
+tool-trained model on the fence path fails the same silent way a fence-trained
+model would on the native one, which is why the protocol is chosen from the
+template rather than assumed.
+
 Three consequences, each of which was a small decision:
 
 - **The port is `model_handle`, not `gguf_model`** (renamed 2026-09-18).

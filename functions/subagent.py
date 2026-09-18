@@ -49,12 +49,29 @@ log = get_logger("SilkSubagent")
 
 # ── system-prompt composition (shared with SilkAgentNode) ────────────────────
 
-def compose_system_prompt(base: str, role: Any, toolset: Any) -> str:
+def compose_system_prompt(base: str, role: Any, toolset: Any,
+                          native_tools: bool = False) -> str:
     """base prompt + [ROLE] block + capability/procedure blocks + tool protocol.
 
     Must be called *after* role activation so every toolset-derived section
     sees the role filter (denied tools are never advertised). The single
     implementation shared by the Agent node and the sub-agent runner.
+
+    ``native_tools`` is the same question ``select_transport`` asks, and the
+    two must agree. On the native path the tool *protocol* block is omitted:
+    the schemas travel in the request's ``tools`` field, so instructing the
+    model to emit a tool_call fence describes a protocol nothing will read.
+    ``NativeTransport.extract_calls`` only pulls structured calls, so a model
+    that obeyed those instructions would have its call silently treated as
+    final text -- the tool would never run, and the fence would be the
+    answer.
+
+    The block also carries the tool *catalog*, and that goes with it. On the
+    native path the model receives the full JSON schemas in ``tools`` --
+    names, descriptions and parameters -- so the prompt's one-line-per-tool
+    list is a strictly poorer copy of what it already has. The discovery
+    block from ``build_system_prompt`` stays either way, because tools
+    reachable through ``search_tools`` are not on the wire.
     """
     sections = [base.strip()] if base.strip() else []
     role_block = role.system_prompt_block()
@@ -62,8 +79,21 @@ def compose_system_prompt(base: str, role: Any, toolset: Any) -> str:
         sections.append(role_block)
     if toolset is not None:
         sections.append(toolset.build_system_prompt("").strip())
-        sections.append(tool_call_instructions(toolset).strip())
+        if not native_tools:
+            sections.append(tool_call_instructions(toolset).strip())
     return "\n\n".join(s for s in sections if s)
+
+
+def handle_supports_tools(model_handle: Any) -> bool:
+    """Whether a handle asks for the native path, asked the one way.
+
+    The prompt is composed before the engine exists, so it cannot consult
+    ``GraphEngine.supports_native_tools()`` -- but it has to give the same
+    answer, or the prompt describes one protocol while the loop runs the
+    other.
+    """
+    return bool(isinstance(model_handle, dict)
+                and model_handle.get("supports_tools", False))
 
 
 # ── data ─────────────────────────────────────────────────────────────────────
@@ -170,7 +200,11 @@ def run_subagent(
                 # The worker's toolset is already bound by another live agent.
                 return SubagentResult(text=f"Error: {exc}", ok=False, error=str(exc))
 
-        system_prompt = compose_system_prompt(spec.system_prompt or "", role, toolset)
+        system_prompt = compose_system_prompt(
+            spec.system_prompt or "", role, toolset,
+            native_tools=toolset is not None
+            and handle_supports_tools(spec.model_handle),
+        )
 
         engine = GraphEngine(
             spec.model_handle,

@@ -257,3 +257,70 @@ if __name__ == "__main__":
                 failures += 1
                 print(f"FAIL {name}: {exc}")
     sys.exit(1 if failures else 0)
+
+
+# ── the prompt must describe the protocol the loop will actually run ─────
+
+def _box_with_a_tool():
+    from silk.functions.tool_box import ToolBox
+
+    box = ToolBox()
+
+    @box.register("read_file", "Read a file.")
+    def _read(db_pool, user_session):
+        return ""
+
+    return box
+
+
+def test_the_native_prompt_does_not_teach_a_protocol_nothing_reads():
+    """The failure this prevents is silent, which is why it is pinned.
+
+    `NativeTransport.extract_calls` only pulls structured calls. A model
+    that followed fence instructions on the native path would have its
+    call read as final text: the tool never runs, and the fence is the
+    answer the user sees.
+    """
+    from silk.functions.role import DEFAULT_ROLE
+    from silk.functions.subagent import compose_system_prompt
+
+    box = _box_with_a_tool()
+    native = compose_system_prompt("base", DEFAULT_ROLE, box, native_tools=True)
+    fence = compose_system_prompt("base", DEFAULT_ROLE, box)
+
+    assert "```tool_call" in fence, "the fence path still needs teaching"
+    assert "```tool_call" not in native
+    assert "read_file" in fence, "the fence path has only the prompt"
+    assert "read_file" not in native, (
+        "the block carries the catalog too, and on the native path that is a "
+        "strictly poorer copy of the JSON schemas already in `tools` -- "
+        "names, descriptions and parameters all travel on the wire"
+    )
+    assert "search_tools" in native, (
+        "but discovery stays: tools reachable through it are NOT on the wire, "
+        "so dropping that would actually cost the model something"
+    )
+    assert len(native) < len(fence)
+
+
+def test_the_prompt_and_the_transport_ask_the_same_question():
+    """Two call sites, one answer -- or the prompt and the loop disagree."""
+    from silk.functions.graph_engine import GraphEngine
+    from silk.functions.subagent import handle_supports_tools
+
+    for handle in (
+        {"backend": "gguf", "pool": object(), "supports_tools": True},
+        {"backend": "gguf", "pool": object()},
+        {"backend": "openai", "model": object(), "supports_tools": True},
+        {"backend": "openai", "model": object()},
+    ):
+        assert handle_supports_tools(handle) is (
+            GraphEngine(handle).supports_native_tools()
+        )
+
+
+def test_a_handle_that_is_not_a_dict_is_simply_not_native():
+    from silk.functions.subagent import handle_supports_tools
+
+    assert handle_supports_tools(None) is False
+    assert handle_supports_tools("gguf") is False
