@@ -28,6 +28,7 @@ embedding input take it without knowing the difference.
 | in | `model` | `string` |
 | in | `credential` | `string` (a **name**, never a value) |
 | in | `context_length` | `int` (0 = unknown) |
+| in | `supports_tools` | `bool` (native tool calling, off) |
 | out | `model_obj` | `model_handle` |
 
 Presets: LM Studio, llama.cpp server, Ollama, vLLM, LiteLLM proxy,
@@ -35,6 +36,14 @@ OpenRouter, and **Custom** for anything else that serves
 `/v1/chat/completions` — a hosted gateway, your own proxy, a colleague's
 box. A preset only fills *empty* fields, so "this provider, my host" is
 one edit rather than a re-type.
+
+**Native tool calling** is a checkbox, and it is off. On, the agent's
+tools go in the request's `tools` field; off, they go in a text fence.
+The two failure modes are not symmetric — a server that does not accept
+`tools` refuses the whole request, while fences merely cost accuracy on a
+model that could have done better — so the protocol that works everywhere
+is the one you get without asking. Most hosted gateways support native;
+small local models often do not. Verified live against LM Studio.
 
 Three behaviours worth knowing:
 

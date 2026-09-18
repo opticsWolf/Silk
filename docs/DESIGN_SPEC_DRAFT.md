@@ -1779,6 +1779,19 @@ answer is litellm's **proxy**, pointed at by URL like any other endpoint.
 Provider-specific translation then lives in a process that specialises in
 it, and Silk's model layer stays one wire format wide.
 
+**Native tool calling is opt-in, per endpoint.**
+`GraphEngine.supports_native_tools()` reads `supports_tools` off the handle,
+and `select_transport` consults it to choose between the OpenAI `tools` field
+and the text-fence protocol. The endpoint node exposes it as a checkbox
+defaulting to off, because the two failure modes are not symmetric:
+native-on against a server that refuses `tools` kills the run, while
+native-off only degrades a capable model to fences. Worth recording that the
+**GGUF loader has never set this key** -- `supports_native_tools`'s docstring
+describes a chat-template probe that was never written -- so until now the
+native transport was unreachable outside its own tests. The endpoint node is
+the first handle that can turn it on, and the first place it has run against
+a real server.
+
 Three consequences, each of which was a small decision:
 
 - **The port is `model_handle`, not `gguf_model`** (renamed 2026-09-18).

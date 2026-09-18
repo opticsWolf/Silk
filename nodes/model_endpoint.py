@@ -28,7 +28,9 @@ Three things this node does that a URL field alone would not:
 
 from typing import Any, ClassVar, Dict, List, Optional
 
-from PySide6.QtWidgets import QComboBox, QFormLayout, QLabel, QLineEdit, QSpinBox
+from PySide6.QtWidgets import (
+    QCheckBox, QComboBox, QFormLayout, QLabel, QLineEdit, QSpinBox,
+)
 
 from weave.widgetcore import WidgetCore, PortRole
 from weave.widgetcore.binding_policy import debounced
@@ -67,7 +69,7 @@ class SilkModelEndpointNode(ActiveNode):
     node_icon: ClassVar[Optional[str]] = "node"
     vertical_size_policy: ClassVar[VerticalSizePolicy] = VerticalSizePolicy.FIT
     node_state_api = 1
-    node_version = 1     # bump on any state-shape change (G20)
+    node_version = 2     # bump on any state-shape change (G20)
 
     def __init__(self, title: str = "Model Endpoint", **kwargs: Any) -> None:
         super().__init__(title=title, **kwargs)
@@ -149,6 +151,22 @@ class SilkModelEndpointNode(ActiveNode):
         )
         self.add_input("context_length", datatype="int")
 
+        self._native_tools = QCheckBox("Native tool calling")
+        self._native_tools.setToolTip(
+            "Send tool schemas in the request (the OpenAI `tools` field) "
+            "instead of asking for them in a text fence. Off by default: "
+            "a server that does not support them refuses the request, and "
+            "a failed run is worse than a slightly clumsier protocol that "
+            "works. Most hosted gateways support it; small local models "
+            "often do not."
+        )
+        form.addRow("", self._native_tools)
+        self._widget_core.register_widget(
+            "supports_tools", self._native_tools, role=PortRole.INPUT,
+            datatype="bool", default=False, add_to_layout=False,
+        )
+        self.add_input("supports_tools", datatype="bool")
+
         self._label_status = QLabel("Not connected.")
         self._label_status.setWordWrap(True)
         form.addRow("Info:", self._label_status)
@@ -205,6 +223,7 @@ class SilkModelEndpointNode(ActiveNode):
             str(inputs.get("model") or "").strip(),
             str(inputs.get("credential") or "").strip(),
             int(inputs.get("context_length") or 0),
+            bool(inputs.get("supports_tools")),
         )
 
     def compute(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
@@ -217,7 +236,7 @@ class SilkModelEndpointNode(ActiveNode):
         if self._handle is not None and spec == self._last_spec:
             return {"model_obj": self._handle}
 
-        provider, base_url, model, credential, context_length = spec
+        provider, base_url, model, credential, context_length, native = spec
         if not base_url:
             self._handle = None
             self._last_spec = spec
@@ -229,6 +248,7 @@ class SilkModelEndpointNode(ActiveNode):
         handle, status, _models = connect(
             base_url, model, credential=credential,
             context_length=context_length, provider=provider,
+            supports_tools=native,
         )
         self._handle = handle
         self._last_spec = spec

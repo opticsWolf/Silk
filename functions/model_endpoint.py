@@ -202,6 +202,7 @@ def connect(
     credential: str = "",
     context_length: int = 0,
     provider: str = "custom",
+    supports_tools: bool = False,
     timeout: float = PROBE_TIMEOUT_S,
 ) -> Tuple[Optional[Dict[str, Any]], str, List[str]]:
     """Build a model handle for a remote endpoint.
@@ -274,12 +275,19 @@ def connect(
     # summarise too early or overflow the window.
     if int(context_length or 0) > 0:
         handle["context_length"] = int(context_length)
+    # Opt-in, like the loader's: a server that does not accept a `tools`
+    # field refuses the whole request, so the fence protocol -- which
+    # works everywhere -- stays the default. `GraphEngine` reads this key.
+    if supports_tools:
+        handle["supports_tools"] = True
 
-    return handle, _status(url, chosen, name, models, context_length), models
+    return (handle,
+            _status(url, chosen, name, models, context_length, supports_tools),
+            models)
 
 
-def _status(url: str, model: str, credential: str,
-            models: List[str], context_length: int) -> str:
+def _status(url: str, model: str, credential: str, models: List[str],
+            context_length: int, native_tools: bool = False) -> str:
     """One line a person can check the important facts against."""
     parts = [f"Connected: {model} @ {url}"]
     if credential:
@@ -292,6 +300,8 @@ def _status(url: str, model: str, credential: str,
         f"context {int(context_length)}" if int(context_length or 0) > 0
         else "context unknown (compaction has no denominator)"
     )
+    if native_tools:
+        parts.append("native tools")
     return "  ·  ".join(parts)
 
 

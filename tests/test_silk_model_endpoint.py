@@ -199,3 +199,32 @@ def test_the_port_label_names_the_backend_and_the_model():
         "which backend is the thing a reader cannot infer, and for a paid "
         "endpoint it is the thing they most need to see"
     )
+
+
+# ── native tool calling ──────────────────────────────────────────────────
+
+def test_native_tools_are_off_unless_asked_for(serves):
+    """The failure modes are not symmetric, so the default is not neutral.
+
+    A server that does not accept a `tools` field refuses the whole
+    request -- the run dies. Fences merely cost some accuracy on a model
+    that could have done better. Off is the direction whose worst case is
+    "clumsier", not "broken", and it matches the loader's own default.
+    """
+    serves(["m"])
+    handle, status, _ = connect("http://host/v1", "m")
+    assert "supports_tools" not in handle
+    assert GraphEngine(handle).supports_native_tools() is False
+    assert "native tools" not in status
+
+
+def test_native_tools_reach_the_engine_when_asked_for(serves):
+    """The one key `select_transport` consults, from the node to the loop."""
+    serves(["m"])
+    handle, status, _ = connect("http://host/v1", "m", supports_tools=True)
+    assert handle["supports_tools"] is True
+    assert GraphEngine(handle).supports_native_tools() is True, (
+        "the checkbox exists to flip exactly this gate; if the key does not "
+        "arrive under this name the transport silently stays on fences"
+    )
+    assert "native tools" in status, "and a person can see which protocol"
