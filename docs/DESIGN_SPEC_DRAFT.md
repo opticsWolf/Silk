@@ -1836,6 +1836,40 @@ tool-trained model on the fence path fails the same silent way a fence-trained
 model would on the native one, which is why the protocol is chosen from the
 template rather than assumed.
 
+### D87 -- A transient failure is asked again; a terminal one is not
+
+`classify_model_error` has separated `RETRYABLE` (429, 5xx, timeouts) from
+terminal since D40, but `_recover_or_stop` acted only on the overflow verdict,
+so a rate limit ended a run that would have succeeded a second later. The
+classification was computed and discarded.
+
+The loop now retries a retryable verdict in place, and three conditions bound
+it:
+
+- **Not a reasoning round.** `max_rounds` bounds the model's thinking, and a
+  503 is not a thought, so a retry happens inside the round. What bounds
+  retries instead is the request budget -- a failed request is still a
+  request, and on a metered backend it still costs money (D15).
+- **Not after tokens are out.** Deltas are yielded as they arrive, so once
+  anything has been emitted the caller has already rendered it; asking again
+  would stack a second answer on a partial one. Mid-stream failures are
+  therefore terminal, and the run keeps the fragment it showed.
+- **Not forever.** Three spaced attempts, backing off 1s/2s/4s with up to 25%
+  jitter -- jitter because a fan-out hits one rate limit simultaneously, and
+  retrying in lockstep rebuilds the spike. The wait is interruptible, so a
+  stop is not held behind it.
+
+The default for an unrecognised message stays terminal, so a new wording costs
+one attempt rather than looping.
+
+Verified over real HTTP against a stub that rate-limits twice before proxying
+to LM Studio: two 429s classified retryable, ~3s of backoff, third attempt
+answered. The same run also showed `OpenAICompatClient` reporting every
+failure as "the local Llama server" -- wrong since D45 gave that client remote
+endpoints, and it dropped the server's own words, which is often where the
+rate limit is actually named. It now reports the base URL and appends the
+detail, which `classify_model_error` reads.
+
 Three consequences, each of which was a small decision:
 
 - **The port is `model_handle`, not `gguf_model`** (renamed 2026-09-18).

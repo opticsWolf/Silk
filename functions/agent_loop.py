@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import random
 import time
 from collections.abc import Generator, Iterator
 from typing import Any, Optional
@@ -38,7 +39,9 @@ from .hooks import (
     HOOK_ON_OUTPUT_VALIDATE_ERROR,
 )
 from .compaction import REASON_OVERFLOW, REASON_PRESSURE
-from .model_errors import OVERFLOW, classify_model_error
+from weave.logger import get_logger
+
+from .model_errors import OVERFLOW, RETRYABLE, classify_model_error
 from .protocols import AgentEngine, ToolRegistry
 from .reflection import is_retryable_tool_error, parse_tool_error
 from .stream_events import (
@@ -61,7 +64,23 @@ from .usage_limits import UsageLimitExceeded
 
 #: Hard ceiling on model requests per run — replaces an unbounded loop so a
 #: model that keeps emitting tool calls cannot spin forever.
+log = get_logger("SilkAgentLoop")
+
 DEFAULT_MAX_ROUNDS = 16
+
+#: Transient model-request failures (429, 5xx, timeouts) retried per round.
+#: Small on purpose: these are the errors that pass on their own, and a
+#: backend that is still refusing after three spaced attempts is down, not
+#: busy. Retries do not spend a round -- `max_rounds` bounds the model's
+#: reasoning steps, and a network hiccup is not one -- but they do spend
+#: the request budget, which is what ultimately bounds them (D15).
+DEFAULT_TRANSIENT_RETRIES = 3
+
+#: Backoff before retry N: 1s, 2s, 4s, each with up to 25% jitter. Jitter
+#: because several agents in a fan-out hit the same rate limit at the same
+#: moment, and retrying in lockstep rebuilds the spike that caused it.
+RETRY_BACKOFF_BASE_S = 1.0
+RETRY_BACKOFF_JITTER = 0.25
 
 AgentEvent = Any  # union of the Event* dataclasses in stream_events
 
@@ -90,12 +109,14 @@ class AgentLoop:
         output_validator: Any = None,
         max_rounds: int = DEFAULT_MAX_ROUNDS,
         compactor: Any = None,
+        transient_retries: int = DEFAULT_TRANSIENT_RETRIES,
     ) -> None:
         self.engine = engine
         self.toolbox = toolbox
         self.output_validator = output_validator
         self.compactor = compactor
         self.max_rounds = max_rounds
+        self.transient_retries = max(0, int(transient_retries))
         # Run bookkeeping surfaced to the after_run hook (set defensively
         # here: the finally in run() may fire before the first round).
         self._final_text = ""
@@ -320,17 +341,65 @@ class AgentLoop:
             outcome=OUTCOME_USAGE_LIMITED,
         )
 
+    def _retry_transient(
+        self, event: EventError, attempt: int, emitted: int,
+    ) -> bool:
+        """Whether to ask the same backend again, after waiting.
+
+        Three conditions, and all of them matter:
+
+        * The error says "ask again". ``classify_model_error`` already
+          separates a 429 or a 503 from a bad request; the default for an
+          unrecognised message is terminal, so a new wording costs one
+          attempt at most rather than looping.
+        * Attempts remain. A backend still refusing after three spaced
+          tries is down, not busy.
+        * **Nothing was emitted this attempt.** A retry after deltas have
+          reached the consumer would replay a partial answer on top of one
+          the caller already rendered. Mid-stream failures are therefore
+          terminal here and fall through to the ordinary path -- the run
+          keeps whatever text it got instead of doubling it.
+
+        Reports nothing itself. The caller has already yielded the event
+        and fired the error hook, and classifying a second time here would
+        fire it twice for one failure.
+        """
+        if event.kind != RETRYABLE or emitted:
+            return False
+        if attempt >= self.transient_retries:
+            return False
+        delay = RETRY_BACKOFF_BASE_S * (2 ** attempt)
+        delay += delay * RETRY_BACKOFF_JITTER * random.random()
+        log.info(
+            f"Model request failed transiently ({event.error}); retrying in "
+            f"{delay:.1f}s (attempt {attempt + 2} of "
+            f"{self.transient_retries + 1})."
+        )
+        # Interruptible: a stop requested during the wait must not be held
+        # for the whole backoff, and the longest is several seconds.
+        deadline = time.time() + delay
+        while time.time() < deadline:
+            if self.engine.stop_requested():
+                return False
+            time.sleep(min(0.1, max(0.0, deadline - time.time())))
+        return True
+
     def _recover_or_stop(
-        self, event: EventError, round_index: int,
+        self, event: EventError, round_index: int, *, reported: bool = False,
     ) -> Generator[AgentEvent, None, bool]:
         """Report a failed model request; say whether to retry the round.
+
+        ``reported`` when the caller already yielded this event -- the
+        transient-retry path does, because it has to decide before it can
+        know whether the failure is the run's last word.
 
         Only a *classified* overflow is retried (D40). Every other stream
         failure -- a dead server above all -- ends the run here, because
         answering it with a summarization request against the same backend
         spends a prefill to fail twice.
         """
-        yield event
+        if not reported:
+            yield event
         if event.kind != OVERFLOW or self._overflow_compacted:
             return False
         # force: the backend has already measured the prompt against its own
@@ -394,26 +463,53 @@ class AgentLoop:
             self._rounds_used = _round + 1
             self._emit(HOOK_BEFORE_MODEL_REQUEST, round_index=_round)
             full_text = ""
-            try:
-                for delta in engine.stream_response(gen_params):
-                    full_text += delta
-                    total_tokens += 1
-                    elapsed = time.time() - start_time
-                    yield EventDelta(
-                        delta=delta,
-                        total_tokens=total_tokens,
-                        cumulative_text=full_text,
-                        tps=(total_tokens / elapsed) if elapsed > 0 else 0.0,
+            # A transient failure is retried in place rather than by
+            # `continue`: a 429 is not a reasoning step, and spending a
+            # round on it would shorten the agent's actual thinking.
+            attempt = 0
+            failed: Any = None
+            while True:
+                emitted = 0
+                try:
+                    for delta in engine.stream_response(gen_params):
+                        full_text += delta
+                        emitted += 1
+                        total_tokens += 1
+                        elapsed = time.time() - start_time
+                        yield EventDelta(
+                            delta=delta,
+                            total_tokens=total_tokens,
+                            cumulative_text=full_text,
+                            tps=(total_tokens / elapsed) if elapsed > 0 else 0.0,
+                        )
+                except UsageLimitExceeded as exc:
+                    yield from self._stopped_by_budget(
+                        exc, "output_tokens", total_tokens, start_time,
+                        tool_calls_made, tool_results_made,
                     )
-            except UsageLimitExceeded as exc:
-                yield from self._stopped_by_budget(
-                    exc, "output_tokens", total_tokens, start_time,
-                    tool_calls_made, tool_results_made,
-                )
-                return
-            except Exception as exc:
+                    return
+                except Exception as exc:
+                    failed = exc
+                else:
+                    break
+
+                # Classified, hooked and reported exactly once, here --
+                # both decisions below read the same verdict.
+                failure = self._model_failed(failed, _round)
+                yield failure
+                if not self._retry_transient(failure, attempt, emitted):
+                    break
+                attempt += 1
+                # The partial answer is dropped with the attempt that
+                # produced it: nothing was emitted, so nothing downstream
+                # has seen it, and carrying it into the retry would
+                # prepend a fragment to a fresh response.
+                full_text = ""
+                failed = None
+
+            if failed is not None:
                 if (yield from self._recover_or_stop(
-                    self._model_failed(exc, _round), _round,
+                    failure, _round, reported=True,
                 )):
                     continue
                 return

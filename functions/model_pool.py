@@ -183,8 +183,17 @@ class OpenAICompatClient:
                     detail = exc.read().decode("utf-8", "replace")
                 except Exception:  # noqa: BLE001
                     pass
-            log.error(f"Llama server request failed: {detail or exc}")
-            raise RuntimeError(f"Failed to reach local Llama server: {exc}") from exc
+            log.error(f"Model server request failed: {detail or exc}")
+            # Name the endpoint, not "the local server": this client is also
+            # how the Model Endpoint node reaches a remote one (D45/D86), and
+            # "local" sent a reader to the wrong machine. The server's own
+            # words go in too -- `classify_model_error` reads this string to
+            # tell a rate limit from a bad request, and the detail is often
+            # where it actually says so.
+            raise RuntimeError(
+                f"Failed to reach model server at {self.base_url}: {exc}"
+                + (f" -- {detail.strip()[:200]}" if detail.strip() else "")
+            ) from exc
 
         if not stream:
             try:
