@@ -362,7 +362,8 @@ class GGUFLNode(ThreadedManualNode):
             if path.is_file():
                 probe["exists"] = True
                 probe["size_gb"] = path.stat().st_size / (1024 ** 3)
-                probe["max_ctx"], probe["layers"] = self._read_meta(path_str)
+                (probe["max_ctx"], probe["layers"],
+                 probe["tools"]) = self._read_meta(path_str)
         except Exception as exc:
             log.debug(f"GGUF probe failed for {path_str}: {exc}")
         self._probe_ready.emit(path_str, probe)
@@ -372,18 +373,22 @@ class GGUFLNode(ThreadedManualNode):
         """Header-only parse; falls back to gguf.GGUFReader for exotic files."""
         try:
             meta = read_gguf_meta(path_str)
-            return meta.context_length, meta.block_count
+            return meta.context_length, meta.block_count, meta.supports_tools
         except Exception as exc:
             log.debug(f"Manual GGUF header parse failed ({exc}); trying gguf package.")
         try:
-            return read_gguf_meta_fallback(path_str)
+            # The fallback reads no chat template: `gguf.GGUFReader` is only
+            # reached for files the manual parser rejects, and None there
+            # means "unknown", which costs the fence protocol rather than a
+            # refused request.
+            return (*read_gguf_meta_fallback(path_str), None)
         except ImportError:
             log.warning("The 'gguf' python package is missing, so context "
                         "and layer limits are not clamped to this model's "
                         "own header; the spinbox defaults stand instead.")
         except Exception as exc:
             log.debug(f"Failed to read GGUF metadata for limit clamping: {exc}")
-        return None, None
+        return None, None, None
 
     @Slot(str, object)
     def _apply_probe(self, path_str: str, probe: Dict[str, Any]) -> None:
@@ -618,11 +623,28 @@ class GGUFLNode(ThreadedManualNode):
             self.compute_error.emit(f"Server failed to start: {exc}")
             return {"model_obj": None}
 
+        # Read from the file rather than the probe cache: the cache lives on
+        # the GUI thread, and this is the worker. One KV-section scan against
+        # a model we are about to spend seconds loading is not worth a
+        # cross-thread handshake to avoid.
+        supports_tools = self._read_meta(model_path)[2]
+        if supports_tools is None:
+            log.debug(
+                f"{Path(model_path).name} carries no chat template, so tool "
+                f"support is unknown; the agent will use the fence protocol."
+            )
+
         pool_info = self.model_pool.snapshot()
         # Update KV cache progress bar on the GUI thread via evaluate-finished.
         self._pending_pool_info = pool_info
-        return {"model_obj": {"backend": "gguf", "pool": self.model_pool},
-                "pool_info": pool_info}
+        # `GraphEngine.supports_native_tools` reads this, and
+        # `select_transport` turns it into a protocol. Absent rather than
+        # False when unknown, so the handle says "not established" instead
+        # of asserting something the file never claimed.
+        handle: Dict[str, Any] = {"backend": "gguf", "pool": self.model_pool}
+        if supports_tools:
+            handle["supports_tools"] = True
+        return {"model_obj": handle, "pool_info": pool_info}
 
     def cleanup(self) -> None:
         log.info(f"Node Cleanup: Releasing resources for {self.node_name}")

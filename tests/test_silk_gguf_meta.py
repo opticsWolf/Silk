@@ -102,3 +102,121 @@ def test_rejects_unsupported_version(tmp_path):
     p.write_bytes(GGUF_MAGIC + struct.pack(">I", 3) + b"\x00" * 32)
     with pytest.raises(ValueError, match="unsupported GGUF version"):
         read_gguf_meta(str(p))
+
+
+# ── the chat template, and the protocol it decides ───────────────────────
+
+def _tool_template() -> str:
+    """The shape a tool-aware template has: given tools, renders calls."""
+    return ("{% if tools %}{{ tools | tojson }}{% endif %}"
+            "{% for m in messages %}{% if m.tool_calls %}"
+            "{{ m.tool_calls }}{% endif %}{% endfor %}")
+
+
+def test_a_tool_aware_template_is_detected(tmp_path):
+    blob = pack_header(tensor_count=0, kv_count=3)
+    blob += pack_kv_int("qwen3.context_length", 32768)
+    blob += pack_kv_int("qwen3.block_count", 48)
+    blob += _pack_kv_str("tokenizer.chat_template", _tool_template())
+    p = tmp_path / "m.gguf"
+    p.write_bytes(blob)
+
+    assert read_gguf_meta(str(p)).supports_tools is True
+
+
+def test_a_plain_chat_template_is_not_tool_aware(tmp_path):
+    blob = pack_header(tensor_count=0, kv_count=3)
+    blob += pack_kv_int("qwen3.context_length", 4096)
+    blob += pack_kv_int("qwen3.block_count", 32)
+    blob += _pack_kv_str(
+        "tokenizer.chat_template",
+        "{% for m in messages %}{{ m.role }}: {{ m.content }}{% endfor %}")
+    p = tmp_path / "m.gguf"
+    p.write_bytes(blob)
+
+    assert read_gguf_meta(str(p)).supports_tools is False
+
+
+def test_no_template_at_all_is_unknown_not_false(tmp_path):
+    """An embedding model or a vision projector carries none.
+
+    None and False are different answers: False is "read it, it cannot",
+    None is "there was nothing to read". Both end up on the fence
+    protocol, but only one of them is a statement about the model.
+    """
+    blob = pack_header(tensor_count=0, kv_count=2)
+    blob += pack_kv_int("bert.context_length", 512)
+    blob += pack_kv_int("bert.block_count", 12)
+    p = tmp_path / "m.gguf"
+    p.write_bytes(blob)
+
+    assert read_gguf_meta(str(p)).supports_tools is None
+
+
+def test_half_a_marker_is_not_a_tool_template(tmp_path):
+    """"tools" turns up in prose; the conservative read is the cheap one.
+
+    A false positive costs a run -- a server handed a `tools` field its
+    template cannot render refuses the request outright -- while a false
+    negative only falls back to fences.
+    """
+    blob = pack_header(tensor_count=0, kv_count=1)
+    blob += _pack_kv_str(
+        "tokenizer.chat_template",
+        "{# these tools are not that kind of tools #}{{ messages }}")
+    p = tmp_path / "m.gguf"
+    p.write_bytes(blob)
+
+    assert read_gguf_meta(str(p)).supports_tools is False
+
+
+def test_an_enormous_template_is_capped_not_swallowed(tmp_path):
+    """A corrupt length field must not become a memory spike."""
+    from silk.functions.gguf_meta import _TEMPLATE_CAP
+
+    template = _tool_template() + ("x" * (_TEMPLATE_CAP + 4096))
+    blob = pack_header(tensor_count=0, kv_count=2)
+    blob += _pack_kv_str("tokenizer.chat_template", template)
+    blob += pack_kv_int("llama.block_count", 32)
+    p = tmp_path / "m.gguf"
+    p.write_bytes(blob)
+
+    meta = read_gguf_meta(str(p))
+    assert meta.supports_tools is True, "the markers are near the top"
+    assert meta.block_count == 32, (
+        "and the stream is still positioned for the next KV: a capped read "
+        "must skip the remainder, not leave the parser inside the string"
+    )
+
+
+def test_an_unreadable_later_kv_costs_the_hint_not_the_limits(tmp_path):
+    """The values already read outlive a KV the parser cannot walk.
+
+    Before the chat template was wanted, this loop stopped as soon as it
+    had context and layers, so a later exotic KV was never reached. Now
+    that it scans on, that KV must not retroactively break a file the
+    probe used to read fine.
+    """
+    blob = pack_header(tensor_count=999, kv_count=3)
+    blob += pack_kv_int("qwen2.context_length", 32768)
+    blob += pack_kv_int("qwen2.block_count", 48)
+    kb = b"corrupt.key"
+    blob += struct.pack("<Q", len(kb)) + kb + struct.pack("<I", 0xDEAD)
+    p = tmp_path / "m.gguf"
+    p.write_bytes(blob)
+
+    meta = read_gguf_meta(str(p))
+    assert (meta.context_length, meta.block_count) == (32768, 48)
+    assert meta.supports_tools is None, "unknown, and the fence protocol"
+
+
+def test_a_file_that_is_unreadable_from_the_start_still_raises(tmp_path):
+    """Salvage is for a tail, not for a file that was never parseable."""
+    blob = pack_header(tensor_count=0, kv_count=1)
+    kb = b"corrupt.key"
+    blob += struct.pack("<Q", len(kb)) + kb + struct.pack("<I", 0xDEAD)
+    p = tmp_path / "m.gguf"
+    p.write_bytes(blob)
+
+    with pytest.raises(ValueError):
+        read_gguf_meta(str(p))

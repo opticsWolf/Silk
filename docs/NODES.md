@@ -16,6 +16,13 @@ the previous model when re-run).
 | out | `model_obj` | `model_handle` |
 | out | `pool_info` | `dict` (live pool stats) |
 
+The handle carries `supports_tools` when the GGUF's own chat template was
+written for structured tool calling — the probe reads the template and
+looks for it being handed a `tools` list *and* rendering `tool_calls`.
+That is what puts the agent on the native protocol instead of the text
+fence. A file with no chat template at all (an embedding model, a vision
+projector) is "unknown" rather than "no", and unknown uses fences.
+
 ### Model Endpoint — `nodes/model_endpoint.py` (`SilkModelEndpointNode`)
 A model that runs somewhere else, wired where the loader would go (D45).
 Emits the same `model_handle`, so Agent, Agent Spec and the ToolBox's

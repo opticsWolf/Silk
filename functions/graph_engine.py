@@ -104,10 +104,14 @@ class GraphEngine:
     def supports_native_tools(self) -> bool:
         """Whether the loaded model advertises structured tool calling.
 
-        Opt-in via the model handle (``supports_tools``), set by the loader
-        from the GGUF's chat-template metadata. Defaults to False so any model
-        without a tool-aware template keeps using the fence protocol. This is
-        the gate ``select_transport`` consults to choose the native path.
+        Opt-in via the model handle (``supports_tools``): the GGUF Loader
+        reads the file's chat template and sets it when the template was
+        written for structured calling; the Model Endpoint node exposes it
+        as a checkbox, because a remote server's template is not ours to
+        read. Defaults to False, so a model whose support could not be
+        established keeps using the fence protocol -- which works
+        everywhere, where a `tools` field a server cannot render is a
+        refused request. This is the gate ``select_transport`` consults.
         """
         return bool(self._handle.get("supports_tools", False))
 

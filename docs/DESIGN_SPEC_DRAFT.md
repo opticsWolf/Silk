@@ -1786,11 +1786,30 @@ and the text-fence protocol. The endpoint node exposes it as a checkbox
 defaulting to off, because the two failure modes are not symmetric:
 native-on against a server that refuses `tools` kills the run, while
 native-off only degrades a capable model to fences. Worth recording that the
-**GGUF loader has never set this key** -- `supports_native_tools`'s docstring
-describes a chat-template probe that was never written -- so until now the
-native transport was unreachable outside its own tests. The endpoint node is
-the first handle that can turn it on, and the first place it has run against
-a real server.
+**GGUF loader had never set this key** -- `supports_native_tools`'s docstring
+described a chat-template probe that was never written -- so the native
+transport was unreachable outside its own tests until the endpoint node gave
+it a first way on.
+
+That probe now exists (`functions/gguf_meta.py`). It reads
+`tokenizer.chat_template` and asks whether the template is handed a `tools`
+list *and* renders `tool_calls`; both markers, because a false positive costs
+a run -- a server given a `tools` field its template cannot render refuses the
+request -- while a false negative only falls back to fences. A file with no
+template at all reports `None`, which is a different answer from `False`: one
+says the model cannot, the other that nothing was there to ask. Both use
+fences; only one is a statement about the model.
+
+Wanting the template changes the probe's cost, because it sits after the
+tokenizer's arrays: a few KB becomes a scan of the KV section, measured at
+74-190 ms across real 4-16 GB models and flat in file size. It runs on the
+loader's existing daemon thread, and the loader re-reads it on the worker
+before building the handle rather than reaching for the GUI thread's probe
+cache. The scan also gave up the old early exit, which had quietly protected
+the parse from exotic KVs *after* the two limit keys; a value type the parser
+cannot walk past is now caught and costs the tool hint alone, while a
+truncated file still raises, because the caller's answer to that is
+`gguf.GGUFReader`.
 
 Three consequences, each of which was a small decision:
 
