@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
-"""GraphEngine — a Qt-free AgentEngine over a Weave ``gguf_model`` handle.
+"""GraphEngine — a Qt-free AgentEngine over a Weave ``model_handle`` handle.
 
-The Weave graph passes models around as the ``gguf_model`` port payload:
+The Weave graph passes models around as the ``model_handle`` port payload:
 ``{"backend": "gguf", "model": Llama}`` or ``{"backend": "gguf",
 "pool": GGUFModelPool}``. GraphEngine adapts that handle to the
 :class:`~.protocols.AgentEngine` contract the AgentLoop consumes: it owns
@@ -33,7 +33,7 @@ _GEN_PARAM_KEYS = (
 
 
 class GraphEngine:
-    """Single-turn chat engine over a ``gguf_model`` graph handle."""
+    """Single-turn chat engine over a ``model_handle`` graph handle."""
 
     def __init__(
         self,
@@ -44,8 +44,8 @@ class GraphEngine:
         reflection_config: Optional[ReflectionConfig] = None,
         session_id: str = "default",
     ) -> None:
-        if not isinstance(model_handle, dict) or model_handle.get("backend") != "gguf":
-            raise ValueError("GraphEngine needs a gguf_model handle dict.")
+        if not isinstance(model_handle, dict) or not model_handle.get("backend"):
+            raise ValueError("GraphEngine needs a model_handle dict.")
         self._handle = model_handle
         self.system_prompt = system_prompt
         # History is caller-owned state (the Agent node persists it); we
@@ -370,7 +370,7 @@ class GraphEngine:
             return model, pool
         model = self._handle.get("model")
         if model is None:
-            raise RuntimeError("gguf_model handle has neither 'model' nor 'pool'.")
+            raise RuntimeError("model_handle has neither 'model' nor 'pool'.")
         return model, None
 
     def _begin_measured_request(self, pool: Any) -> None:

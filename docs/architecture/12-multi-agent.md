@@ -44,8 +44,8 @@ isn't warranted.
 
 ### `functions/subagent.py`
 
-**`AgentSpec`** — a runnable agent bundle: a `model_handle` (a `gguf_model`
-dict), an optional `toolset` (a `ToolBox` from `build_toolset`; `None` means
+**`AgentSpec`** — a runnable agent bundle: a `model_handle` (the port payload
+of that name), an optional `toolset` (a `ToolBox` from `build_toolset`; `None` means
 pure chat, where tool fences are treated as final output), a `role`,
 `name`/`description` (what the orchestrator advertises to its model),
 `system_prompt`, `max_rounds`, `gen_params`, and an optional

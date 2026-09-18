@@ -81,7 +81,7 @@ The node suite splits cleanly into four families:
 - **Human surface**: Sign-Off node (turn-boundary), plus — per D48 — the Agent
   node's own stream UI (mid-run). See R6.
 
-Nine custom port types (`nodes/silk_ports.py`): `gguf_model`, `silk_toolbox`,
+Nine custom port types (`nodes/silk_ports.py`): `model_handle`, `silk_toolbox`,
 `silk_toolset`, `silk_role`, `file_permissions`, `dirpath_list`, `toolchains`,
 `agent_message`, `silk_agents`.
 
@@ -190,7 +190,7 @@ consistency-per-line documentation available anywhere in the project.
 ### R3. Live handles on wires are fine — but only under a rule nobody has stated
 
 **Observation.** Four Silk port types carry live Python objects: `silk_toolbox`,
-`silk_toolset`, `silk_role`, `gguf_model` (pool handle). Meanwhile D51 rejected
+`silk_toolset`, `silk_role`, `model_handle` (pool handle). Meanwhile D51 rejected
 passing a seam handle over a wire on the grounds that "the wire transports
 nothing; values on wires stop being inspectable, serializable or replayable."
 Both are right — but the spec never says *why* both are right, so every future

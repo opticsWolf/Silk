@@ -34,7 +34,7 @@ from weave.logger import get_logger
 from weave.widgets.markdown_widget import MarkdownWidget
 
 from .silk_ports import (  # noqa: F401
-    GGUF_MODEL_TYPE,
+    MODEL_HANDLE_TYPE,
     SILK_AGENTS_TYPE,
     SILK_ROLE_TYPE,
     SILK_TOOLSET_TYPE,
@@ -75,7 +75,7 @@ class SilkAgentSpecNode(ActiveNode):
         super().__init__(title=title, **kwargs)
 
         # ── Ports ──
-        self.add_input("model_obj", datatype="gguf_model")
+        self.add_input("model_obj", datatype="model_handle")
         self.add_input("toolset", datatype="silk_toolset")
         self.add_input("role", datatype="silk_role")
         # Speciality text is widget-backed but also wireable (BIDIRECTIONAL).
@@ -152,11 +152,11 @@ class SilkAgentSpecNode(ActiveNode):
 
         model_handle = inputs.get("model_obj")
         if not isinstance(model_handle, dict) or not (
-            model_handle.get("backend") == "gguf"
+            model_handle.get("backend")
             and ("model" in model_handle or "pool" in model_handle)
         ):
             self._sync_status = (
-                "No valid GGUF model connected — this worker is not added."
+                "No valid model connected — this worker is not added."
             )
             return {"agents": chain}
 

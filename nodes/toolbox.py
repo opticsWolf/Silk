@@ -105,7 +105,7 @@ class SilkToolBoxNode(ActiveNode):
         # agent's chat model. Unwired, recall is keyword search, which is
         # what it has always been -- so this port adds a capability and
         # never changes one.
-        self.add_input("embedding_model", datatype="gguf_model")
+        self.add_input("embedding_model", datatype="model_handle")
         self.add_output("toolbox", datatype="silk_toolbox")
         self.add_output("root_paths", datatype="dirpath_list")
 

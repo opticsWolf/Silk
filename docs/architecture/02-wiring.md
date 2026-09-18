@@ -12,7 +12,8 @@ Silk ToolBox ─(silk_toolbox)─► Silk ToolSet ─(silk_toolset)─► Silk R
 and the agent's other connections:
 
 ```
-GGUF Loader ─(gguf_model)─────────────► Silk Agent
+GGUF Loader ─(model_handle)─────────────► Silk Agent
+  or Model Endpoint ─(model_handle)───► Silk Agent   (remote, D45)
 Inference Settings ─(dict)─────────────► Silk Agent
 Silk Agent.outbox (agent_message) ───► (another) Silk Agent.inbox
 Silk Agent.events (dict) ────────────► Hook Monitor / Plan Viewer /
@@ -20,7 +21,7 @@ Silk Agent.events (dict) ────────────► Hook Monitor / 
 ```
 
 Full per-node port tables are in [NODES.md](../NODES.md); the custom port
-datatypes (`gguf_model`, `silk_toolbox`, `silk_toolset`, `silk_role`,
+datatypes (`model_handle`, `silk_toolbox`, `silk_toolset`, `silk_role`,
 `silk_agents`, `agent_message`, `file_permissions`, `dirpath_list`,
 `toolchains`) are declared once in `nodes/silk_ports.py`. The load-bearing
 pieces:
@@ -44,7 +45,7 @@ pieces:
 - `Silk Role` (`nodes/role.py`) binds a toolset selection to instructions,
   gen-params, and hooks, emitting a `Role` handle (`silk_role`).
 - `Silk Agent` (`nodes/agent.py`) runs the `AgentLoop` on a worker thread.
-  Inputs: `model_obj` (`gguf_model`), `toolset` (`silk_toolset`), `role`
+  Inputs: `model_obj` (`model_handle`), `toolset` (`silk_toolset`), `role`
   (`silk_role`), `system_prompt`, `user_prompt`, `inbox`
   (`agent_message`), `run` (`exec` pulse), `inference_settings`
   (`dict`). Outputs: `response` (`string`), `outbox` (`agent_message`),
@@ -56,7 +57,8 @@ pieces:
   port, and a monitor that does not recognise a type still logs it.
 - `GGUF Loader` (`nodes/gguf_loader.py`) loads a `.gguf` into the shared
   model pool (thread-safe; ejects the previous model on re-run) and emits a
-  `gguf_model` handle (`{"backend": "gguf", "pool": <pool>}`) plus live
+  `model_handle` (`{"backend": "gguf", "pool": <pool>}`, or
+  `{"backend": "openai", "model": <client>}` from a Model Endpoint) plus live
   `pool_info` (`dict`).
 - `Inference Settings` (`nodes/inference_settings.py`) emits a `gen_params`
   `dict` (sampling/decoding knobs).

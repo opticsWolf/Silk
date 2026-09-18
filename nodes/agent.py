@@ -52,7 +52,7 @@ from weave.logger import get_logger
 from weave.widgets.markdown_widget import MarkdownWidget
 from weave.widgets.sync_button import SyncButton
 
-from .silk_ports import GGUF_MODEL_TYPE, SILK_ROLE_TYPE, SILK_TOOLSET_TYPE  # noqa: F401
+from .silk_ports import MODEL_HANDLE_TYPE, SILK_ROLE_TYPE, SILK_TOOLSET_TYPE  # noqa: F401
 from ..functions.agent_loop import AgentLoop, DEFAULT_MAX_ROUNDS
 from ..functions.event_sink import RunSink
 from ..functions.approval import bind_run_seam, headless_refusals
@@ -181,7 +181,7 @@ class SilkAgentNode(ThreadedManualNode):
         self._emit_event: Optional[Any] = None
 
         # ── Ports ──
-        self.add_input("model_obj", datatype="gguf_model")
+        self.add_input("model_obj", datatype="model_handle")
         self.add_input("toolset", datatype="silk_toolset")
         self.add_input("role", datatype="silk_role")
         self.add_input("system_prompt", datatype="string")
@@ -603,13 +603,16 @@ class SilkAgentNode(ThreadedManualNode):
     def compute(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
         self._last_run_ok = False
         model_handle = inputs.get("model_obj")
+        # Any backend, not "gguf": the loop needs something that answers
+        # `create_chat_completion`, and a remote endpoint answers it as
+        # well as a local pool does (D45).
         if (
             not isinstance(model_handle, dict)
-            or model_handle.get("backend") != "gguf"
+            or not model_handle.get("backend")
             or not ("model" in model_handle or "pool" in model_handle)
         ):
-            self.compute_error.emit("No valid GGUF model connected.")
-            return {"response": "Error: no valid GGUF model connected."}
+            self.compute_error.emit("No valid model connected.")
+            return {"response": "Error: no valid model connected."}
 
         prompt = str(inputs.get("user_prompt") or "").strip()
         # Clean A2A: fall back to an inbound message when no direct prompt is

@@ -2,7 +2,7 @@
 
 ### `functions/graph_engine.py` — `GraphEngine`
 
-The production `AgentEngine`. It adapts a Weave `gguf_model` handle to the
+The production `AgentEngine`. It adapts a Weave `model_handle` to the
 protocol:
 
 - Owns the conversation history (a list of role/content dicts) and appends
@@ -38,8 +38,45 @@ A server-based model pool so several agents can share loaded GGUF models:
   set raises there and then, rather than as a 401 three layers away. The
   embedder posts to `/v1/embeddings` on the same server and takes those
   same headers from `pool.client`, so one connect means one resolution.
-- A pool-backed `gguf_model` handle carries `"pool": pool` instead of
+- A pool-backed `model_handle` carries `"pool": pool` instead of
   `"model": Llama`; the engine checks a model out/in around a request.
+
+### `functions/model_endpoint.py` — the remote half of D45
+
+The engine calls `create_chat_completion` and nothing else, so a model
+running somewhere else is the same graph with the subprocess removed.
+`OpenAICompatClient` was already the whole client surface built from a
+bare `base_url`; what was missing was a way to *say* one on the canvas.
+
+- `PROVIDERS` — presets (LM Studio, llama.cpp server, Ollama, vLLM,
+  LiteLLM proxy, OpenRouter, Custom). Defaults, never constraints: the
+  useful endpoint is often someone's own proxy on a port nobody can guess.
+- `normalise_base_url` — a bare host gains `/v1`, because that is what a
+  person copies out of a UI. A URL that already has a path is left exactly
+  alone; guessing at a reverse proxy is how you get a 404 that reads like
+  an outage.
+- `list_models` / `connect` — the endpoint is asked before a handle is
+  handed out, and nothing raises: an unreachable endpoint is an ordinary
+  state of the world, and a node that throws on it takes the graph
+  evaluation with it. Refusals name the thing to change.
+- The handle is `{"backend": "openai", "model": client, "model_alias": ...,
+  "base_url": ..., "provider": ...}`, plus `context_length` **only when it
+  is known** — `GraphEngine.context_length()` prefers an explicit value and
+  returns `None` otherwise, and `None` is honest: compaction (D25) needs a
+  real denominator.
+
+`backend` names the *wire format*, not a vendor, because that is the only
+thing the engine cares about. Everything downstream widened from
+`== "gguf"` to "has a backend and a client": the port validator, the
+engine, the Agent and Agent Spec nodes, `AgentSpec.is_runnable` and
+`embedder_for` — which routes a client carrying a `base_url` to the HTTP
+embedder rather than the in-process one, by asking the object what it is
+instead of asking the handle what it was called.
+
+**No litellm dependency.** Everything above speaks the OpenAI chat API.
+For providers that do not, run litellm's *proxy* and point the node at it:
+provider translation stays in a process that specialises in it, and the
+model layer stays one wire format wide.
 
 ### `functions/gguf_meta.py`
 

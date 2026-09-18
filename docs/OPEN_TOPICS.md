@@ -20,6 +20,16 @@ contract). G21 keeps only its inherent residue: both halves are built
 (`import_reach.py`, `mcp_reach.py`), and what stays is that a heuristic
 over someone else's tool names cannot promise completeness.
 
+**2026-09-18.** D45's remote half is built -- a **Model Endpoint** node
+emits the same handle the GGUF Loader does, so a hosted or
+separately-run model wires anywhere the loader wires (D86). The port
+that carried it was renamed `gguf_model` -> `model_handle`, without a
+migration by decision: a graph saved before the rename loses that one
+wire. G15's measurement is now runnable against a *remote* backend as
+well, which does not unblock it -- the numbers are still someone's to
+produce -- but removes "I have no second backend" as a reason it cannot
+be run.
+
 Legend:
 
 - **GAP** — the machinery exists (or is declared) but the implementation

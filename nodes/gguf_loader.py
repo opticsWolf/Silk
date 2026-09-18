@@ -36,7 +36,7 @@ from weave.widgets.path_picker import PathPickerWidget
 log = get_logger("GGUFLNode")
 
 # Shared silk port types (registered idempotently on import).
-from .silk_ports import GGUF_MODEL_TYPE  # noqa: F401
+from .silk_ports import MODEL_HANDLE_TYPE  # noqa: F401
 
 # Qt-free pool + dependency guards live in functions/ so the GraphEngine and
 # headless tests can share them. The pool now runs a background
@@ -101,7 +101,7 @@ class GGUFLNode(ThreadedManualNode):
         # 1. Add Graph Ports
         self.add_input("model_path", datatype="filepath")
         self.add_input("prompt_cache", datatype="filepath")
-        self.add_output("model_obj", datatype="gguf_model")
+        self.add_output("model_obj", datatype="model_handle")
         self.add_output("pool_info", datatype="dict")  # live pool stats
 
         self.model_pool: Optional[GGUFModelPool] = None

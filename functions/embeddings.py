@@ -186,10 +186,22 @@ def embedder_for(handle: Any, name: str = "") -> Optional[Embedder]:
     here; whether the model behind it can actually embed is answered by
     the first request, not guessed from the file name.
     """
-    if not isinstance(handle, dict) or handle.get("backend") != "gguf":
+    if not isinstance(handle, dict) or not handle.get("backend"):
         return None
     model = handle.get("model")
     if model is not None:
+        # A remote endpoint's client is an HTTP proxy, not a Llama: it has
+        # a base_url and no `create_embedding`, so it embeds over
+        # /v1/embeddings like the pool's server does. Asking the object
+        # what it is beats asking the handle what it was called.
+        base_url = getattr(model, "base_url", "")
+        if base_url:
+            get_headers = getattr(model, "headers", None)
+            return ServerEmbedder(
+                base_url, name=name or str(handle.get("model_alias") or ""),
+                model_alias=str(getattr(model, "model_alias", "") or "default"),
+                headers=get_headers() if callable(get_headers) else None,
+            )
         return LlamaEmbedder(model, name=name)
     pool = handle.get("pool")
     base_url = getattr(pool, "base_url", "") if pool is not None else ""

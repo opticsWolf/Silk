@@ -13,8 +13,53 @@ the previous model when re-run).
 |---|---|---|
 | in | `model_path` | `filepath` |
 | in | `prompt_cache` | `filepath` |
-| out | `model_obj` | `gguf_model` |
+| out | `model_obj` | `model_handle` |
 | out | `pool_info` | `dict` (live pool stats) |
+
+### Model Endpoint — `nodes/model_endpoint.py` (`SilkModelEndpointNode`)
+A model that runs somewhere else, wired where the loader would go (D45).
+Emits the same `model_handle`, so Agent, Agent Spec and the ToolBox's
+embedding input take it without knowing the difference.
+
+| Direction | Port | Type |
+|---|---|---|
+| in | `provider` | `string` (preset key) |
+| in | `base_url` | `string` |
+| in | `model` | `string` |
+| in | `credential` | `string` (a **name**, never a value) |
+| in | `context_length` | `int` (0 = unknown) |
+| out | `model_obj` | `model_handle` |
+
+Presets: LM Studio, llama.cpp server, Ollama, vLLM, LiteLLM proxy,
+OpenRouter, and **Custom** for anything else that serves
+`/v1/chat/completions` — a hosted gateway, your own proxy, a colleague's
+box. A preset only fills *empty* fields, so "this provider, my host" is
+one edit rather than a re-type.
+
+Three behaviours worth knowing:
+
+- **It asks before it answers.** Connecting probes `/models`, so a wrong
+  URL or an unset key shows up here rather than as a failed agent run
+  three nodes downstream. One model advertised and none chosen means that
+  one is used; several means it asks, because picking one of nine on a
+  metered gateway is picking someone's bill. A model the endpoint does not
+  list is still used — gateways route unlisted aliases — and logged.
+- **The credential is a name** (D22). The field holds the name of an
+  environment variable or of an entry in `~/.weave/silk/secrets.json`,
+  resolved at connect time into the request headers. The status line says
+  the name resolved; it never shows the value, and neither does the handle,
+  so a saved graph stays shareable.
+- **An unknown context window stays unknown.** Most endpoints do not
+  advertise one. Compaction (D25) needs a real denominator, so 0 means
+  "off" rather than a guess that would summarise too early or overflow.
+
+**Why there is no litellm dependency.** OpenRouter, LM Studio, vLLM,
+Ollama and litellm's own proxy all speak the OpenAI chat API, so one HTTP
+client reaches all of them. For providers that do not (Anthropic, Gemini,
+Bedrock), run the **litellm proxy** and point this node at it: the
+provider-specific translation stays in a process that specialises in it,
+and Silk's model layer stays one wire format wide. An Unsloth fine-tune is
+an ordinary model once vLLM or llama.cpp is serving it.
 
 ## Tool assembly
 
@@ -165,7 +210,7 @@ Qt-free `AgentLoop`. Exec `run`/`done` ports let agents chain into networks.
 
 | Direction | Port | Type |
 |---|---|---|
-| in | `model_obj` | `gguf_model` |
+| in | `model_obj` | `model_handle` |
 | in | `toolset` | `silk_toolset` |
 | in | `role` | `silk_role` |
 | in | `system_prompt` | `string` |
@@ -237,7 +282,7 @@ specs to build a `silk_agents` roster.
 
 | Direction | Port | Type |
 |---|---|---|
-| in | `model_obj` | `gguf_model` |
+| in | `model_obj` | `model_handle` |
 | in | `toolset` | `silk_toolset` |
 | in | `role` | `silk_role` |
 | in | `description` | `string` |
@@ -322,7 +367,7 @@ agent's `done` port to `refresh` for updates without polling.
 
 | Direction | Port | Type |
 |---|---|---|
-| in | `model_obj` | `gguf_model` |
+| in | `model_obj` | `model_handle` |
 | in | `refresh` | `exec` |
 | out | `pool_status` | `dict` |
 
@@ -343,7 +388,7 @@ agent's `done` port to `refresh` for updates without polling.
               [Silk Role]         [Silk Agent Spec] ─agents─▶ [Silk Orchestrator]
                      │ silk_role              ▲ (worker bundles)
                      ▼                        │
-  [GGUF Loader] ─gguf_model─▶ [Silk Agent] ───┘
+  [GGUF Loader] ─model_handle─▶ [Silk Agent] ───┘
        │                        │
        └─ pool_info             ├─ events ─┬─▶ [Hook Monitor]
                                 │          ├─▶ [Chat Log Display]

@@ -93,14 +93,14 @@ class AgentSpec:
     usage_limits: Optional[Any] = None
 
     def is_runnable(self) -> tuple[bool, str]:
-        """Whether the spec has a usable GGUF model handle."""
+        """Whether the spec has a usable model handle -- of any backend."""
         h = self.model_handle
         if not (
             isinstance(h, dict)
-            and h.get("backend") == "gguf"
+            and h.get("backend")
             and ("model" in h or "pool" in h)
         ):
-            return False, "no valid GGUF model in agent spec"
+            return False, "no valid model in agent spec"
         return True, ""
 
 

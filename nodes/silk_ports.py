@@ -6,7 +6,13 @@ types from here; each registration is guarded so re-imports and test
 re-runs never trip the PortRegistry duplicate check.
 
 Types:
-    gguf_model        dict handle {"backend": "gguf", "model": Llama | "pool": pool}
+    model_handle      dict handle {"backend": <name>, "model": client |
+                      "pool": pool}. One port for every backend: a local
+                      llama.cpp pool ("gguf") and a remote
+                      OpenAI-compatible endpoint ("openai") are the same
+                      wire, because the Agent needs a client, not a
+                      provenance. Renamed from `gguf_model` 2026-09-18,
+                      which named one case of it.
     silk_toolbox      a live ToolBox registry instance (the full catalog)
     silk_toolset      a ToolBox restricted to a selection — the only tool
                       surface an Agent node accepts
@@ -35,17 +41,36 @@ def _permissions_label(value) -> str:
     return f"<Permissions: {len(grants.entries)} paths>"
 
 
-if "gguf_model" not in PortRegistry._by_name:
+def _model_handle_label(value) -> str:
+    """Port label for a model handle: which backend, and which model.
+
+    The backend is named because the difference matters to whoever reads
+    the canvas -- a local pool and a hosted endpoint have different costs,
+    different failure modes and, for a paid endpoint, a different bill.
+    """
+    if not isinstance(value, dict):
+        return str(value)
+    backend = str(value.get("backend") or "?")
+    alias = value.get("model_alias") or value.get("model_path") or ""
+    name = str(alias).rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+    return f"<{backend}: {name}>" if name else f"<{backend} model>"
+
+
+if "model_handle" not in PortRegistry._by_name:
     PortRegistry.register(
-        name="gguf_model",
+        name="model_handle",
         python_type=dict,
         color_index=232,
         type_id=None,
         default=lambda: {},
+        # A backend *name* rather than a fixed one: the port's job is to
+        # refuse a handle nothing can generate from, not to keep a list of
+        # who may generate. A client lives under "model" (one client, the
+        # remote case) or "pool" (checked out per session, the local one).
         validator=lambda v: bool(v) and isinstance(v, dict)
-                            and v.get("backend") == "gguf"
+                            and bool(v.get("backend"))
                             and ("model" in v or "pool" in v),
-        formatter=lambda v: "<GGUF Pool/Model>" if isinstance(v, dict) else str(v),
+        formatter=_model_handle_label,
         casts_to={},
     )
 
@@ -226,7 +251,7 @@ if "silk_plan" not in PortRegistry._by_name:
         casts_to={},
     )
 
-GGUF_MODEL_TYPE = PortRegistry._by_name["gguf_model"]
+MODEL_HANDLE_TYPE = PortRegistry._by_name["model_handle"]
 SILK_TOOLBOX_TYPE = PortRegistry._by_name["silk_toolbox"]
 SILK_TOOLSET_TYPE = PortRegistry._by_name["silk_toolset"]
 SILK_ROLE_TYPE = PortRegistry._by_name["silk_role"]

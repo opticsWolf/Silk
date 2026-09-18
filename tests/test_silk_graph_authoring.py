@@ -393,7 +393,7 @@ def test_a_display_or_internal_widget_is_not_a_setting():
 
 
 def test_an_object_port_needs_a_connection():
-    for datatype in ("gguf_model", "silk_toolset", "file_permissions",
+    for datatype in ("model_handle", "silk_toolset", "file_permissions",
                      "dirpath_list", "dict", "list"):
         refusal = check_settable(_port(datatype=datatype), "n1")
         assert refusal is not None and "connection" in refusal.reason, (
@@ -446,7 +446,7 @@ def test_a_value_the_widget_cannot_hold_is_refused_with_the_type(datatype,
 
 
 def test_an_unsettable_type_never_coerces():
-    value, refusal = coerce_value("gguf_model", "some/path")
+    value, refusal = coerce_value("model_handle", "some/path")
     assert value is None and refusal is not None
 
 

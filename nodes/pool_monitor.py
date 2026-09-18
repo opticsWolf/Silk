@@ -103,7 +103,7 @@ class PoolMonitorNode(ThreadedManualNode):
         super().__init__(title=title, **kwargs)
 
         # ── Ports ──
-        self.add_input("model_obj", datatype="gguf_model")
+        self.add_input("model_obj", datatype="model_handle")
         self.add_input("refresh", datatype="exec")  # pulse from any agent's done port
         self.add_output("pool_status", datatype="dict")
 

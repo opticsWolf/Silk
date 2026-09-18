@@ -1012,8 +1012,16 @@ Three things this needs, all small and all currently absent:
    preset (D22). The resolver moved to `functions/credentials.py`, since MCP
    servers and model backends must not each own a copy of that rule. The
    embedder takes the resolved headers off `pool.client` rather than
-   resolving again. What remains of D45 is the pool holding N *named*
-   backends and routing at `checkout()`.
+   resolving again. **Done 2026-09-18**, the other half of it: a remote
+   backend is now something a person can *say* -- the **Model Endpoint**
+   node (`functions/model_endpoint.py`, `nodes/model_endpoint.py`) emits
+   the same handle the loader does, so Agent, Agent Spec and the ToolBox's
+   embedding input take it without knowing the difference. See **D86** for
+   the wire-format decision under it. What remains of D45 is the pool
+   holding N *named* backends and routing at `checkout()` -- one endpoint
+   per node covers "use a hosted model"; the pool covers "spread N agents
+   across N backends", which is D47 mechanism C and still waits on the
+   measurement.
 3. **`snapshot()` returns a single flat dict** (`model_pool.py:323`) with
    `total_instances: 1` and zeroed KV fields. It becomes per-backend, and it
    is the natural place to surface the D41 prefix-reuse rate.
@@ -1758,6 +1766,44 @@ something an install has rather than opts into.
 (working dir), preserving T4/D58 discovery. Whether *history* shares that
 file or lives in a per-user memory ledger (`~/.weave/silk/memory.db`) for
 cross-project recall is open (§22 q7).
+
+**D86. One wire format, and the proxy is how everything else reaches it
+(D45, the remote half).** OpenRouter, LM Studio, a llama.cpp or vLLM
+server, Ollama and litellm's own proxy all speak the OpenAI chat API, and
+the engine calls `create_chat_completion` and nothing else. So Silk reaches
+all of them with the HTTP client it already had, and **takes no litellm
+dependency**: the SDK would wrap what `OpenAICompatClient` does, and every
+provider it adds would add a shape the model layer has to know about. For
+providers that do *not* speak the API -- Anthropic, Gemini, Bedrock -- the
+answer is litellm's **proxy**, pointed at by URL like any other endpoint.
+Provider-specific translation then lives in a process that specialises in
+it, and Silk's model layer stays one wire format wide.
+
+Three consequences, each of which was a small decision:
+
+- **The port is `model_handle`, not `gguf_model`** (renamed 2026-09-18).
+  The old name described the one case that existed; every gate that read
+  `backend == "gguf"` now reads "has a backend and a client" -- the port
+  validator, `GraphEngine`, the Agent and Agent Spec nodes,
+  `AgentSpec.is_runnable`, and `embedder_for`, which routes a client
+  carrying a `base_url` to the HTTP embedder by asking the *object* what it
+  is rather than the handle what it was called. `backend` names the wire
+  format because that is the only thing the engine cares about; the
+  provider is recorded beside it, for the person reading the canvas.
+  **No migration**: a graph saved before the rename loses that one wire and
+  is re-connected by hand, which was the accepted cost of not carrying two
+  names for one thing.
+- **The endpoint is asked before the handle is handed out.** Connecting
+  probes `/models`. A wrong URL or an unset key costs one request here,
+  instead of the run three nodes downstream -- where it reads as the agent
+  having failed. One model advertised and none chosen uses that one; several
+  asks, because picking one of nine on a metered gateway is picking
+  someone's bill. A model the endpoint does not list is used anyway and
+  logged, because gateways route aliases they do not advertise.
+- **An unknown context window stays unknown.** Endpoints rarely advertise
+  one, so the field is explicit and 0 means "no denominator". Compaction
+  (D25) then stays off, which is the safe half of the trade: a guessed
+  window either summarises turns nobody needed to lose, or overflows.
 
 **D85. The event firehose gets its file, and the call is made (closes
 T7).** D65 keeps the firehose out of the ledger; T7 has been holding the
