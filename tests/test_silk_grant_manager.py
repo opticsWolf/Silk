@@ -21,6 +21,7 @@ def _run_checks() -> None:
     import tempfile
     from pathlib import Path
 
+    from lace import DockManager
     from PySide6.QtWidgets import QApplication, QMainWindow
 
     app = QApplication.instance() or QApplication([])  # noqa: F841
@@ -35,7 +36,31 @@ def _run_checks() -> None:
         store = GrantStore(Path(tmp))
         pins = PinStore(Path(tmp))
         window = QMainWindow()
+        docks = DockManager(window)
+        window.setCentralWidget(docks.root_container())
+        window.dock_manager = docks
         dock = GrantManagerDock.attach(window, store=store, pins=pins)
+
+        # -- the dock is in the host's docking system, not beside it --
+        assert docks.find_dock_widget("SilkGrantManagerDock") is dock, (
+            "Lace looks a dock up by objectName, and so does a restored "
+            "layout: a dock the manager cannot name is a dock the next "
+            "start cannot put back"
+        )
+        assert dock.dock_area_widget() is not None, "placed, not orphaned"
+        print("PASS the dock is placed in the host's dock manager")
+
+        # -- and a host with no manager is told, not humoured --
+        try:
+            GrantManagerDock.attach(QMainWindow(), store=store, pins=pins)
+        except RuntimeError as exc:
+            assert "dock manager" in str(exc)
+        else:
+            raise AssertionError(
+                "a Lace dock with nowhere to go is invisible, not placed; "
+                "attach must refuse rather than return a dock nobody sees"
+            )
+        print("PASS attaching without a dock manager refuses loudly")
 
         # ── nothing granted says so ──
         assert not dock._empty.isHidden()

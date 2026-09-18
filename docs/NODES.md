@@ -194,7 +194,8 @@ grants nothing rather than falling back to the wider one.
 **A blocked agent also shows on the canvas and in the Decision Inbox**
 (D59): the node switches its pulse to a heartbeat while waiting, and
 `DecisionInboxDock.attach(main_window)` opens a dock listing every waiting
-agent with the same four answers. Answering there calls this node's own
+agent with the same four answers (a Lace dock: the host window needs its
+`dock_manager`, which a Weave host sets up). Answering there calls this node's own
 handler — the dock owns no seam, and closing it strands nothing.
 
 **The approval prompt is part of this node** (spec D48/I12). When a gated
@@ -224,7 +225,8 @@ pins are listed and revocable in the same dock as the grants.
 **"Always allow" can be taken back** (§22 q1). A durable grant lives in
 `~/.weave/silk/grants.json`, keyed by resolved project root, and
 `GrantManagerDock.attach(main_window)` opens a dock that lists every one of
-them with Revoke per grant and Revoke all per project. It re-reads the file
+them with Revoke per grant and Revoke all per project (a Lace dock, like the
+Decision Inbox, so the host window needs its `dock_manager`). It re-reads the file
 each refresh, so a revocation takes effect on the next gated call in every
 window; it can only remove, never grant. Run-scoped grants are not listed —
 they end with the run.

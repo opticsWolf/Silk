@@ -436,7 +436,12 @@ blocked on a decision switches its pulse to `heartbeat` and back
 afterwards, so "who needs me" is visible in the graph itself.
 
 Silk has no plugin-side hook into the host window, so
-`DecisionInboxDock.attach(main_window)` is how it gets added.
+`DecisionInboxDock.attach(main_window)` is how it gets added. It is a
+**Lace** dock (2026-09-18, following Weave's move off `QDockWidget`), so
+`attach` places it in the host's `dock_manager` and refuses when there is
+none -- a Lace dock is a plain `QWidget`, and a dock with nowhere to go is
+invisible rather than misplaced. Its `objectName` is what a saved layout is
+restored by, so it is fixed, not derived from the title.
 
 **Why a dock and not a node.** D51 rejected an approval node: a node
 cannot answer a question asked from inside `compute()`, because inputs
@@ -496,4 +501,5 @@ Three properties, and they are the whole design:
 A dock and not a node, for D51/I12's reason: process-wide state, no inputs,
 no outputs, nothing a graph could wire to it. Like the Decision Inbox it is
 mounted by the host via `GrantManagerDock.attach(main_window)`, since Silk
-has no plugin-side hook into the window.
+has no plugin-side hook into the window -- and, like the Inbox, it is a Lace
+dock that refuses to attach without the host's `dock_manager`.

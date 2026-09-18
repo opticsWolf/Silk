@@ -37,7 +37,6 @@ from typing import Any, Optional
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QDockWidget,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -46,6 +45,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+from lace import DockManager, DockWidget, DockWidgetArea
 
 from weave.logger import get_logger
 
@@ -66,7 +67,7 @@ ANSWERS: tuple[tuple[str, bool, str], ...] = (
 EMPTY_TEXT = "No agent is waiting on you."
 
 
-class DecisionInboxDock(QDockWidget):
+class DecisionInboxDock(DockWidget):
     """Every waiting agent, in one panel."""
 
     #: Registry changes arrive on whichever thread the run was on; this
@@ -76,44 +77,63 @@ class DecisionInboxDock(QDockWidget):
     def __init__(self, parent: Optional[QWidget] = None, *,
                  registry: Optional[DecisionRegistry] = None) -> None:
         super().__init__("Decision Inbox", parent)
+        # Lace keys a saved layout by objectName, so this name is the
+        # dock's identity across restarts rather than decoration -- the
+        # rule Weave's tests/test_dock_identity.py pins. No allowed-areas
+        # call has a counterpart here: Lace models placement per manager
+        # and every area is reachable.
         self.setObjectName("SilkDecisionInbox")
-        self.setAllowedAreas(Qt.DockWidgetArea.AllDockWidgetAreas)
 
         self._registry = registry if registry is not None else REGISTRY
 
         body = QWidget()
-        self._layout = QVBoxLayout(body)
-        self._layout.setContentsMargins(6, 6, 6, 6)
-        self._layout.setSpacing(6)
-        self._layout.addStretch(1)
+        # NOT ``self._layout``: Lace's DockWidget keeps the dock's own
+        # layout there and ``set_widget`` adds the content to it, so
+        # reusing the name makes the dock add the scroll area to the
+        # body *inside* that scroll area -- a layout loop that hangs the
+        # process. It is the one name this class and DockWidget share.
+        self._body_layout = QVBoxLayout(body)
+        self._body_layout.setContentsMargins(6, 6, 6, 6)
+        self._body_layout.setSpacing(6)
+        self._body_layout.addStretch(1)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setWidget(body)
-        self.setWidget(scroll)
+        self.set_widget(scroll)
 
         self._empty = QLabel(EMPTY_TEXT)
         self._empty.setWordWrap(True)
-        self._layout.insertWidget(0, self._empty)
+        self._body_layout.insertWidget(0, self._empty)
 
         self._rows: list[QWidget] = []
         self.changed.connect(self.refresh, Qt.ConnectionType.QueuedConnection)
         self._unsubscribe = self._registry.subscribe(self.changed.emit)
+        # Lace closes a dock through ``toggle_view`` -> ``closed`` and
+        # delivers no QCloseEvent, so the unsubscribe hangs off the signal.
+        # Weave's NodeDockAdapter hooks the same seam for the same reason.
+        self.closed.connect(self.detach)
         self.refresh()
 
     # ── Lifetime ──────────────────────────────────────────────────────
 
     def closeEvent(self, event) -> None:      # noqa: N802 - Qt override
-        """Closing the dock unsubscribes; the node's own surface remains.
+        """A host closing the dock as a plain widget unsubscribes too.
 
-        Nothing about a pending decision belongs to this dock, so closing
-        it while an agent waits must not strand the run -- it just takes
-        away the shortcut.
+        Lace's own close arrives as the ``closed`` signal, not as a
+        QCloseEvent, so this covers the other idiom -- ``dock.close()``
+        from host code. ``detach`` is idempotent, so both firing is fine.
         """
         self.detach()
         super().closeEvent(event)
 
     def detach(self) -> None:
+        """Stop listening; the node's own surface remains.
+
+        Nothing about a pending decision belongs to this dock, so closing
+        it while an agent waits must not strand the run -- it just takes
+        away the shortcut.
+        """
         if self._unsubscribe is not None:
             self._unsubscribe()
             self._unsubscribe = None
@@ -123,7 +143,7 @@ class DecisionInboxDock(QDockWidget):
     def refresh(self) -> None:
         """Rebuild the rows from the registry. **Main thread.**"""
         for row in self._rows:
-            self._layout.removeWidget(row)
+            self._body_layout.removeWidget(row)
             row.setParent(None)
             row.deleteLater()
         self._rows.clear()
@@ -135,7 +155,7 @@ class DecisionInboxDock(QDockWidget):
         )
         for index, entry in enumerate(entries):
             row = self._build_row(entry)
-            self._layout.insertWidget(index + 1, row)
+            self._body_layout.insertWidget(index + 1, row)
             self._rows.append(row)
 
     def _build_row(self, entry: DecisionEntry) -> QWidget:
@@ -215,15 +235,33 @@ class DecisionInboxDock(QDockWidget):
 
     @classmethod
     def attach(cls, main_window: Any, *,
-               area: Qt.DockWidgetArea = Qt.DockWidgetArea.RightDockWidgetArea,
+               area: DockWidgetArea = DockWidgetArea.right,
+               manager: Optional[DockManager] = None,
                registry: Optional[DecisionRegistry] = None,
                ) -> "DecisionInboxDock":
-        """Create the dock and add it to *main_window*.
+        """Create the dock and place it in the host's Lace dock manager.
 
         Silk has no plugin-side hook into the host's window, so the host
         (or a user's startup script) calls this. Kept here rather than in
         the app so the dock ships with the thing it serves.
+
+        The manager is the host's ``dock_manager`` -- the same attribute
+        Weave's panel commands read -- or an explicit *manager*. There is
+        deliberately **no fallback** to ``QMainWindow.addDockWidget``: a
+        Lace dock is a plain ``QWidget``, so a host without a manager
+        would get a dock that is constructed, wired, subscribed and
+        invisible, and the caller would be told it worked. Refusing is
+        the honest answer.
         """
+        docks = manager if manager is not None else getattr(
+            main_window, "dock_manager", None)
+        if docks is None:
+            raise RuntimeError(
+                "DecisionInboxDock.attach needs a Lace dock manager: pass "
+                "manager=..., or set window.dock_manager the way a Weave "
+                "host does. A Lace dock cannot be placed with "
+                "QMainWindow.addDockWidget."
+            )
         dock = cls(main_window, registry=registry)
-        main_window.addDockWidget(area, dock)
+        docks.add_dock_widget(area, dock)
         return dock

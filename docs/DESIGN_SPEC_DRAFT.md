@@ -1464,7 +1464,9 @@ and back. The node's prompt is a composite container the NodePanel clone
 strategies do not cover, so rows are built and forward the action -- the
 same thing `wire_action_proxy` does for a mirrored button. Silk has no
 plugin-side hook into the host window, so the dock is attached by the
-host via `DecisionInboxDock.attach(main_window)`.
+host via `DecisionInboxDock.attach(main_window)` -- into the host's Lace
+`dock_manager` since 2026-09-18, with no fallback placement: see the dock
+rule in `docs/architecture/18-design-rules.md`.
 
 **D60. Identity plumbing -- what the surfaces above actually require.**
 
@@ -2368,7 +2370,8 @@ with no `.git`. A quarantine record can name a build now.
    (tool, project, when, by whom, note); what was missing was the surface,
    and it is a **dock** -- `widgets/grant_manager.py`, grouped by project,
    Revoke per row and Revoke all per project, mounted by the host with
-   `GrantManagerDock.attach(main_window)` like the Decision Inbox and for
+   `GrantManagerDock.attach(main_window)` (into the host's Lace dock
+   manager) like the Decision Inbox and for
    D51/I12's reason. It reads the file on every refresh rather than a
    cached set, so it shows what another window granted and what it revokes
    is seen by the next gated call anywhere; it inherits the store's

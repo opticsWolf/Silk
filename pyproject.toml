@@ -23,6 +23,11 @@ requires-python = ">=3.12"
 dependencies = [
     "PySide6>=6.7",       # the node layer; functions/ is importable without it
     "pydantic>=2.7",      # tool arg models, file grants, hook configs
+    # The docking system Weave's chrome is built on. Silk's two docks (the
+    # Decision Inbox, the Grant Manager) are Lace docks, so they need it
+    # directly; a Weave host already brings it, and it is declared here for
+    # the same reason PySide6 is -- what a module imports, its project says.
+    "lace-dock>=0.7",
 ]
 
 [project.optional-dependencies]

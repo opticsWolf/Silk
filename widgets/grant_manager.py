@@ -46,7 +46,6 @@ from typing import Any, Optional
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QDockWidget,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -56,6 +55,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+from lace import DockManager, DockWidget, DockWidgetArea
 
 from weave.logger import get_logger
 
@@ -89,7 +90,7 @@ def _stamp(grant: Grant) -> str:
         return "unknown"
 
 
-class GrantManagerDock(QDockWidget):
+class GrantManagerDock(DockWidget):
     """List durable grants and take them back.
 
     Owns no run state and no seam: it reads a file and deletes from it.
@@ -104,35 +105,42 @@ class GrantManagerDock(QDockWidget):
                  store: Optional[GrantStore] = None,
                  pins: Optional[PinStore] = None) -> None:
         super().__init__("Granted Permissions", parent)
+        # Lace keys a saved layout by objectName, so this name is the
+        # dock's identity across restarts rather than decoration.
         self.setObjectName("SilkGrantManagerDock")
         self._store = store if store is not None else GrantStore()
         self._pins = pins if pins is not None else PinStore()
         self._rows: list[QWidget] = []
 
         body = QWidget(self)
-        self._layout = QVBoxLayout(body)
-        self._layout.setContentsMargins(8, 8, 8, 8)
-        self._layout.setSpacing(6)
+        # NOT ``self._layout``: Lace's DockWidget keeps the dock's own
+        # layout there and ``set_widget`` adds the content to it, so
+        # reusing the name makes the dock add the scroll area to the
+        # body *inside* that scroll area -- a layout loop that hangs the
+        # process. It is the one name this class and DockWidget share.
+        self._body_layout = QVBoxLayout(body)
+        self._body_layout.setContentsMargins(8, 8, 8, 8)
+        self._body_layout.setSpacing(6)
 
         self._path = QLabel(str(self._store.path), body)
         self._path.setWordWrap(True)
         self._path.setTextInteractionFlags(
             Qt.TextInteractionFlag.TextSelectableByMouse)
-        self._layout.addWidget(self._path)
+        self._body_layout.addWidget(self._path)
 
         self._empty = QLabel(EMPTY_TEXT, body)
         self._empty.setWordWrap(True)
-        self._layout.addWidget(self._empty)
+        self._body_layout.addWidget(self._empty)
 
         self._entries = QVBoxLayout()
         self._entries.setSpacing(4)
-        self._layout.addLayout(self._entries)
-        self._layout.addStretch(1)
+        self._body_layout.addLayout(self._entries)
+        self._body_layout.addStretch(1)
 
         area = QScrollArea(self)
         area.setWidgetResizable(True)
         area.setWidget(body)
-        self.setWidget(area)
+        self.set_widget(area)
 
         self.refresh()
 
@@ -277,15 +285,26 @@ class GrantManagerDock(QDockWidget):
 
     @classmethod
     def attach(cls, main_window: Any, *,
-               area: Qt.DockWidgetArea = Qt.DockWidgetArea.RightDockWidgetArea,
+               area: DockWidgetArea = DockWidgetArea.right,
+               manager: Optional[DockManager] = None,
                store: Optional[GrantStore] = None,
                pins: Optional[PinStore] = None) -> "GrantManagerDock":
-        """Create the dock and add it to *main_window*.
+        """Create the dock and place it in the host's Lace dock manager.
 
         Silk has no plugin-side hook into the host's window, so the host
         (or a user's startup script) calls this -- the same arrangement
-        the Decision Inbox uses.
+        the Decision Inbox uses, including its refusal to place a dock
+        with no manager to place it in.
         """
+        docks = manager if manager is not None else getattr(
+            main_window, "dock_manager", None)
+        if docks is None:
+            raise RuntimeError(
+                "GrantManagerDock.attach needs a Lace dock manager: pass "
+                "manager=..., or set window.dock_manager the way a Weave "
+                "host does. A Lace dock cannot be placed with "
+                "QMainWindow.addDockWidget."
+            )
         dock = cls(main_window, store=store, pins=pins)
-        main_window.addDockWidget(area, dock)
+        docks.add_dock_widget(area, dock)
         return dock
