@@ -67,9 +67,16 @@ if "model_handle" not in PortRegistry._by_name:
         # refuse a handle nothing can generate from, not to keep a list of
         # who may generate. A client lives under "model" (one client, the
         # remote case) or "pool" (checked out per session, the local one).
-        validator=lambda v: bool(v) and isinstance(v, dict)
-                            and bool(v.get("backend"))
-                            and ("model" in v or "pool" in v),
+        # Absence passes: an empty dict is what ``default()`` returns and
+        # ``None`` is what an unwired port delivers, so refusing them
+        # would make the type call every disconnected instance of itself
+        # invalid. Only a *populated* handle is held to the rest, which
+        # is the same shape ``silk_toolbox`` below uses for ``None``.
+        # ``functions/model_fallback.py`` asks a stricter question -- is
+        # this runnable -- and correctly rejects the empty case.
+        validator=lambda v: v is None or (isinstance(v, dict)
+                            and (not v or (bool(v.get("backend"))
+                                 and ("model" in v or "pool" in v)))),
         formatter=_model_handle_label,
         casts_to={},
     )

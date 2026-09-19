@@ -65,7 +65,10 @@ FALLBACK_KEY = "fallbacks"
 def _is_handle(value: Any) -> bool:
     """Whether *value* is something a GraphEngine could run against.
 
-    The same test the ``model_handle`` port applies, repeated here because
+    Stricter than the ``model_handle`` port's validator, deliberately:
+    the port accepts absence, because an unwired port must not be invalid
+    by its own type's definition, while this asks whether there is
+    something to *run*. The test is repeated rather than imported because
     this module is Qt-free and must not import the port registry.
     """
     return (isinstance(value, dict) and bool(value.get("backend"))

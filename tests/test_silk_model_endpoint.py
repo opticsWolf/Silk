@@ -193,6 +193,22 @@ def test_the_port_accepts_either_backend():
     assert not port.validator("http://host/v1"), "a URL is not a handle"
 
 
+def test_the_port_accepts_its_own_default():
+    """An unwired handle must not be invalid by its own type.
+
+    ``default()`` returns ``{}`` and an unconnected port delivers
+    ``None``; a validator that refused either would call every
+    disconnected instance of the type malformed.
+    """
+    from weave.node.port_registry import PortRegistry
+
+    import silk.nodes.silk_ports  # noqa: F401
+
+    port = PortRegistry._by_name["model_handle"]
+    assert port.validator(port.default_factory())
+    assert port.validator(None)
+
+
 def test_the_port_label_names_the_backend_and_the_model():
     from weave.node.port_registry import PortRegistry
 
