@@ -50,13 +50,18 @@ def test_an_unknown_preset_is_custom_rather_than_an_error():
 
 @pytest.fixture
 def serves(monkeypatch):
-    """Make the endpoint advertise a given model list."""
-    def _install(models, err=None):
+    """Make the endpoint advertise a given model list.
+
+    ``specs`` carries the rest of a ``/models`` entry -- pricing, context
+    length, supported parameters -- for the tests that care what `connect`
+    reads out of it.
+    """
+    def _install(models, err=None, specs=None):
         def fake(base_url, headers=None, timeout=None):
             if err is not None:
                 raise RuntimeError(err)
-            return list(models)
-        monkeypatch.setattr(me, "list_models", fake)
+            return {name: dict((specs or {}).get(name, {})) for name in models}
+        monkeypatch.setattr(me, "list_model_specs", fake)
     return _install
 
 

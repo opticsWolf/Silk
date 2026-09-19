@@ -20,6 +20,7 @@ import time
 from collections.abc import Iterator
 from typing import Any, Optional
 
+from .pricing import price_from_handle
 from .prefix_guard import PrefixGuard
 from .reflection import ReflectionConfig
 from .usage_limits import UsageLimits
@@ -60,6 +61,11 @@ class GraphEngine:
         # Native structured tool calling (opt-in; see supports_native_tools).
         # When armed by the AgentLoop, stream_response passes ``tools=`` to
         # the model and captures the structured tool_calls it emits.
+        #: What this model costs per token, when the endpoint quoted one
+        #: (D88). None means unpriced, which is not the same as free --
+        #: `can_price` is how the loop tells a cost cap it cannot bind.
+        self._price = price_from_handle(model_handle)
+
         self._native_tools_enabled = False
         self._tool_schemas: list[dict[str, Any]] = []
         self._pending_tool_calls: list[dict[str, Any]] = []
@@ -100,6 +106,20 @@ class GraphEngine:
         self.history.append(entry)
 
     # -- AgentEngine: native tool calling (optional capability) --------------
+
+    def can_price(self) -> bool:
+        """Whether spend on this model can be measured at all.
+
+        False for a local server and for any gateway that does not quote a
+        price. The distinction matters only to a run that set a cost cap:
+        a ceiling over an unmeasurable quantity is not a ceiling, so the
+        loop refuses the run rather than letting it look capped (D88).
+        """
+        return self._price is not None
+
+    def price_description(self) -> str:
+        """The per-million prices as a person compares them, or a denial."""
+        return self._price.describe() if self._price else "price not quoted"
 
     def supports_native_tools(self) -> bool:
         """Whether the loaded model advertises structured tool calling.
@@ -290,6 +310,14 @@ class GraphEngine:
         # of a fan-out, so check-then-record lets several of them pass the
         # same check and collectively overrun the cap (spec D52.4).
         self.usage_limits.reserve_request()
+        # The prompt is charged before it is sent, because after it is sent
+        # the money is spent whatever we decide. Output is charged per
+        # token below, which is what lets a cost cap stop a run mid-answer
+        # the way an output-token cap already does (D88).
+        if self._price is not None:
+            self.usage_limits.reserve_cost(
+                self.count_prompt_tokens() * self._price.input_per_token
+            )
 
         model, pool = self._checkout()
         self._begin_measured_request(pool)
@@ -338,6 +366,10 @@ class GraphEngine:
                     continue
                 token_count += 1
                 self.usage_limits.reserve_output_tokens(1)
+                if self._price is not None:
+                    self.usage_limits.reserve_cost(
+                        self._price.output_per_token
+                    )
                 full_text += text
                 yield text
 

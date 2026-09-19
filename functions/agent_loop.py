@@ -60,7 +60,7 @@ from .stream_events import (
     EventUsageLimit,
 )
 from .tool_transport import FenceTransport, ToolTransport, select_transport
-from .usage_limits import UsageLimitExceeded
+from .usage_limits import UsageLimitExceeded, format_cost
 
 #: Hard ceiling on model requests per run — replaces an unbounded loop so a
 #: model that keeps emitting tool calls cannot spin forever.
@@ -229,6 +229,9 @@ class AgentLoop:
             self._emit(
                 HOOK_BEFORE_RUN, user_input=user_input, settings=dict(gen_params),
             )
+            if (refusal := self._unpriceable_cost_cap()) is not None:
+                yield from refusal
+                return
             yield from self._run_rounds(
                 gen_params, tool_calls_made, tool_results_made, start_time,
             )
@@ -241,6 +244,55 @@ class AgentLoop:
                 rounds=self._rounds_used,
                 elapsed_s=time.time() - start_time,
             )
+
+    def _unpriceable_cost_cap(
+        self,
+    ) -> Optional[Generator[AgentEvent, None, None]]:
+        """Refuse a run whose cost cap cannot bind, or ``None`` to proceed.
+
+        A cost limit is the one cap whose denominator lives outside Silk:
+        tokens and requests are counted here, but money is what someone
+        else charges, and only the endpoint can say the rate. A local
+        server quotes nothing, and neither do some gateways.
+
+        Running anyway would be the worse failure. The person set a
+        ceiling; a ceiling that silently cannot bind reads exactly like
+        one that is not being approached, and they find out from the bill.
+        Refusing costs them one edit -- remove the cap, or point at an
+        endpoint that quotes a price -- and it happens before any money is
+        spent. This is the same stance `parse_budget` takes when it
+        refuses to read a misspelled key as "unlimited" (D88).
+        """
+        limits = getattr(self.engine, "usage_limits", None)
+        cap = getattr(limits, "cost_limit", None)
+        if not cap:
+            return None
+        can_price = getattr(self.engine, "can_price", None)
+        if callable(can_price) and can_price():
+            return None
+
+        def _refuse() -> Generator[AgentEvent, None, None]:
+            message = (
+                f"This run sets a cost limit of {format_cost(cap)}, but the "
+                f"model does not quote a price, so the limit cannot be "
+                f"measured against anything. Remove the cost limit, or use "
+                f"an endpoint that advertises pricing. A local model has no "
+                f"price to quote -- and no bill either."
+            )
+            log.warning(f"Run refused: {message}")
+            yield EventUsageLimit(limit_type="cost", scope="own")
+            yield EventError(
+                error=message, context="usage_limits", recoverable=False,
+            )
+            yield EventRunResult(
+                text="", tokens=0, input_tokens=0, tps=0.0,
+                finish_reason="usage_limit",
+                tool_calls=[], tool_results=[],
+                usage_stats={"total_tokens": 0},
+                outcome=OUTCOME_USAGE_LIMITED,
+            )
+
+        return _refuse()
 
     def _model_failed(
         self, error: Any, round_index: int, *, truncated: bool = False,

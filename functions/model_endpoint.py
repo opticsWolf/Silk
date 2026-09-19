@@ -45,12 +45,14 @@ from weave.logger import get_logger
 
 from .credentials import missing_credential
 from .model_pool import OpenAICompatClient
+from .pricing import price_from_spec
 
 __all__ = [
     "BACKEND",
     "PROVIDERS",
     "Provider",
     "connect",
+    "list_model_specs",
     "list_models",
     "normalise_base_url",
     "provider_for",
@@ -158,6 +160,21 @@ def list_models(base_url: str, headers: Optional[Dict[str, str]] = None,
     list is a real answer -- some proxies serve chat without listing --
     and is not an error here; the caller decides what to do with it.
     """
+    return sorted(list_model_specs(base_url, headers, timeout))
+
+
+def list_model_specs(
+    base_url: str, headers: Optional[Dict[str, str]] = None,
+    timeout: float = PROBE_TIMEOUT_S,
+) -> Dict[str, Dict[str, Any]]:
+    """Everything ``/models`` said, keyed by id.
+
+    The same one request that answers "which models" also answers, on a
+    gateway that bothers to say, what each costs, how large its context
+    is and whether it takes a ``tools`` field. Asking once and keeping
+    the whole entry means the node never has to make a second request to
+    learn something the first one already carried.
+    """
     url = f"{normalise_base_url(base_url)}/models"
     request = urllib.request.Request(url, headers=headers or {})
     try:
@@ -186,13 +203,13 @@ def list_models(base_url: str, headers: Optional[Dict[str, str]] = None,
 
     rows = payload.get("data") if isinstance(payload, dict) else payload
     if not isinstance(rows, list):
-        return []
-    found: List[str] = []
+        return {}
+    found: Dict[str, Dict[str, Any]] = {}
     for row in rows:
         name = row.get("id") if isinstance(row, dict) else row
         if isinstance(name, str) and name:
-            found.append(name)
-    return sorted(found)
+            found[name] = row if isinstance(row, dict) else {}
+    return found
 
 
 def connect(
@@ -234,9 +251,10 @@ def connect(
         return None, missing_credential(name), []
 
     try:
-        models = list_models(url, headers=client.headers(), timeout=timeout)
+        specs = list_model_specs(url, headers=client.headers(), timeout=timeout)
     except RuntimeError as exc:
         return None, str(exc), []
+    models = sorted(specs)
 
     chosen = str(model or "").strip()
     if not chosen:
@@ -269,6 +287,31 @@ def connect(
         "base_url": url,
         "provider": provider_for(provider).key,
     }
+
+    # What the endpoint already told us about this model, from the same
+    # request that listed it. Each of these is *offered*, never imposed:
+    # a value typed into the node wins, because the person editing it can
+    # see something the catalogue cannot -- a proxy that rewrites the
+    # model, a window they want to hold below the maximum.
+    spec = specs.get(chosen) or {}
+    price = price_from_spec(spec, source=provider_for(provider).key)
+    if price is not None:
+        handle["pricing"] = {
+            "input": price.input_per_token,
+            "output": price.output_per_token,
+            "currency": price.currency,
+            "source": price.source,
+        }
+    if int(context_length or 0) <= 0:
+        advertised = spec.get("context_length")
+        if isinstance(advertised, int) and advertised > 0:
+            context_length = advertised
+    if not supports_tools:
+        # The gateway's own answer to the question the checkbox asks. Only
+        # ever turns it *on*: a person who unticked it did so for a
+        # reason, and a catalogue cannot see a proxy in the way.
+        params = spec.get("supported_parameters")
+        supports_tools = isinstance(params, (list, tuple)) and "tools" in params
     # Only when it is known. `GraphEngine.context_length` prefers an
     # explicit value and returns None otherwise, and None is honest:
     # compaction (D25) needs a real denominator, and a guessed one would
@@ -282,12 +325,14 @@ def connect(
         handle["supports_tools"] = True
 
     return (handle,
-            _status(url, chosen, name, models, context_length, supports_tools),
+            _status(url, chosen, name, models, context_length, supports_tools,
+                    price),
             models)
 
 
 def _status(url: str, model: str, credential: str, models: List[str],
-            context_length: int, native_tools: bool = False) -> str:
+            context_length: int, native_tools: bool = False,
+            price: Any = None) -> str:
     """One line a person can check the important facts against."""
     parts = [f"Connected: {model} @ {url}"]
     if credential:
@@ -302,6 +347,9 @@ def _status(url: str, model: str, credential: str, models: List[str],
     )
     if native_tools:
         parts.append("native tools")
+    # Said plainly when known, and said to be unknown when not: a run
+    # under a cost cap needs this to be a fact, not an assumption (D88).
+    parts.append(price.describe() if price is not None else "price not quoted")
     return "  ·  ".join(parts)
 
 

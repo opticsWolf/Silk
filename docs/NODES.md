@@ -44,6 +44,16 @@ OpenRouter, and **Custom** for anything else that serves
 box. A preset only fills *empty* fields, so "this provider, my host" is
 one edit rather than a re-type.
 
+**What the endpoint already knows, it fills in.** The `/models` request
+that lists the models also carries, on a gateway that says so, each
+model's price, its context window and whether it takes a `tools` field.
+The node reads all three from that one response: the price goes on the
+handle (and is what a `cost=` budget is measured against — see D88), and
+the other two fill the fields *if they are empty*. A value you typed
+always wins, because you can see a proxy in the way that a catalogue
+cannot. LM Studio and llama.cpp quote no price, which the status line
+says plainly rather than implying the run is free.
+
 **Native tool calling** is a checkbox, and it is off. On, the agent's
 tools go in the request's `tools` field; off, they go in a text fence.
 The two failure modes are not symmetric — a server that does not accept

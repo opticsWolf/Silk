@@ -51,11 +51,21 @@ class UsageLimits:
     tool_calls_limit: int | None = None
     """Maximum number of successful tool executions for the entire run."""
 
+    cost_limit: float | None = None
+    """Maximum spend, in the model's own currency, for the entire run.
+
+    A limit here is only meaningful if the model's price is known. It is
+    the one cap whose denominator lives outside Silk, so a run that cannot
+    price its model refuses to start rather than running under a ceiling
+    that can never bind (D88).
+    """
+
     # Internal counters (not serialized)
     _output_tokens_used: int = field(default=0, repr=False)
     _input_tokens_used: int = field(default=0, repr=False)
     _request_count: int = field(default=0, repr=False)
     _tool_call_count: int = field(default=0, repr=False)
+    _cost_used: float = field(default=0.0, repr=False)
 
     #: Guards every counter read and write. Reentrant so a ``reserve_*``
     #: can be written in terms of the ``check_*`` it already owns.
@@ -112,6 +122,20 @@ class UsageLimits:
                     f"but only {self.tool_calls_limit - self._tool_call_count} remaining)"
                 )
 
+    def check_cost(self, amount: float) -> None:
+        """Raise ``UsageLimitExceeded`` if *amount* would exceed the limit."""
+        with self._lock:
+            if self.cost_limit is None:
+                return
+            if self._cost_used + amount > self.cost_limit:
+                raise UsageLimitExceeded(
+                    f"cost_limit of {format_cost(self.cost_limit)} "
+                    f"(would spend {format_cost(self._cost_used + amount)} "
+                    f"but only "
+                    f"{format_cost(self.cost_limit - self._cost_used)} "
+                    f"remaining)"
+                )
+
     # â”€â”€ Recorders â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     def record_output_tokens(self, tokens: int) -> None:
@@ -133,6 +157,11 @@ class UsageLimits:
         """Record *count* successful tool executions."""
         with self._lock:
             self._tool_call_count += count
+
+    def record_cost(self, amount: float) -> None:
+        """Record *amount* of spend."""
+        with self._lock:
+            self._cost_used += float(amount)
 
     # -- Reservations (check + record, atomically) ---------------------------
 
@@ -165,6 +194,12 @@ class UsageLimits:
             self.check_input_tokens(tokens)
             self.record_input_tokens(tokens)
 
+    def reserve_cost(self, amount: float) -> None:
+        """Claim *amount* of spend, or raise without claiming it."""
+        with self._lock:
+            self.check_cost(amount)
+            self.record_cost(amount)
+
 
     # â”€â”€ Snapshot / restore â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
@@ -176,6 +211,7 @@ class UsageLimits:
             "_input_tokens_used": self._input_tokens_used,
             "_request_count": self._request_count,
             "_tool_call_count": self._tool_call_count,
+            "_cost_used": round(self._cost_used, 6),
         }
 
     def restore(self, snapshot: dict) -> None:
@@ -185,12 +221,14 @@ class UsageLimits:
             self._input_tokens_used = snapshot.get("_input_tokens_used", 0)
             self._request_count = snapshot.get("_request_count", 0)
             self._tool_call_count = snapshot.get("_tool_call_count", 0)
+            self._cost_used = float(snapshot.get("_cost_used", 0.0))
 
 
     # -- Nesting (spec D26) -----------------------------------------------
 
     def _refund(self, *, output_tokens: int = 0, input_tokens: int = 0,
-                requests: int = 0, tool_calls: int = 0) -> None:
+                requests: int = 0, tool_calls: int = 0,
+                cost: float = 0.0) -> None:
         """Give back what was claimed a moment ago and cannot be spent.
 
         Only :class:`SubBudget` uses this, and only to undo its *own*
@@ -205,6 +243,7 @@ class UsageLimits:
                 0, self._input_tokens_used - input_tokens)
             self._request_count = max(0, self._request_count - requests)
             self._tool_call_count = max(0, self._tool_call_count - tool_calls)
+            self._cost_used = max(0.0, self._cost_used - cost)
 
 
 @dataclass
@@ -252,6 +291,11 @@ class SubBudget(UsageLimits):
         super().check_tool_calls(count)
         if self.parent is not None:
             self._shared(self.parent.check_tool_calls, count)
+
+    def check_cost(self, amount: float) -> None:
+        super().check_cost(amount)
+        if self.parent is not None:
+            self._shared(self.parent.check_cost, amount)
 
     # â”€â”€ reservations: mine, then the shared one, or neither â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
@@ -301,6 +345,18 @@ class SubBudget(UsageLimits):
             self.parent.reserve_input_tokens(tokens)
         except UsageLimitExceeded as exc:
             self._refund(input_tokens=tokens)
+            raise UsageLimitExceeded(exc.message, scope="shared") from None
+
+    def reserve_cost(self, amount: float) -> None:
+        with self._lock:
+            UsageLimits.check_cost(self, amount)
+            self.record_cost(amount)
+        if self.parent is None:
+            return
+        try:
+            self.parent.reserve_cost(amount)
+        except UsageLimitExceeded as exc:
+            self._refund(cost=amount)
             raise UsageLimitExceeded(exc.message, scope="shared") from None
 
     def snapshot(self) -> dict:
@@ -355,6 +411,19 @@ class UsageLimitExceeded(Exception):
         self.scope = scope
 
 
+def format_cost(amount: float) -> str:
+    """Money as a person checks it, never in scientific notation.
+
+    Per-token prices run to six decimals, so a naive format turns a real
+    cap into ``1e-05`` -- unreadable in the one message whose whole job is
+    to say how much was spent.
+    """
+    value = float(amount)
+    if value and abs(value) < 0.01:
+        return f"${value:.6f}".rstrip("0").rstrip(".")
+    return f"${value:,.2f}"
+
+
 def _format_tokens(tokens: int) -> str:
     """Format token count for error messages."""
     return f"{tokens:,}"
@@ -387,7 +456,16 @@ _BUDGET_KEYS: dict[str, str] = {
     "output": "output_tokens_limit",
     "input_tokens": "input_tokens_limit",
     "input": "input_tokens_limit",
+    "cost": "cost_limit",
+    "spend": "cost_limit",
+    "budget": "cost_limit",
 }
+
+#: The one limit that is not a count. Parsed apart from the rest because
+#: "0.50" is a perfectly good cap and `_budget_number` rejects anything
+#: that is not a positive integer -- which is right for tokens, where a
+#: fractional one does not exist.
+_FLOAT_KEYS = frozenset({"cost_limit"})
 
 
 def _budget_number(raw: str, key: str) -> int:
@@ -402,6 +480,25 @@ def _budget_number(raw: str, key: str) -> int:
         value = int(text) * scale
     except ValueError:
         raise ValueError(f"{key}: {raw.strip()!r} is not a number") from None
+    if value <= 0:
+        raise ValueError(
+            f"{key}: {value} is not a budget. Leave the field empty for no "
+            f"cap; a cap of zero would refuse the run's first request."
+        )
+    return value
+
+
+def _budget_money(raw: str, key: str) -> float:
+    """``$0.50`` / ``0.50`` / ``50c`` -> 0.5. Rejects zero and negatives."""
+    text = raw.strip().lower().replace("_", "").replace(",", "")
+    text = text.lstrip("$").replace("usd", "").strip()
+    scale = 1.0
+    if text.endswith("c") and not text.endswith("usdc"):
+        scale, text = 0.01, text[:-1]
+    try:
+        value = float(text) * scale
+    except ValueError:
+        raise ValueError(f"{key}: {raw.strip()!r} is not an amount") from None
     if value <= 0:
         raise ValueError(
             f"{key}: {value} is not a budget. Leave the field empty for no "
@@ -426,7 +523,7 @@ def parse_budget(text: Any) -> UsageLimits | None:
     if not body:
         return None
 
-    limits: dict[str, int] = {}
+    limits: dict[str, float] = {}
     for chunk in body.replace("\n", ",").replace(";", ",").split(","):
         part = chunk.strip()
         if not part:
@@ -443,14 +540,23 @@ def parse_budget(text: Any) -> UsageLimits | None:
                 f"{key.strip()!r} is not a limit name. Accepted: "
                 f"{', '.join(sorted(set(_BUDGET_KEYS)))}."
             )
-        value = _budget_number(raw, key.strip().lower())
+        value = (
+            _budget_money(raw, key.strip().lower())
+            if field_name in _FLOAT_KEYS
+            else _budget_number(raw, key.strip().lower())
+        )
         if field_name in limits and limits[field_name] != value:
             raise ValueError(
                 f"{key.strip()!r} sets {field_name} twice, to "
                 f"{limits[field_name]} and {value}."
             )
         limits[field_name] = value
-    return UsageLimits(**limits)
+    # The int caps are ints again here: `limits` is heterogeneous only
+    # because cost shares the parse loop with them.
+    return UsageLimits(**{           # type: ignore[arg-type]
+        key: (value if key in _FLOAT_KEYS else int(value))
+        for key, value in limits.items()
+    })
 
 
 def describe_budget(limits: Any) -> str:
@@ -467,4 +573,7 @@ def describe_budget(limits: Any) -> str:
         value = getattr(limits, attr, None)
         if value:
             parts.append(f"{label} {value:,}")
+    cost = getattr(limits, "cost_limit", None)
+    if cost:
+        parts.append(f"cost {format_cost(cost)}")
     return ", ".join(parts) if parts else "no budget"

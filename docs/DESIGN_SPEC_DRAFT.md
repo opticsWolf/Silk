@@ -1870,6 +1870,50 @@ endpoints, and it dropped the server's own words, which is often where the
 rate limit is actually named. It now reports the base URL and appends the
 detail, which `classify_model_error` reads.
 
+### D88 -- Cost is a limit, not a hook
+
+Spend is tracked where the other caps are tracked: `UsageLimits` gains
+`cost_limit` beside the token, request and tool-call ceilings, with the same
+`check`/`reserve` discipline and the same `SubBudget` nesting, so a worker's
+spend counts against the orchestrator's cap without being able to raise it
+(D26, T3).
+
+A hook was the obvious alternative and is the wrong shape. Hooks fire *after*
+the thing they observe, and a ceiling has to refuse *before* the spend; they
+can also be unregistered, and a budget that can be unregistered is not a
+budget. So the ceiling is a limit and the *reporting* is the hook --
+`after_model_response` and the event sink (D85) are where a ledger subscribes.
+
+**Prices are read, never tabled.** A hardcoded price that has gone stale is
+worse than no price, because it produces a number someone will believe.
+OpenRouter quotes `pricing.prompt` / `pricing.completion` per token on
+`/models`, so `connect` captures the quote from the same request that lists
+the models, and the handle carries it beside the client it prices. That one
+response also carries `context_length` and `supported_parameters`, so the node
+now auto-fills the context window and turns native tools on when the gateway
+says it takes a `tools` field -- both *offered*, never imposed: a typed value
+wins, because the person editing can see a proxy the catalogue cannot.
+
+**The charge follows the token.** Input is reserved before the request,
+because once it is sent the money is spent whatever we decide; output is
+reserved per token as it streams, which is what lets a cost cap stop a run
+mid-answer the way an output-token cap already does.
+
+**An unpriceable cap refuses the run.** A local server quotes nothing, and
+neither do some gateways. `None` is kept distinct from zero throughout --
+zero claims the run was free, `None` says nobody would say -- and a run that
+sets a cost limit it cannot measure stops before its first request with a
+message naming both ways out. A ceiling that silently cannot bind reads
+exactly like one that is not being approached, and the difference arrives as
+a bill. This is the stance `parse_budget` already takes when it refuses to
+read a misspelled key as "unlimited".
+
+Money is also the one cap that is not a count, so it parses and prints apart
+from the others: `cost=0.50`, `cost=$2`, `spend=50c` are budgets, while
+`output=0.5` is still an error, and formatting never falls to scientific
+notation -- `1e-05` is unreadable in the one message whose whole job is to say
+how much was spent.
+
 Three consequences, each of which was a small decision:
 
 - **The port is `model_handle`, not `gguf_model`** (renamed 2026-09-18).
