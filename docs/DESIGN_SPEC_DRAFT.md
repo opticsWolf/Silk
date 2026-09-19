@@ -1881,8 +1881,10 @@ spend counts against the orchestrator's cap without being able to raise it
 A hook was the obvious alternative and is the wrong shape. Hooks fire *after*
 the thing they observe, and a ceiling has to refuse *before* the spend; they
 can also be unregistered, and a budget that can be unregistered is not a
-budget. So the ceiling is a limit and the *reporting* is the hook --
-`after_model_response` and the event sink (D85) are where a ledger subscribes.
+budget. So the ceiling is a limit and the *reporting* is separate. (This
+paragraph originally said the reporting would be a hook, subscribing to
+`after_model_response`; building it showed that hook does not exist for a
+toolless run, so D90 takes the record from the engine at run end instead.)
 
 **Prices are read, never tabled.** A hardcoded price that has gone stale is
 worse than no price, because it produces a number someone will believe.
@@ -2047,6 +2049,60 @@ produces a handle at all, because `connect` probes first (D45), and the chain
 simply passes the survivor through. The run classified both 503s retryable,
 spent its retry, switched, and gemma-4-12b-it answered; the outcome was
 `completed`, not `error`.
+
+---
+
+### D90 -- Cost is also a record, and it writes itself
+
+D88 made money a ceiling: `UsageLimits` refuses to overspend a cap, and
+`snapshot()` says what this run has used. That answers *am I about to go
+over*. It does not answer the question people actually ask -- **what did this
+week cost me** -- because every counter dies with the run that owned it. D88
+said the reporting half belongs on a hook; building it showed the hook is the
+wrong carrier, and the reason is worth recording: the Agent node registers its
+hooks on `toolset.hooks`, so a pure-chat run has no hook registry at all, and
+a ledger that silently skips toolless runs is a ledger that lies by omission.
+The record is taken where the truth already is -- at the end of the run, from
+the engine.
+
+**Spend is attributed per model, not per run.** `GraphEngine` keeps one entry
+per member of its chain and charges through a single `_charge` call, so a
+reservation the ledger did not see cannot exist. A run that fell back (D89)
+says how much of the bill belongs to which model; a single total would
+attribute the whole run to whichever model happened to finish it, which is
+precisely backwards when the fallback is the cheap one. Members never reached
+are left out -- reporting them at zero reads as *tried, and free*.
+
+**It writes only when money was spent.** No checkbox. D85 put the event sink
+behind one because Silk writing files on someone's disk because a run happened
+is not a default anyone opted into; here the *data* answers the same
+objection, and better. An unpriced run produces no line, so somebody who only
+runs local models never acquires a file at all. When there is a bill,
+recording it is not a feature that should have had to be enabled in advance:
+you discover you wanted the ledger at the moment the invoice arrives, which is
+exactly too late to switch it on.
+
+**`None` stays distinct from zero, all the way out.** An unpriced model that
+ran is flagged `unpriced` in the breakdown rather than folded into the total
+as 0.0 -- the total is what is *known* to have been spent, never a claim about
+what nobody quoted. A partly-priced chain therefore has a real, partial bill
+and says so.
+
+One append-only JSONL file (`~/.weave/silk/spend.jsonl`), sibling to the grant
+store and the run sink, one line per run, no content of any kind: when, how
+long, which models, tokens each way, how much, and how the run ended -- a run
+stopped by its budget still spent what it spent, and a report that cannot tell
+that from a clean finish invites the wrong conclusion. A failed run is
+recorded too, because it was still prefilled (D15). A torn line is skipped
+rather than fatal, the file is pruned only once it exceeds its cap and through
+a temporary file, and any `OSError` is logged once and swallowed: bookkeeping
+that can fail the run it is keeping books on is worse than no bookkeeping.
+
+Verified live by borrowing a real OpenRouter quote onto a proxy in front of
+LM Studio -- genuine published price, local tokens, no money spent. The
+unpriced run left no file; the priced one wrote a single line whose figure
+matched the hand-computed product of the published rates; the summary broke it
+down per model.
 
 ---
 

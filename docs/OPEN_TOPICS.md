@@ -41,13 +41,16 @@ lets a handle name its successor, so a terminal failure walks to the next
 model instead of ending the run. A **Model Fallback** node draws that
 chain on the canvas.
 
-Still outstanding from D88, and named here so it is not mistaken for
-built: **the cost ledger.** Spend is now *enforced* and lands in
-`UsageLimits.snapshot()`, but nothing subscribes to
-`after_model_response` to record per-model spend across runs — so "what
-did this week cost me" has no answer yet. The seam is already there
-(D85's event sink and the hook), which is why this is a small piece of
-work rather than a design question.
+**D90** closes the half D88 left open. Spend is now recorded as well as
+enforced: `~/.weave/silk/spend.jsonl`, one line per run, attributed per
+model so a run that fell back says which model owns which part of the
+bill. It writes only when a price was quoted, so a purely local user
+never acquires a file -- which is how it manages to have no checkbox.
+Building it corrected D88's own guess about where the reporting belongs:
+the Agent node registers hooks on `toolset.hooks`, so `after_model_response`
+does not exist for a toolless chat run, and a ledger that skips those is
+a ledger that lies by omission. The record is taken from the engine at
+run end instead.
 
 Legend:
 

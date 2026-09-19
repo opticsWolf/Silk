@@ -61,6 +61,17 @@ class GraphEngine:
         self._chain = chain_of(model_handle) or [model_handle]
         self._chain_index = 0
         self._handle = self._chain[0]
+        #: What each member of the chain actually consumed (D90). One
+        #: entry per member, in chain order, so a run that switched
+        #: models can say how much of the bill belongs to which -- a
+        #: single total would attribute the whole run to whichever model
+        #: happened to finish it.
+        self._spend: list[dict[str, Any]] = [
+            {"model": model_label(h), "backend": str(h.get("backend") or "?"),
+             "requests": 0, "input_tokens": 0, "output_tokens": 0,
+             "cost": None}
+            for h in self._chain
+        ]
         self.system_prompt = system_prompt
         # History is caller-owned state (the Agent node persists it); we
         # mutate the same list so the node sees every appended turn.
@@ -381,10 +392,14 @@ class GraphEngine:
         # the money is spent whatever we decide. Output is charged per
         # token below, which is what lets a cost cap stop a run mid-answer
         # the way an output-token cap already does (D88).
+        prompt_tokens = self.count_prompt_tokens()
+        spend = self._spend[self._chain_index]
+        spend["requests"] += 1
+        # Counted before the request, and kept even if it fails: a failed
+        # request is still a request, and it was still prefilled (D15).
+        spend["input_tokens"] += prompt_tokens
         if self._price is not None:
-            self.usage_limits.reserve_cost(
-                self.count_prompt_tokens() * self._price.input_per_token
-            )
+            self._charge(spend, prompt_tokens * self._price.input_per_token)
 
         model, pool = self._checkout()
         self._begin_measured_request(pool)
@@ -432,11 +447,10 @@ class GraphEngine:
                 if not text:
                     continue
                 token_count += 1
+                spend["output_tokens"] += 1
                 self.usage_limits.reserve_output_tokens(1)
                 if self._price is not None:
-                    self.usage_limits.reserve_cost(
-                        self._price.output_per_token
-                    )
+                    self._charge(spend, self._price.output_per_token)
                 full_text += text
                 yield text
 
@@ -458,6 +472,29 @@ class GraphEngine:
             })
             self._end_measured_request(pool, elapsed)
             self._checkin(model, pool, session_id=self.session_id)
+
+    def _charge(self, spend: dict[str, Any], amount: float) -> None:
+        """Claim *amount* against the budget and record who spent it.
+
+        One call site for both halves so they cannot drift: a reservation
+        the ledger did not see would be money the report cannot account
+        for, which is the failure mode a ledger exists to prevent.
+        """
+        self.usage_limits.reserve_cost(amount)
+        spend["cost"] = (spend["cost"] or 0.0) + amount
+
+    def spend_report(self) -> list[dict[str, Any]]:
+        """What each model of the chain consumed this engine's lifetime.
+
+        Members never reached are left out -- a chain of three that never
+        needed its fallbacks should not report two models at zero, which
+        reads like they were tried and cost nothing.
+
+        ``cost`` is ``None`` for an unpriced model, and stays distinct
+        from 0.0 all the way out to the ledger: zero claims the tokens
+        were free, ``None`` says nobody quoted a price (D88).
+        """
+        return [dict(s) for s in self._spend if s["requests"]]
 
     # -- pool handling -----------------------------------------------------
 

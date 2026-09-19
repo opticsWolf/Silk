@@ -26,6 +26,7 @@ reach the UI via a queued Qt signal and downstream nodes via
 
 import copy
 import itertools
+import time
 import uuid
 from contextlib import ExitStack
 from typing import Any, ClassVar, Dict, List, Optional, cast
@@ -75,6 +76,7 @@ from ..functions.decision_seam import (
 from ..functions.grants import SCOPE_ALWAYS, SCOPE_ONCE, SCOPE_RUN
 from ..functions.graph_engine import GraphEngine
 from ..functions.remember import RunIdentity, bind_run_identity
+from ..functions.cost_ledger import record_run
 from ..functions.usage_limits import describe_budget, parse_budget
 from ..functions.hooks import (
     HOOK_AFTER_MODEL_RESPONSE,
@@ -90,6 +92,7 @@ from ..functions.role import DEFAULT_ROLE, RoleBinding
 from ..functions.task_store import plan_changed_event  # Qt-free
 from ..functions.stream_events import (
     OUTCOME_COMPLETED,
+    OUTCOME_ERROR,
     EventChatTurn,
     EventCompaction,
     EventDecisionRequest,
@@ -900,6 +903,7 @@ class SilkAgentNode(ThreadedManualNode):
 
             final_text = ""
             run_error: Optional[str] = None
+            run_started = time.time()
             # Ordered tool turns between the user prompt and the AI answer,
             # so the Chat Log can render tools as first-class turns.
             tool_turns: list[dict[str, Any]] = []
@@ -961,6 +965,20 @@ class SilkAgentNode(ThreadedManualNode):
                 elif isinstance(event, EventRunResult):
                     final_text = event.text
                     outcome = event.outcome or OUTCOME_COMPLETED
+
+            # The bill, before either exit (D90). A run that failed still
+            # spent what it prefilled, so recording only on the way out
+            # through success would under-report exactly the runs worth
+            # looking at. Writes nothing at all when no model quoted a
+            # price, which is why there is no checkbox for it.
+            record_run(
+                engine.spend_report(),
+                run_id=run_id,
+                session_id=self._session_id,
+                agent=str(getattr(self, "title", "") or "agent"),
+                elapsed_s=time.time() - run_started,
+                outcome=outcome if not run_error else OUTCOME_ERROR,
+            )
 
             if run_error and not final_text:
                 self.compute_error.emit(run_error)

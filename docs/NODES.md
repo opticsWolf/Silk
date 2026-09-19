@@ -348,6 +348,21 @@ each refresh, so a revocation takes effect on the next gated call in every
 window; it can only remove, never grant. Run-scoped grants are not listed —
 they end with the run.
 
+**A priced run leaves a line in the ledger** (D90). When the endpoint
+quoted a price, the run appends one line to `~/.weave/silk/spend.jsonl`
+— when, how long, which models, tokens each way, how much, and how it
+ended — attributed *per model*, so a run that fell back (D89) says which
+model owns which part of the bill. There is no checkbox: a run against a
+model that quotes nothing writes nothing, so a purely local graph never
+acquires the file. Content never appears in it, a failed run is recorded
+too (it was still prefilled), and a ledger that cannot be written is
+logged once and ignored rather than failing the run.
+
+`functions/cost_ledger.summarize(days=7)` answers "what did this week
+cost me", with the per-model breakdown that makes the number actionable:
+a total says you spent eleven dollars, the breakdown says nine of them
+went to one model you could have put a cheaper one behind.
+
 ### Silk Agent Spec — `nodes/agent_spec.py`
 A named worker bundle (model + toolset + role) for the Orchestrator; chain
 specs to build a `silk_agents` roster.
