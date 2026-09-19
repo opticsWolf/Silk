@@ -163,7 +163,7 @@ no longer needed to make discovery honest.
 
 ### G3. 11 of the 19 hook events are defined but never emitted — *closed*
 
-**Closed (2026-09-02).** `functions/hooks.py` now declares 15 constants and
+**Closed (2026-09-02).** `functions/hooks.py` now declares 16 constants and
 every one of them fires; `UNWIRED_EVENTS` is empty. The `*_ERROR` family
 and `HOOK_AFTER_MODEL_REQUEST` were wired by D15, and §22 q2 finished the
 job: `HOOK_WRAP_TOOL_VALIDATE` is honoured in
@@ -707,6 +707,55 @@ missing**, and each was found only by running it:
 settle for the mechanisms *not* built -- who chooses the backend, and the
 down-backend path, if C (D45) is ever built. B's (`LlamaCache` size and
 backing, D44) dies with B: A subsumes it.
+
+### G22. A configured hook binding silenced the hook's run-level half — CLOSED 2026-09-19
+
+**Found and closed the same day**, while answering a question about
+whether a tool can ship hooks meant only for itself.
+
+`bind_hook_map` (`functions/hook_catalog.py`) applied a configured
+binding to *every* event in a hook's map. `usage_meter` spans two kinds:
+it counts tool calls on `HOOK_BEFORE_TOOL_EXECUTE` and prints the tally
+on `HOOK_AFTER_RUN`. A run carries no tool name, so binding the hook to a
+tool bound the reporting half to a name it would never see, and
+`HookEntry.applies_to` correctly filtered it out forever.
+
+The symptom, measured on the shipped hook — one run, one `write_file`
+call, the only difference being the binding:
+
+| `usage_meter` | log output |
+|---|---|
+| unbound | `[hook:usage] tools used: write_file×1` |
+| bound to `write_file` | *(nothing)* |
+
+Worse than silent: the counting half *was* still bound correctly and
+still firing, and `run_started` — which clears the counters — was not, so
+the hook accumulated across runs and reported none of it.
+
+This is G3's failure mode arriving through the other door. D15 made a
+hook that *looks installed and is not* impossible to build out of a dead
+event name; this built one out of a live hook and a legal configuration.
+`log_tool_calls` and `timing` were unaffected — their maps are tool
+events only — but any future hook with a run-level half inherited the
+trap, which is what made it worth a decision rather than a patch.
+
+**Closed by D92.** A binding now applies only to the events that carry a
+tool. `bind_hook_map` leaves the rest unbound, and
+`HookRegistry.register` refuses a bound registration on a tool-less event
+(`UnboundableHookEvent`) instead of accepting one that can never fire.
+Bound to `write_file`, `usage_meter` now counts only `write_file` and
+still prints its summary.
+
+One test (`test_a_bound_hook_stays_quiet_on_a_tool_less_event`) had
+pinned the old behaviour as correct, and was rewritten to assert the
+refusal. Worth noting for the next audit: the defect was invisible at
+the unit level — the binding was applied exactly as specified and every
+entry was well-formed — and only showed up as a log line that never
+appeared. The regression test is end-to-end for that reason.
+
+**Residue, not a gap:** a hook still cannot be scoped to a *pack* rather
+than a tool, so a pack wanting run-start setup must observe every run.
+Nothing needs it today; recorded in D92.
 
 ### G21. Write authority over an importable directory is process authority — REPORTED
 

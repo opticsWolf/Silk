@@ -65,6 +65,7 @@ from .hooks import (
     HOOK_BEFORE_TOOL_EXECUTE,
     HOOK_TOOL_DENIED,
     HOOK_WRAP_TOOL_EXECUTE,
+    is_tool_scoped,
     register_hook_map,
 )
 
@@ -177,14 +178,31 @@ def _narrow(entry: HookEntry, tools: frozenset[str],
 
 def bind_hook_map(hook_map: HookMap, config: Optional[BaseModel],
                   hook: str = "") -> HookMap:
-    """Rewrite *hook_map*'s entries with the binding *config* declares."""
+    """Rewrite *hook_map*'s entries with the binding *config* declares.
+
+    The binding stops at the tool boundary (D92). A configured binding
+    answers "which tools should this watch", and only the tool events can
+    answer it; the run, model and compaction events carry no tool, so a
+    binding applied there would match nothing and silence the entry.
+
+    That is not hypothetical. ``usage_meter`` counts on
+    ``before_tool_execute`` and prints the tally on ``after_run``, so
+    narrowing it to one tool used to leave a hook that counted forever and
+    reported never -- the failure D15 exists to prevent, arriving through
+    configuration instead of through a dead event name. Those halves are
+    now left unbound, which is also what the user ticking the box meant:
+    count *this* tool, and still tell me at the end.
+    """
     if not isinstance(config, BoundHookConfig):
         return hook_map
     tools, categories = config.binding()
     if not (tools or categories):
         return hook_map
     return {
-        event: [_narrow(_entry_of(cb), tools, categories, hook) for cb in cbs]
+        event: (
+            [_narrow(_entry_of(cb), tools, categories, hook) for cb in cbs]
+            if is_tool_scoped(event) else list(cbs)
+        )
         for event, cbs in hook_map.items()
     }
 

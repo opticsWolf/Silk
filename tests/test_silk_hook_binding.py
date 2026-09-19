@@ -16,12 +16,15 @@ import pytest
 
 
 from silk.functions.hooks import (
+    HOOK_AFTER_RUN,
     HOOK_AFTER_TOOL_EXECUTE,
     HOOK_BEFORE_RUN,
     HOOK_BEFORE_TOOL_EXECUTE,
     HOOK_WRAP_TOOL_EXECUTE,
     EssentialHookError,
+    HookEntry,
     HookRegistry,
+    UnboundableHookEvent,
     bind_tools,
     essential,
     register_hook_map,
@@ -65,14 +68,43 @@ def test_a_tool_bound_hook_fires_only_for_its_tools():
     assert seen == ["write_file"]
 
 
-def test_a_bound_hook_stays_quiet_on_a_tool_less_event():
-    """It declared it was about a tool; no tool, nothing to say."""
+def test_binding_a_hook_to_a_tool_less_event_is_refused():
+    """Registering it is the error, not firing it (D92).
+
+    This test used to assert the opposite -- that such a hook registered
+    fine and then silently never fired. That *is* the bug: it is the same
+    "looks installed and is not" failure D15 refuses for a dead event
+    name, and `usage_meter` shipped it, counting tool calls it never
+    reported because its `after_run` half had been bound too.
+    """
+    registry = HookRegistry()
+    with pytest.raises(UnboundableHookEvent) as excinfo:
+        registry.register(HOOK_BEFORE_RUN, lambda **_kw: None,
+                          tools=["write_file"])
+    # The message has to say what to do instead, not just what went wrong.
+    assert "carries no tool" in str(excinfo.value)
+    assert "before_tool_execute" in str(excinfo.value)
+    assert registry.entries(HOOK_BEFORE_RUN) == []
+
+
+def test_the_same_hook_unbound_is_fine():
+    """The fix is a boundary, not a ban: run-level hooks still register."""
     registry = HookRegistry()
     fired: list[int] = []
-    registry.register(HOOK_BEFORE_RUN, lambda **_kw: fired.append(1),
-                      tools=["write_file"])
+    registry.register(HOOK_BEFORE_RUN, lambda **_kw: fired.append(1))
     registry.emit(HOOK_BEFORE_RUN)
-    assert fired == []
+    assert fired == [1]
+
+
+def test_middleware_is_checked_the_same_way():
+    """Both registration paths, one rule."""
+    registry = HookRegistry()
+    with pytest.raises(UnboundableHookEvent):
+        registry._check_binding(
+            HOOK_BEFORE_RUN,
+            HookEntry(callback=lambda **_kw: None,
+                      tools=frozenset({"write_file"})),
+        )
 
 
 def test_a_category_bound_hook_uses_the_boxs_index():
@@ -344,3 +376,68 @@ def test_a_non_essential_hook_is_not_carried():
     source.hooks.register(HOOK_BEFORE_TOOL_EXECUTE, _recorder()[0])
     assert carry_essential_hooks(source, derived) == 0
     assert derived.hooks.callbacks(HOOK_BEFORE_TOOL_EXECUTE) == []
+
+
+# -- D92: the binding stops at the tool boundary ---------------------------
+
+
+def test_narrowing_a_hook_leaves_its_run_level_halves_alone():
+    """The defect, pinned. `usage_meter` counts per tool and reports per run.
+
+    Binding it used to bind both halves, so the counter kept counting and
+    the summary never came -- a hook that looks installed and is not, which
+    is what D15 refuses for a dead event name. Only the tool events carry a
+    tool, so only they can answer "which tools should this watch".
+    """
+    from silk.functions.hook_catalog import build_hooks
+
+    hooks = build_hooks(
+        ["usage_meter"], {"usage_meter": {"bind_tools": "write_file"}},
+    )
+    counting = hooks[HOOK_BEFORE_TOOL_EXECUTE]
+    assert [e.tools for e in counting] == [frozenset({"write_file"})]
+
+    for event in (HOOK_BEFORE_RUN, HOOK_AFTER_RUN):
+        reporting = hooks[event]
+        assert reporting, f"{event} lost its registration"
+        assert not any(getattr(e, "bound", False) for e in reporting), (
+            f"the binding reached {event}, which carries no tool to match"
+        )
+
+
+def test_a_narrowed_usage_meter_still_reports_and_counts_only_its_tool(caplog):
+    """End to end, through the registry: the control the fix was written to.
+
+    Not a unit test of the binding -- the bug was invisible at that level.
+    It only showed up as a summary line that never appeared.
+    """
+    from silk.functions.hook_catalog import build_hooks
+
+    registry = HookRegistry()
+    register_hook_map(registry, build_hooks(
+        ["usage_meter"], {"usage_meter": {"bind_tools": "write_file"}},
+    ))
+
+    with caplog.at_level("INFO", logger="WeaveCanvas.SilkHooks"):
+        registry.emit(HOOK_BEFORE_RUN, user_input="hi", settings={})
+        registry.emit(HOOK_BEFORE_TOOL_EXECUTE, tool_name="write_file")
+        registry.emit(HOOK_BEFORE_TOOL_EXECUTE, tool_name="read_file")
+        registry.emit(HOOK_AFTER_RUN, result=None)
+
+    summaries = [r.message for r in caplog.records if "hook:usage" in r.message]
+    assert summaries, "the run ended and the meter said nothing"
+    assert "write_file×1" in summaries[-1]
+    assert "read_file" not in summaries[-1], "it counted a tool it disclaimed"
+
+
+def test_the_two_halves_of_the_rule_agree():
+    """`bind_hook_map` skips what `register` would refuse -- one boundary.
+
+    If these ever disagreed, the config path would build entries the
+    registry then rejects, and ticking a checkbox would fail a run.
+    """
+    from silk.functions.hooks import KNOWN_EVENTS, TOOL_SCOPED_EVENTS
+
+    assert TOOL_SCOPED_EVENTS < KNOWN_EVENTS
+    for name in TOOL_SCOPED_EVENTS:
+        assert "tool" in name, f"{name} is not about a tool"

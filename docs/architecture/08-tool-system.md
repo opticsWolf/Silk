@@ -341,7 +341,9 @@ a bare callable, and it carries two declarations the registry acts on:
   lends the registry at construction (`bind_categories`) — a bare registry
   with no index matches no category, so a category-bound hook stays quiet
   rather than firing for everything. A **bound** hook does not fire on the
-  tool-less events (`before_run`): it declared it was about a tool.
+  tool-less events (`before_run`): it declared it was about a tool — and
+  because of that, binding one *to* a tool-less event is refused outright
+  (`UnboundableHookEvent`, D92) rather than accepted and never run.
 - `essential=True` marks the infrastructure tier. `unregister` raises
   `EssentialHookError`, `clear()` keeps it unless you pass
   `keep_essential=False`, and `carry_essential_hooks` copies it onto a
@@ -362,7 +364,7 @@ The `Hooks` facade exposes ergonomic decorator registration:
 `.after_run(...)`, etc., plus `get_tools()` / `get_instructions()` /
 `emit(...)`.
 
-**The event vocabulary** (15 constants in `hooks.py`) — every one of them
+**The event vocabulary** (16 constants in `hooks.py`) — every one of them
 fires. `UNWIRED_EVENTS` is empty, which is where §8's review table ended up
 (§22 q2):
 
@@ -438,12 +440,22 @@ binding is a property of an entry, not a new place to compose hooks, so it
 belongs in the config the two existing selectors already edit rather than
 in a third node that would hide the ToolBox/Role split.
 
-Two limits. A configured binding may only **narrow** what the code
+Three limits. A configured binding may only **narrow** what the code
 declared (the I6 rule applied to hooks); one that shares nothing with the
 code's binding raises rather than producing a hook that fires on nothing.
-And only hooks that observe carry the field: `signoff`, `tool_approval`
+Only hooks that observe carry the field: `signoff`, `tool_approval`
 and `task_audit` bind in code, out of a preset's reach, because a guard a
 preset can narrow to nothing is not a guard (D77).
+
+And the binding **stops at the tool boundary** (D92): it is applied to the
+tool events and left off the run, model, compaction and output events,
+which carry no tool for it to match. This is not a nicety. `usage_meter`
+counts on `before_tool_execute` and reports on `after_run`, so binding the
+whole map used to leave a hook that counted every call and printed no
+summary — the "looks installed and is not" failure D15 exists to prevent,
+reached through a legal configuration instead of a dead event name. What
+the user meant by narrowing it is now what it does: count *this* tool, and
+still report at the end.
 
 ### `functions/spill.py` — keeping a big result out of the context
 

@@ -117,6 +117,37 @@ WIRED_EVENTS = frozenset({
 #: Names that are unwired *and* known, precomputed for the message.
 UNWIRED_EVENTS = frozenset(KNOWN_EVENTS - WIRED_EVENTS)
 
+#: The events that carry a tool, and therefore the only ones a per-tool
+#: binding (D13) can mean anything on. Everything else -- run start and
+#: end, the model events, compaction, output validation -- happens with no
+#: tool in scope, so a bound entry on one of them fires for nothing.
+#:
+#: This exists because that is not a harmless no-op. `usage_meter` counts
+#: tool calls on `before_tool_execute` and prints the tally on `after_run`;
+#: narrowing it to one tool used to bind *both* halves, so the counter kept
+#: counting and the summary never came. A hook that looks installed and is
+#: not is precisely what D15 made impossible to build out of a dead event
+#: name -- this closes the same hole on the configuration side (D92).
+TOOL_SCOPED_EVENTS = frozenset({
+    HOOK_BEFORE_TOOL_EXECUTE, HOOK_AFTER_TOOL_EXECUTE, HOOK_TOOL_DENIED,
+    HOOK_ON_TOOL_VALIDATE_ERROR, HOOK_ON_TOOL_EXECUTE_ERROR,
+    HOOK_WRAP_TOOL_VALIDATE, HOOK_WRAP_TOOL_EXECUTE,
+})
+
+
+def is_tool_scoped(event: str) -> bool:
+    """Whether *event* carries a tool, so a binding can select on it."""
+    return event in TOOL_SCOPED_EVENTS
+
+
+class UnboundableHookEvent(ValueError):
+    """Raised when a bound hook registers on an event that carries no tool.
+
+    Its own class, for the same reason :class:`UnwiredHookEvent` has one:
+    "this hook can never fire" is a different problem from "these arguments
+    are wrong", and a caller may want to tell them apart.
+    """
+
 
 class UnwiredHookEvent(ValueError):
     """Raised when a hook registers on an event nothing emits.
@@ -300,6 +331,25 @@ class HookRegistry:
             ),
         )
 
+    @staticmethod
+    def _check_binding(event: str, entry: HookEntry) -> None:
+        """Refuse a bound hook on an event that carries no tool (D92).
+
+        The binding would filter on a tool name the event never supplies,
+        so the hook would register cleanly and never fire -- the same
+        silent failure :func:`_check_event` refuses for a dead event name.
+        Loud here beats absent at runtime.
+        """
+        if not entry.bound or is_tool_scoped(event):
+            return
+        raise UnboundableHookEvent(
+            f"Cannot bind a hook on '{event}' to "
+            f"{sorted(entry.tools | entry.categories)}: the event carries no "
+            "tool, so the binding would match nothing and the hook would "
+            "never fire. Register it unbound, or bind it to one of: "
+            + ", ".join(sorted(TOOL_SCOPED_EVENTS))
+        )
+
     def _applicable(self, event: str, kwargs: dict[str, Any]) -> list[HookEntry]:
         """The entries of *event* that apply to this call (D13)."""
         entries = self._hooks.get(event, [])
@@ -393,9 +443,12 @@ class HookRegistry:
         Raises:
             UnwiredHookEvent: if nothing emits *event* -- an unknown name,
                 or one declared but not yet wired (D15).
+            UnboundableHookEvent: if the entry is bound and *event* carries
+                no tool for the binding to match (D92).
         """
         _check_event(event, middleware=False)
         entry = self._entry(callback, tools, categories, essential)
+        self._check_binding(event, entry)
         self._hooks.setdefault(event, []).append(entry)
         return entry
 
@@ -418,12 +471,18 @@ class HookRegistry:
             handler: The middleware handler callable.
 
         Raises:
-            UnwiredHookEvent: if nothing emits *event*. Note that of the six
-                declared ``wrap_*`` events only ``wrap_tool_execute`` is
-                wired today; the rest are open (T2).
+            UnwiredHookEvent: if nothing emits *event*. Both surviving
+                ``wrap_*`` events are wired -- §22 q2 wired
+                ``wrap_tool_validate`` and deleted the other four -- so this
+                now catches misspellings only.
+            UnboundableHookEvent: if the handler is bound and *event*
+                carries no tool for the binding to match (D92). Both
+                middleware events are tool-scoped, so this is reachable
+                only through a future one that is not.
         """
         _check_event(event, middleware=True)
         entry = self._entry(handler, tools, categories, essential)
+        self._check_binding(event, entry)
         self._middleware.setdefault(event, []).append(entry)
         return entry
 

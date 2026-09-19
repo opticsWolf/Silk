@@ -660,6 +660,51 @@ failure D15 exists to prevent -- so they are gone from the vocabulary
 rather than left as a promise. Registering one now fails loudly, which is
 the point of D15's last paragraph.
 
+**D92. A binding stops at the tool boundary.** A configured binding (D13)
+applies only to the events that carry a tool: `before_tool_execute`,
+`after_tool_execute`, `tool_denied`, the two tool `*_ERROR` events and the
+two `wrap_tool_*` middleware events. On the run, model, compaction and
+output events there is no tool name for the binding to match, so a bound
+entry there fires for nothing.
+
+That was not a harmless no-op, and D15's own failure mode is why. A hook
+map is bound as a whole, and `usage_meter` spans both halves of the
+vocabulary -- it counts on `before_tool_execute` and prints the tally on
+`after_run`. Narrowing it to one tool therefore bound the reporting half
+too, leaving a hook that counted forever, cleared nothing between runs and
+reported never. Measured on the shipped hook, one run, one `write_file`
+call: unbound it logs `tools used: write_file×1`; bound to `write_file` it
+logged nothing at all. G3 was a hook that could not fire because its event
+was dead; this was a hook that could not fire because its configuration
+was, and the user-visible symptom -- silence -- is identical.
+
+Two halves, matching the two ways an entry is built:
+
+- `bind_hook_map` leaves the tool-less events unbound rather than
+  narrowing them. This is also what ticking the box meant: *count this
+  tool, and still tell me at the end.*
+- `HookRegistry.register` / `register_middleware` refuse a bound
+  registration on a tool-less event outright (`UnboundableHookEvent`),
+  the same way `_check_event` refuses a dead name. Loud at registration
+  beats absent at runtime.
+
+The two must agree, or the config path would build entries the registry
+then rejects and a ticked checkbox would fail a run; a test pins that.
+
+One existing test asserted the old behaviour -- that such a hook
+registered cleanly and then stayed quiet -- and was rewritten, because
+that behaviour *was* the defect. It is worth recording that the bug was
+invisible at the unit level: the binding was applied exactly as written,
+every entry was well-formed, and only an end-to-end emit showed the
+missing summary line. The regression test is therefore an end-to-end one.
+
+**Not fixed here:** a hook cannot be scoped to a *pack* rather than a
+tool. A tool pack that wants setup at run start must register unbound,
+and so observes every run, including runs its own tools take no part in.
+Nothing needs that today -- `remember` and `usage_meter` both genuinely
+want every run -- so no mechanism is proposed for it. Recorded because
+it is the one shape per-tool binding structurally cannot express.
+
 ---
 
 ## 9. File access
