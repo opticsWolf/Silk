@@ -1,12 +1,14 @@
 # Silk Node Reference
 
-All nodes search under the **Silk AI** category unless noted — the four
-observability nodes (Hook Monitor, Plan Viewer, Task Hub, Chat Log Display)
-sit under **Display**, alongside Weave's own display nodes. Ports are listed
-as they are registered; `exec` ports are trigger pulses.
+Every Silk node searches under the **Silk AI** category, in one of four
+submenus: **Loaders**, **Agents**, **Display** and **Configuration** (plus
+**Monitor**, which holds Pool Monitor alone). Ports are listed as they are
+registered; `exec` ports are trigger pulses.
 
-*(The category was plain "AI" until 2026-09-19; it was renamed so Silk's
-nodes do not sit mixed in with a host's own AI nodes.)*
+*(The category was plain "AI" until 2026-09-19, and the read-only surfaces
+— Hook Monitor, Plan Viewer, Task Hub, Chat Log Display — sat under Weave's
+own **Display** category. Both were changed so a Silk install adds one
+menu, not entries scattered through a host's.)*
 
 ## Model
 
@@ -435,7 +437,7 @@ box.
 
 ## Observability & human gates
 
-### Hook Monitor — `nodes/hook_monitor.py` *(Display / Agents)*
+### Hook Monitor — `nodes/hook_monitor.py` *(Silk AI / Display)*
 Graph-native observability sink for the Agent's `events` stream: rolling log
 of everything a run says, with per-type and per-tool counters.
 
@@ -444,7 +446,7 @@ of everything a run says, with per-type and per-tool counters.
 | in | `event` | `dict` |
 | out | `counts` | `dict` |
 
-### Plan Viewer — `nodes/plan_viewer.py` *(Display / Agents)*
+### Plan Viewer — `nodes/plan_viewer.py` *(Silk AI / Display)*
 Display **and** graph-composition surface for the agent task tracker: shows
 the current plan (goal, task tree, course corrections) rendered in the app's
 markdown style.
@@ -463,7 +465,7 @@ Sources are tried in order: an explicit `plan` snapshot, then `plan_ref`,
 then `root`. The reference outranks the root because a root only says
 *where* to look, and looking picks the newest plan there.
 
-### Task Hub — `nodes/task_hub.py` *(Display / Agents)*
+### Task Hub — `nodes/task_hub.py` *(Silk AI / Display)*
 The multi-agent progress board (D58). Scans **every** `plan-*.db` under the
 graph's sandbox roots and renders one section per plan, tasks grouped by
 lane, with `claimed_by` as the per-task agent badge — the field the store
@@ -482,7 +484,7 @@ may **count** those; only the asking node — or its dock mirror — may answer
 one (D59). There are no Approve/Reject buttons here: D31–D33 deleted parked
 sign-off, so a task change is decided during the turn, not held in a row.
 
-### Chat Log Display — `nodes/chat_display.py` *(Display / Chat)*
+### Chat Log Display — `nodes/chat_display.py` *(Silk AI / Display)*
 Sink that continuously appends chat turns to a running log, rendering the
 thread as markdown/HTML.
 

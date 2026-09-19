@@ -47,8 +47,8 @@ class SilkHookMonitorNode(ThreadedNode):
     # declaration for the typechecker, not a runtime change (G9).
     _widget_core: WidgetCore
 
-    node_class: ClassVar[str] = "Display"
-    node_subclass: ClassVar[str] = "Agents"
+    node_class: ClassVar[str] = "Silk AI"
+    node_subclass: ClassVar[str] = "Display"
     node_name: ClassVar[Optional[str]] = "Hook Monitor"
     node_description: ClassVar[Optional[str]] = (
         "Displays an agent's events stream: rolling event log with "

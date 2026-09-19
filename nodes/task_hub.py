@@ -56,8 +56,8 @@ class SilkTaskHubNode(ThreadedNode):
     # declaration for the typechecker, not a runtime change (G9).
     _widget_core: WidgetCore
 
-    node_class: ClassVar[str] = "Display"
-    node_subclass: ClassVar[str] = "Agents"
+    node_class: ClassVar[str] = "Silk AI"
+    node_subclass: ClassVar[str] = "Display"
     node_name: ClassVar[Optional[str]] = "Task Hub"
     node_description: ClassVar[Optional[str]] = (
         "Shows every plan under the graph's sandbox roots as lanes, with "

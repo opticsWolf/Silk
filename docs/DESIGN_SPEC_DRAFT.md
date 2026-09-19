@@ -1356,12 +1356,19 @@ The rename runs all the way down, because a node called Worker backed by an
 The output is now called `workers` at both ends, so the wire into the
 Orchestrator's `workers` input reads as one word rather than two.
 
-*Menu category "AI" -> "Silk AI."* Fourteen nodes moved. Silk's nodes were
-mixed into whatever AI nodes a host already had; they are a plugin's nodes
-and now say so. Four observability nodes (Hook Monitor, Plan Viewer, Task
-Hub, Chat Log Display) stay under `Display`, where they sit beside Weave's
-own display nodes rather than beside Silk's machinery -- deliberate, but
-worth revisiting if that split reads as an oversight on the canvas.
+*Menu category "AI" -> "Silk AI."* Every Silk node now lives in one
+category, under five submenus: `Loaders`, `Agents`, `Display`,
+`Configuration` and `Monitor`. Silk's nodes were mixed into whatever AI
+nodes a host already had; they are a plugin's nodes and now say so.
+
+The read-only surfaces moved too, `Display / Agents` and `Display / Chat`
+-> `Silk AI / Display` (Hook Monitor, Plan Viewer, Task Hub, Chat Log
+Display). They were left under Weave's own `Display` category at first, on
+the argument that they belong beside other display nodes; that was wrong in
+practice, because it meant installing Silk scattered entries through a
+host's menus instead of adding one. `Monitor` holds Pool Monitor alone and
+is the obvious candidate to fold into `Display` if a second monitor never
+arrives.
 
 **No migration, by instruction.** `node_supersedes` exists and would have
 carried the class rename (`weave/node/base.py`, consumed by the serializer,

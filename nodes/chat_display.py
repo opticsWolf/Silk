@@ -100,8 +100,8 @@ class ChatDisplayNode(ThreadedNode):
     _widget_core: WidgetCore
     display_updated = Signal(str)
 
-    node_class: ClassVar[str] = "Display"
-    node_subclass: ClassVar[str] = "Chat"
+    node_class: ClassVar[str] = "Silk AI"
+    node_subclass: ClassVar[str] = "Display"
     node_name: ClassVar[Optional[str]] = "Chat Log Display"
     node_description: ClassVar[Optional[str]] = "Accumulates and renders a running markdown chat log."
     node_tags: ClassVar[List[str]] = ["markdown", "chat", "display", "log"]
