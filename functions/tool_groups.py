@@ -176,11 +176,13 @@ def configurable_categories() -> Dict[str, str]:
 def coerce_paths(value: Any) -> List[str]:
     """Whatever arrived on the ``sandbox_roots`` port, as a list of strings.
 
-    Thin alias for Weave's :func:`coerce_path_list`: a Folder node may
-    connect to this list-typed port thanks to the ``dirpath`` ->
-    ``dirpath_list`` cast, but the cast is checked when the wire is drawn
-    and never applied to the value, so a bare ``Path`` is what actually
-    turns up. Named locally because "sandbox roots, whatever shape they
-    came in" is the thing this module is about.
+    Thin alias for Weave's :func:`coerce_path_list`, which is where the
+    reasoning lives: a wired Folder node arrives already wrapped by the
+    ``dirpath`` -> ``dirpath_list`` cast, and what is left for this to
+    do is the widget fallback, an upstream ``dirpath_list`` carrying
+    ``Path`` objects, and a session with casting turned off.
+
+    Named locally because "sandbox roots, whatever shape they came in"
+    is the thing this module is about.
     """
     return coerce_path_list(value)

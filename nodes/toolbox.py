@@ -388,11 +388,10 @@ class SilkToolBoxNode(ActiveNode):
 
     def compute(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
         # One source, the wire. A dirpath output casts into the list
-        # (wrapped) on connection, so a single Folder node and a Folder
-        # List node both land here without the node caring which -- but
-        # the cast is consulted when the wire is drawn and not when the
-        # value travels, so what actually arrives from a Folder node is
-        # a bare Path. coerce_paths takes either.
+        # (wrapped) at the gather site, so a single Folder node and a
+        # Folder List node both land here without the node caring which.
+        # coerce_paths is still what makes the widget fallback and a
+        # dirpath_list of Path objects the same shape as each other.
         roots = coerce_paths(inputs.get("sandbox_roots"))
 
         if not roots:
