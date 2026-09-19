@@ -156,7 +156,7 @@ finished on the paid primary.
 
 ### Silk ToolBox — `nodes/toolbox.py`
 The registry of **all** tools an agent network may use: sandbox roots (hard
-ceiling), toolchain packs, category overview and per-tool details.
+ceiling), toolchain packs, per-tool selection and details.
 
 | Direction | Port | Type |
 |---|---|---|
@@ -164,8 +164,48 @@ ceiling), toolchain packs, category overview and per-tool details.
 | in | `toolchains` | `toolchains` |
 | in | `mcp` | `mcp_servers` |
 | in | `plan` | `silk_plan` |
+| in | `embedding_model` | `model_handle` |
 | out | `toolbox` | `silk_toolbox` |
 | out | `root_paths` | `dirpath_list` |
+
+**Sandbox roots are wired, never typed.** There is no picker on the node:
+a `Folder` node for one root, a `Folder List` for several — the
+`dirpath` → `dirpath_list` cast wraps the single case on connection, so
+both fit the one port. The roots are the hard ceiling of the whole graph,
+and a ceiling that can also be set inside the node is a ceiling you
+cannot read off the canvas. Unwired, the node builds nothing and says so.
+
+**Two levels of tool selection, and they are not redundant.** The group
+checkboxes (File Read / Write / Manage, Ripgrep, Task Planning, Recall,
+Plugin authoring) decide what is *attached*; the checkbox on each row of
+the tool tree decides what survives. A group is a capability — *this box
+can write files* — and a tick is an instrument — *but not `move_file`*.
+
+The narrowing is the **last entry of the build recipe**, not something
+the node applies to its own output, so every ToolSet derived from this
+box replays it. Without that a derived set would come back holding tools
+its ToolBox had been told to drop.
+
+A tool the tree has never shown cannot have been unticked, so the node
+remembers which ones it has offered (`seen_tools`, saved with the graph).
+Switching a group on adds its tools live and already ticked, rather than
+adding them pre-excluded by a selection that could not have mentioned
+them — while a tool you did untick stays out across that change and
+across a reload.
+
+Toolchain tools are ordinary tools: the packs register on the box like
+every other attacher and appear in the same tree under their own
+categories (`code`, `lint`, `build`), so they are ticked, filtered and
+inherited exactly like the file tools.
+
+**Hooks start on.** Every hook in the catalog is ticked by default except
+the four that can refuse a call or stop to ask — `tool_approval`,
+`signoff`, `tool_budget`, `task_audit` (`GATING_HOOKS`). Observation is
+what people wish they had switched on *after* a run, and a hook that was
+never ticked leaves nothing to go back to; a gate you did not choose is
+how people learn to switch hooks off wholesale. Each default degrades on
+its own when a dependency is missing — `remember` without the `ledger`
+extra logs that it did not attach rather than failing the build.
 
 Wiring a `Silk Task` node into `plan` names the plan the task tools work
 on. Left unwired, they discover the newest plan under the sandbox root —

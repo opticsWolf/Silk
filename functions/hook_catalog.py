@@ -727,6 +727,34 @@ HOOK_CATALOG: dict[str, HookSpec] = {
 }
 
 
+#: Hooks that can refuse a call or stop to ask. Everything else only
+#: observes, masks or truncates, so these are the four a node must not
+#: switch on for you: being interrupted by a gate you did not choose is
+#: how people learn to switch hooks off wholesale.
+GATING_HOOKS: frozenset[str] = frozenset({
+    "tool_approval", "signoff", "tool_budget", "task_audit",
+})
+
+#: What a fresh ToolBox starts with: the whole catalog minus the gates.
+#: Observation is the thing people regret not having *after* a run, and
+#: a hook that was never ticked leaves no trace to go back to. Each of
+#: these degrades on its own when its dependency is missing -- `remember`
+#: without the ledger extra logs that it did not attach rather than
+#: failing the build.
+DEFAULT_HOOKS: tuple[str, ...] = tuple(
+    sorted(set(HOOK_CATALOG) - GATING_HOOKS)
+)
+
+
+def default_hook_config() -> dict[str, Any]:
+    """The ``{"names": [...], "configs": {}}`` value a node starts from.
+
+    A fresh dict per call: this is a widget default, and two nodes
+    sharing one mutable default is a bug that only shows up later.
+    """
+    return {"names": list(DEFAULT_HOOKS), "configs": {}}
+
+
 def catalog_names() -> list[str]:
     """Sorted names for node UIs and preset validation."""
     return sorted(HOOK_CATALOG)

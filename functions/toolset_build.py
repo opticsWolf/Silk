@@ -35,6 +35,33 @@ INFRASTRUCTURE_TOOLS = frozenset({"load_capability", "search_tools"})
 PERMISSION_ORDER: dict[str, int] = MODE_ORDER
 
 
+def prune_to_selection(
+    toolbox: Any,
+    sandbox: Optional[FileToolSandbox] = None,
+    *,
+    keep: Iterable[str] = (),
+    offered: Iterable[str] = (),
+) -> None:
+    """Drop the tools in *offered* that are not in *keep*.
+
+    Recipe-shaped (``attacher(toolbox, sandbox)`` once bound), so it goes
+    into ``build_recipe`` as the last entry and every derived ToolSet
+    replays the same narrowing. Without that a ToolSet would come back
+    holding tools its ToolBox had been told to drop.
+
+    *offered* is the point. A tool the user has never been shown cannot
+    have been deselected, so only names that have appeared in the node's
+    tree are eligible: turning a new group on adds its tools live rather
+    than adding them already-excluded. Infrastructure tools are never
+    eligible whatever either set says.
+    """
+    keep_set = set(keep) | INFRASTRUCTURE_TOOLS
+    offered_set = set(offered) - INFRASTRUCTURE_TOOLS
+    for name in list(toolbox.tools):
+        if name in offered_set and name not in keep_set:
+            toolbox.unregister(name)
+
+
 def tool_catalog(toolbox: Any) -> list[dict[str, Any]]:
     """Flatten a ToolBox's registry into plain-data catalog entries.
 

@@ -8,16 +8,24 @@ groups are toggled per-node; every file/search tool runs inside a
 
 Sandbox roots are the **hard ceiling** of the whole graph: ToolSets may
 narrow the reachable paths (via ``file_permissions``) but can never
-escape these roots. Roots come either from the built-in picker (dropdown
-remembering the last twelve folders) or from an upstream ``dirpath_list``
-(Folder List node) — in that case the picker is disabled. The effective
+escape these roots. They come from the ``sandbox_roots`` wire and from
+nowhere else — a Folder node for one root, a Folder List for several
+(the ``dirpath`` → ``dirpath_list`` cast wraps the single case). A
+ceiling that can also be set on the node is a ceiling you cannot read
+off the canvas, which is why there is no picker here. The effective
 roots are re-emitted on ``root_paths`` for downstream nodes (e.g. the
 Checkable Folder Tree).
 
 Toolchains (python venv, ruff, mypy, radon, maturin, cargo — from
-Toolchain nodes) contribute their structured tool packs to the recipe.
-The node body shows a category-grouped overview tree of every registered
-tool with a structured detail preview.
+Toolchain nodes) contribute their structured tool packs to the recipe,
+and appear in the tree under their own categories (``code``, ``lint``,
+``build``) like every other tool.
+
+The node body shows a category-grouped tree of every registered tool,
+with a checkbox per tool and a structured detail preview. The group
+checkboxes decide what is *attached*; the ticks decide what survives —
+a group is a capability, a tick is an instrument. The narrowing is the
+last entry of the build recipe, so every derived ToolSet replays it.
 """
 
 from functools import partial
@@ -32,12 +40,10 @@ from weave.node import VerticalSizePolicy
 from weave.registry import register_node
 from weave.logger import get_logger
 
-from weave.widgets.path_history_picker import PathHistoryPicker
-
 from .silk_ports import SILK_TOOLBOX_TYPE  # noqa: F401
 from ..functions.mcp_session import MCPBundle, attach_bundle
 from ..functions.tool_box import ToolBox
-from ..functions.toolset_build import tool_catalog
+from ..functions.toolset_build import prune_to_selection, tool_catalog
 from ..functions.tools.file_sandbox import FileToolSandbox
 from ..functions.tools.file_read import attach_file_read_tools
 from ..functions.tools.file_write import attach_file_write_tools
@@ -51,7 +57,7 @@ from ..functions.embeddings import embedder_for
 from ..functions.tools.ripgrep_tool import attach_ripgrep_tools
 from ..functions.tools.toolchains import attach_toolchain_tools
 from ..functions.tools.task_tracker import attach_task_tools
-from ..functions.hook_catalog import attach_catalog_hooks
+from ..functions.hook_catalog import attach_catalog_hooks, default_hook_config
 from ..widgets.hook_select import HookSelectWidget
 from ..widgets.node_whitelist import NodeWhitelistWidget
 from ..widgets.tool_tree import ToolDetailWidget, ToolTreeWidget
@@ -75,14 +81,14 @@ class SilkToolBoxNode(ActiveNode):
     node_subclass: ClassVar[str] = "Agents"
     node_name: ClassVar[Optional[str]] = "Silk ToolBox"
     node_description: ClassVar[Optional[str]] = (
-        "Registry of all agent tools; sandbox roots as hard ceiling, "
-        "toolchain packs, category overview and per-tool detail preview."
+        "Registry of all agent tools; sandbox roots (wired) as hard "
+        "ceiling, toolchain packs, per-tool selection and detail preview."
     )
     node_tags: ClassVar[Optional[List[str]]] = ["silk", "agent", "tools", "sandbox", "llm"]
     node_icon: ClassVar[Optional[str]] = "grid-dots"
     vertical_size_policy: ClassVar[VerticalSizePolicy] = VerticalSizePolicy.FIT
-    node_state_api = 1   # owns a hand-written state dict
-    node_version = 1     # bump on any state-shape change (G20)
+    node_state_api = 2   # owns a hand-written state dict
+    node_version = 2     # bump on any state-shape change (G20)
 
     def __init__(self, title: str = "Silk ToolBox", **kwargs: Any) -> None:
         super().__init__(title=title, **kwargs)
@@ -117,18 +123,10 @@ class SilkToolBoxNode(ActiveNode):
         self._widget_core.set_node(self)
 
         # ── Widgets ──
-        self.path_picker = PathHistoryPicker(mode="folder")
-        self.path_picker.setToolTip(
-            "Sandbox root — the hard ceiling: no tool can read or write "
-            "outside the sandbox roots. Disabled while a folder list is "
-            "connected. Dropdown remembers recent folders."
-        )
-        form.addRow("Sandbox Root:", self.path_picker)
-        self._widget_core.register_widget(
-            "sandbox_root", self.path_picker, role=PortRole.INTERNAL,
-            datatype="dirpath", default="", add_to_layout=False,
-        )
-
+        # No root picker: the sandbox roots are the hard ceiling of the
+        # whole graph, and a ceiling that can be set in two places is a
+        # ceiling nobody can read off the canvas. The wire is the only
+        # way in — a Folder node for one root, a Folder List for several.
         self.chk_read = QCheckBox()
         self.chk_read.setChecked(True)
         form.addRow("File Read Tools:", self.chk_read)
@@ -227,12 +225,18 @@ class SilkToolBoxNode(ActiveNode):
         # Infrastructure hooks: part of the recipe, so every derived
         # ToolSet re-creates them — always on, outside any role layer.
         # Value shape: {"names": [...], "configs": {name: {...}}}.
+        # Everything in the catalog except the four that can refuse a
+        # call or stop to ask (GATING_HOOKS) starts ticked: observation
+        # is what people wish they had turned on after a run, and a hook
+        # that was never ticked leaves nothing to go back to.
         self._hook_select = HookSelectWidget()
         form.addRow("Hooks:", self._hook_select)
         self._widget_core.register_widget(
             "hooks_config", self._hook_select, role=PortRole.INTERNAL,
-            datatype="dict", default={}, add_to_layout=False,
+            datatype="dict", default=default_hook_config(),
+            add_to_layout=False,
         )
+        self._hook_select.set_value(default_hook_config())
 
         # ── Overview: category quick-select + tool tree + detail ──
         self._combo_category = QComboBox()
@@ -245,15 +249,24 @@ class SilkToolBoxNode(ActiveNode):
             datatype="string", default=_ALL_CATEGORIES, add_to_layout=False,
         )
 
-        self._tool_tree = ToolTreeWidget(checkable=False)
+        # Checkable: the group boxes above decide what gets *attached*,
+        # these decide what survives. The two are not redundant -- a
+        # group is a capability ("this box can write files"), a tick is
+        # an instrument ("but not move_file"). Only tools the tree has
+        # actually offered are eligible to be dropped (see _seen_tools),
+        # so switching a group on adds its tools live rather than adding
+        # them already-excluded.
+        self._tool_tree = ToolTreeWidget(checkable=True)
         form.addRow(self._tool_tree)
-        # DISPLAY bindings (no pushes): make these views resolvable by the
-        # canvas so their registered menu builders (returning None for
-        # read-only views) suppress the node context menu over them.
         self._widget_core.register_widget(
-            "tool_overview", self._tool_tree, role=PortRole.DISPLAY,
-            datatype="list", add_to_layout=False,
+            "enabled_tools", self._tool_tree, role=PortRole.INTERNAL,
+            datatype="list", default=[], add_to_layout=False,
         )
+        # Every tool the tree has ever shown. The node has to tell "never
+        # offered" from "offered and unticked": without it, a tool that
+        # appears when a group is switched on would arrive unchecked and
+        # be pruned on the same evaluation that created it.
+        self._seen_tools: set[str] = set()
 
         self._detail = ToolDetailWidget()
         form.addRow("Details:", self._detail)
@@ -279,11 +292,29 @@ class SilkToolBoxNode(ActiveNode):
         if hasattr(self._widget_core, "patch_proxy"):
             self._widget_core.patch_proxy()
 
-    # ── State: keep the root-path history across saves ─────────────────
+    # ── State: which tools the tree has already offered ────────────────
+
+    @staticmethod
+    def migrate_state(state: Dict[str, Any], from_version: int) -> Dict[str, Any]:
+        """api 1 → 2: the root picker's history is gone, seen_tools is new.
+
+        ``root_history`` fed a folder dropdown that no longer exists, and
+        the root itself is now the ``sandbox_roots`` wire's to supply, so
+        a graph saved before this comes back needing that wire. Dropping
+        the key is the whole migration: an absent ``seen_tools`` means the
+        tree has offered nothing yet, which is exactly true of a graph
+        restored into this class, and the first build re-offers every
+        tool ticked.
+        """
+        state.pop("root_history", None)
+        return state
 
     def get_state(self) -> Dict[str, Any]:
         state = super().get_state()
-        state["root_history"] = self.path_picker.history()
+        # Saved because it is the difference between "unticked" and
+        # "never shown". Reload without it and every tool looks new, so
+        # a deliberately unticked tool would come back ticked.
+        state["seen_tools"] = sorted(self._seen_tools)
         return state
 
     def restore_state(self, state: Dict[str, Any]) -> None:
@@ -291,14 +322,34 @@ class SilkToolBoxNode(ActiveNode):
         with self._widget_core.suppress_signals():
             super().restore_state(state)
         # 2. Restore non-widget internal state
-        self.path_picker.set_history(state.get("root_history", []))
+        self._seen_tools = {str(n) for n in (state.get("seen_tools") or ())}
 
     # ── UI helpers (main thread only) ─────────────────────────────────
 
     def _on_category_changed(self, text: str) -> None:
         self._tool_tree.set_category_filter("" if text == _ALL_CATEGORIES else text)
 
+    def _adopt_new_tools(self, catalog: List[Dict[str, Any]]) -> None:
+        """Tick every tool the tree has not offered before.
+
+        A tool arrives because the user switched a group on, so the
+        honest default is *on*: the alternative is a group that appears
+        to do nothing until its tools are ticked one by one. Tools
+        already seen keep whatever state they were left in, ticked or
+        not, which is what makes an untick stick.
+        """
+        names = {str(entry["name"]) for entry in catalog}
+        fresh = names - self._seen_tools
+        self._seen_tools |= names
+        if not fresh:
+            return
+        with self._widget_core.suppress_signals():
+            self._tool_tree.set_value(
+                sorted(set(self._tool_tree.get_value() or ()) | fresh)
+            )
+
     def _refresh_overview(self, catalog: List[Dict[str, Any]]) -> None:
+        self._adopt_new_tools(catalog)
         self._tool_tree.set_catalog(catalog)
         current = self._combo_category.currentText()
         self._combo_category.blockSignals(True)
@@ -314,18 +365,13 @@ class SilkToolBoxNode(ActiveNode):
     # ── Worker thread ─────────────────────────────────────────────────
 
     def compute(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
-        # BIDIRECTIONAL binding: the picker's value arrives via `inputs` —
-        # compute() must never touch Qt widgets (worker-thread rule).
-        upstream = [
+        # One source, the wire. A dirpath output casts into the list
+        # (wrapped) on connection, so a single Folder node and a Folder
+        # List node both land here without the node caring which.
+        roots = [
             str(p).strip() for p in (inputs.get("sandbox_roots") or [])
             if str(p).strip()
         ]
-        if upstream:
-            roots = upstream
-        else:
-            single = str(inputs.get("sandbox_root") or "").strip()
-            roots = [single] if single else []
-        self._sync_upstream_roots = bool(upstream)
 
         if not roots:
             return {"toolbox": None, "root_paths": []}
@@ -466,6 +512,20 @@ class SilkToolBoxNode(ActiveNode):
                 ),
             ))
 
+        # Last, after everything that registers: the per-tool narrowing.
+        # In the recipe rather than applied here, so a ToolSet replaying
+        # this recipe narrows the same way -- otherwise a derived set
+        # would come back holding tools this box was told to drop.
+        offered = frozenset(str(n) for n in (self._seen_tools or ()))
+        if offered:
+            keep = frozenset(
+                str(n) for n in (inputs.get("enabled_tools") or ())
+            )
+            recipe.append((
+                "tool_selection",
+                partial(prune_to_selection, keep=keep, offered=offered),
+            ))
+
         toolbox = ToolBox()
         for source_name, attacher in recipe:
             with toolbox._attributing_to(source_name):
@@ -477,15 +537,13 @@ class SilkToolBoxNode(ActiveNode):
 
     def on_evaluate_finished(self) -> None:
         super().on_evaluate_finished()
-        self.path_picker.setEnabled(
-            not getattr(self, "_sync_upstream_roots", False)
-        )
         toolbox = self._get_cached_value("toolbox")
         if toolbox is None:
             self._refresh_overview([])
             self._widget_core.push_display(
                 "status",
-                "Set a sandbox root (or connect a folder list) to build the toolbox.",
+                "Connect a folder (or a folder list) to sandbox_roots to build "
+                "the toolbox.",
             )
         else:
             catalog = tool_catalog(toolbox)
