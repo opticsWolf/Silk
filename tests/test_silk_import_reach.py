@@ -113,3 +113,83 @@ def test_roots_are_reported_as_pairs_for_a_caller_that_wants_its_own_words(
     assert ir.importable_roots([root, tmp_path / "b"]) == [
         (str(root), ir.ON_SYS_PATH)
     ]
+
+
+# ── the wiring ──────────────────────────────────────────────────────────
+#
+# Everything above tests the check in isolation. What the check is *for*
+# is that the user is told, and that is a property of the ToolBox node:
+# a warning computed in a worker thread, stashed on the node, and read
+# back by on_evaluate_finished when it composes the status line. The
+# status line has been reworked since (tool tree, categories, graph
+# hint), so the seam is worth pinning rather than assuming.
+
+
+def _toolbox_node():
+    from PySide6.QtWidgets import QApplication
+
+    QApplication.instance() or QApplication([])
+    from silk.nodes.toolbox import SilkToolBoxNode
+
+    return SilkToolBoxNode()
+
+
+def _make_importable(monkeypatch, tmp_path, root):
+    """Make *root* look like somewhere Python imports from, and nothing else."""
+    from silk.functions import import_reach as ir
+
+    monkeypatch.setattr(sys, "path", [str(root)])
+    monkeypatch.setattr(ir, "_weave_root", lambda: None)
+    monkeypatch.setattr(sys, "prefix", str(tmp_path / "elsewhere"))
+    monkeypatch.setattr(sys, "base_prefix", str(tmp_path / "elsewhere"))
+
+
+def test_an_importable_writable_root_reaches_the_status_line(
+    tmp_path, monkeypatch,
+):
+    """The whole point of the check: the user sees it, not just the log."""
+    root = tmp_path / "on_the_path"
+    root.mkdir()
+    _make_importable(monkeypatch, tmp_path, root)
+
+    node = _toolbox_node()
+    # write_file is what *asks* for write access -- there is no second
+    # switch -- so ticking it is what makes the root's reach matter.
+    result = node.compute(
+        {"sandbox_roots": [str(root)], "enabled_tools": ["write_file"]})
+
+    assert node._import_reach, "a writable root on sys.path must be reported"
+
+    shown = []
+    monkeypatch.setattr(node._widget_core, "push_display",
+                        lambda name, text: shown.append((name, text)))
+    # The real compute output rather than a stand-in: the status line
+    # asks the toolbox for its catalog, so a sentinel would test the
+    # stand-in instead of the seam.
+    monkeypatch.setattr(node, "_get_cached_value", result.get)
+    node.on_evaluate_finished()
+
+    status = [text for name, text in shown if name == "status"]
+    assert status, "on_evaluate_finished must push a status line"
+    assert node._import_reach in status[-1], (
+        "the warning must survive the status line's rework -- a log line "
+        "alone is a warning nobody reads (G21)")
+
+
+def test_a_read_only_toolbox_says_nothing_about_import_reach(
+    tmp_path, monkeypatch,
+):
+    """No write grant, no deferred authority, no warning.
+
+    The pairing matters: a check that fired on every root would be
+    noise, and noise is how the real case gets ignored.
+    """
+    root = tmp_path / "on_the_path"
+    root.mkdir()
+    _make_importable(monkeypatch, tmp_path, root)
+
+    node = _toolbox_node()
+    node.compute({"sandbox_roots": [str(root)], "enabled_tools": ["read_file"]})
+
+    assert node._import_reach == "", (
+        "reading an importable directory grants nothing")
