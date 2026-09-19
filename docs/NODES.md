@@ -1,9 +1,8 @@
 # Silk Node Reference
 
 Every Silk node searches under the **Silk AI** category, in one of four
-submenus: **Loaders**, **Agents**, **Display** and **Configuration** (plus
-**Monitor**, which holds Pool Monitor alone). Ports are listed as they are
-registered; `exec` ports are trigger pulses.
+submenus: **Loaders**, **Agents**, **Display** and **Configuration**. Ports
+are listed as they are registered; `exec` ports are trigger pulses.
 
 *(The category was plain "AI" until 2026-09-19, and the read-only surfaces
 — Hook Monitor, Plan Viewer, Task Hub, Chat Log Display — sat under Weave's
@@ -492,7 +491,7 @@ thread as markdown/HTML.
 |---|---|---|
 | in | `event` | `dict` | (the Agent's `events` stream; keeps `chat.turn`) |
 
-### Pool Monitor — `nodes/pool_monitor.py` *(Silk AI / Monitor)*
+### Pool Monitor — `nodes/pool_monitor.py` *(Silk AI / Display)*
 Live snapshot of GGUF pool state (active/idle instances, capacity). Wire any
 agent's `done` port to `refresh` for updates without polling.
 
