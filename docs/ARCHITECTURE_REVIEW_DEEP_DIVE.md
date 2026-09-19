@@ -53,7 +53,7 @@ them on 2026-09-02 alone) built most of the heaviest surface — `ledger.py`,
 
 `GGUFLNode` (loader) · `SilkToolBoxNode` · `SilkToolSetNode` · `SilkMCPServerNode` ·
 `SilkMCPAggregatorNode` · `SilkTaskNode` · `ToolchainNode` · `SilkRoleNode` ·
-`AgentInferenceSettingsNode` · `SilkAgentNode` · `SilkAgentSpecNode` ·
+`AgentInferenceSettingsNode` · `SilkAgentNode` · `SilkWorkerNode` ·
 `SilkOrchestratorNode` · `SilkHookMonitorNode` · `SilkPlanViewerNode` ·
 `SilkTaskHubNode` · `ChatDisplayNode` · `PoolMonitorNode`.
 
@@ -294,7 +294,7 @@ The agent's write-verb safety chain, verified against the D76–D81 rules:
   log-tool-calls) with inert factories wired store-aware by `attach_catalog_hooks` —
   catalog UI and runtime wiring share one vocabulary.
 
-## 14. Multi-agent (`orchestrator.py`, `subagent.py`, `usage_limits.py`, `agent_spec.py`)
+## 14. Multi-agent (`orchestrator.py`, `subagent.py`, `usage_limits.py`, `worker.py`)
 
 - `run_subagent` is the Qt-free drive loop shared by node and orchestrator: fresh
   history (no context leak), own pool session (own KV cache), own `RoleBinding` per

@@ -196,11 +196,17 @@ if "agent_message" not in PortRegistry._by_name:
         casts_to={},
     )
 
-# A chainable list of AgentSpec worker bundles (model + toolset + role), fed to
-# the Orchestrator node. Built up node-by-node like the toolchains chain.
-if "silk_agents" not in PortRegistry._by_name:
+# A chainable list of WorkerSpec bundles (model + toolset + role), fed to the
+# Orchestrator node. Built up node-by-node like the toolchains chain.
+#
+# Named for what the Orchestrator calls them -- its input port is `workers`
+# and its tool is `list_workers` -- so the wire reads the same at both ends.
+# It used to be `silk_agents`, which made a Worker node look like something
+# an Agent node would accept. It is not: nothing but an Orchestrator takes
+# this type.
+if "silk_workers" not in PortRegistry._by_name:
     PortRegistry.register(
-        name="silk_agents",
+        name="silk_workers",
         python_type=list,
         color_index=99,
         type_id=None,
@@ -210,7 +216,8 @@ if "silk_agents" not in PortRegistry._by_name:
             and all(hasattr(s, "model_handle") for s in v)
         ),
         formatter=lambda v: (
-            f"<{len(v)} agent(s)>" if isinstance(v, (list, tuple)) else "<no agents>"
+            f"<{len(v)} worker(s)>" if isinstance(v, (list, tuple))
+            else "<no workers>"
         ),
         casts_to={},
     )
@@ -259,6 +266,6 @@ FILE_PERMISSIONS_TYPE = PortRegistry._by_name["file_permissions"]
 DIRPATH_LIST_TYPE = PortRegistry._by_name["dirpath_list"]
 TOOLCHAINS_TYPE = PortRegistry._by_name["toolchains"]
 AGENT_MESSAGE_TYPE = PortRegistry._by_name["agent_message"]
-SILK_AGENTS_TYPE = PortRegistry._by_name["silk_agents"]
+SILK_WORKERS_TYPE = PortRegistry._by_name["silk_workers"]
 MCP_SERVERS_TYPE = PortRegistry._by_name["mcp_servers"]
 SILK_PLAN_TYPE = PortRegistry._by_name["silk_plan"]

@@ -7,7 +7,7 @@ so a node and its children build the same prompt shape. It joins these
 sections with blank lines, in a fixed order:
 
 1. **`base`** — the node's `system_prompt` input (or a sub-agent's
-   `AgentSpec.system_prompt`). The engine stores it and prepends it as the
+   `WorkerSpec.system_prompt`). The engine stores it and prepends it as the
    system message on every request (`GraphEngine`).
 2. **`role.system_prompt_block()`** — the `[ROLE: name]` block (omitted when
    empty).

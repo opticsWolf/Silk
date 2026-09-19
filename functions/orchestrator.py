@@ -67,7 +67,7 @@ from pydantic import BaseModel, Field, field_validator
 from weave.logger import get_logger
 
 from .messaging import AgentMessage
-from .subagent import AgentSpec, run_subagent
+from .subagent import WorkerSpec, run_subagent
 
 if TYPE_CHECKING:
     from .tool_box import ToolBox
@@ -109,7 +109,7 @@ def _non_blank(v: str) -> str:
     return v.strip()
 
 
-def _worker_map(workers: Any) -> dict[str, AgentSpec]:
+def _worker_map(workers: Any) -> dict[str, WorkerSpec]:
     """Normalise *workers* (a list of specs or a name→spec dict) into a map.
 
     List entries are keyed by ``spec.name``; an unnamed spec falls back to
@@ -117,7 +117,7 @@ def _worker_map(workers: Any) -> dict[str, AgentSpec]:
     """
     if isinstance(workers, dict):
         return {str(k): v for k, v in workers.items()}
-    out: dict[str, AgentSpec] = {}
+    out: dict[str, WorkerSpec] = {}
     for i, spec in enumerate(workers or ()):
         name = (getattr(spec, "name", "") or f"worker{i + 1}").strip()
         out[name] = spec
@@ -244,7 +244,7 @@ def _run_one(
     toolbox: Any, worker: str, task: str, context: str, actor: str,
 ) -> DelegateResult:
     """Resolve, guard, and run one worker; never raises (packs errors in-band)."""
-    roster: dict[str, AgentSpec] = getattr(toolbox, _WORKERS_ATTR, {}) or {}
+    roster: dict[str, WorkerSpec] = getattr(toolbox, _WORKERS_ATTR, {}) or {}
     max_depth = int(getattr(toolbox, _DEPTH_CAP_ATTR, DEFAULT_MAX_DEPTH)
                     or DEFAULT_MAX_DEPTH)
     base_gen = dict(getattr(toolbox, _GEN_ATTR, {}) or {})
@@ -337,8 +337,8 @@ def attach_orchestrator_tools(
     Args:
         toolbox: The orchestrator agent's ToolBox (its toolset).
         sandbox: Unused (kept for the ``attach_*(toolbox, sandbox)`` shape).
-        workers: A list of :class:`AgentSpec` (keyed by ``name``) or a
-            ``{name: AgentSpec}`` map — the agents this orchestrator may call.
+        workers: A list of :class:`WorkerSpec` (keyed by ``name``) or a
+            ``{name: WorkerSpec}`` map — the agents this orchestrator may call.
         max_depth: How deep delegation may nest (spec D55). ``1`` lets the
             orchestrator call workers but stops a worker from sub-delegating;
             the default ``2`` allows one further hop. The Orchestrator node
@@ -367,7 +367,7 @@ def attach_orchestrator_tools(
         ),
     )
     def _list_workers(db_pool: Any, user_session: dict) -> ListWorkersResult:
-        roster: dict[str, AgentSpec] = getattr(toolbox, _WORKERS_ATTR, {}) or {}
+        roster: dict[str, WorkerSpec] = getattr(toolbox, _WORKERS_ATTR, {}) or {}
         return ListWorkersResult(
             workers=[
                 WorkerInfo(name=name, description=getattr(s, "description", "") or "")

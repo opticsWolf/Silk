@@ -25,7 +25,7 @@ from silk.functions.orchestrator import (
     set_orchestrator_observers,
 )
 from silk.functions.role import DEFAULT_ROLE
-from silk.functions.subagent import AgentSpec
+from silk.functions.subagent import WorkerSpec
 from silk.functions.tool_box import ToolBox
 from silk.functions.usage_limits import (
     SubBudget, UsageLimitExceeded, UsageLimits, describe_budget, nest,
@@ -54,7 +54,7 @@ class _Model:
 
 
 def _worker(name, responses, on_request=None):
-    return AgentSpec(
+    return WorkerSpec(
         model_handle={"backend": "gguf", "model": _Model(responses, on_request)},
         toolset=None, role=DEFAULT_ROLE, name=name,
     )
@@ -292,9 +292,9 @@ def test_concurrent_workers_cannot_overrun_the_shared_cap():
 
 def test_a_worker_spec_budget_becomes_a_sub_budget_of_the_shared_one():
     """The wiring: run_subagent nests rather than choosing (D26)."""
-    from silk.functions.subagent import AgentSpec
+    from silk.functions.subagent import WorkerSpec
 
-    spec = AgentSpec(model_handle={}, usage_limits=UsageLimits(request_limit=2))
+    spec = WorkerSpec(model_handle={}, usage_limits=UsageLimits(request_limit=2))
     shared = UsageLimits(request_limit=9)
     effective = nest(shared, spec.usage_limits)
 

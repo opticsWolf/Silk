@@ -71,7 +71,7 @@ property — every finding below is written so as not to erode it.
 The node suite splits cleanly into four families:
 
 - **Assembly** (config → handle): GGUF Loader, ToolBox, ToolSet, Toolchain, Role,
-  Inference Settings, Agent Spec. All emit live or plain-data handles on custom
+  Inference Settings, Worker. All emit live or plain-data handles on custom
   port types; all `ActiveNode` or manual-threaded; presets everywhere
   (JSON + pydantic + shared `PresetBarWidget`) — a genuinely consistent idiom.
 - **Execution**: Agent, Orchestrator (subclass of Agent — delegation arrives as
@@ -83,7 +83,7 @@ The node suite splits cleanly into four families:
 
 Nine custom port types (`nodes/silk_ports.py`): `model_handle`, `silk_toolbox`,
 `silk_toolset`, `silk_role`, `file_permissions`, `dirpath_list`, `toolchains`,
-`agent_message`, `silk_agents`.
+`agent_message`, `silk_workers`.
 
 ---
 
@@ -110,7 +110,7 @@ but the shape is exactly right.
 correlation-carrying. This is the standard that R4 measures the live-handle ports
 against.
 
-**S4. Chain-accumulator idiom.** Toolchain → toolchains, Agent Spec → agents:
+**S4. Chain-accumulator idiom.** Toolchain → toolchains, Worker → agents:
 build a list down a chain of same-typed ports. One idiom, used twice, documented
 in both docstrings, mirroring `weave.library` conventions. Cheap to learn.
 
@@ -386,7 +386,7 @@ plus this rule would have prevented every threading defect found this month
 ### R12. Node base-class selection is folk knowledge
 
 **Observation.** The suite uses `ActiveNode` (cheap sync config: ToolSet, Role,
-Inference Settings, Agent Spec…), `ThreadedNode` (streaming/long compute: Agent,
+Inference Settings, Worker…), `ThreadedNode` (streaming/long compute: Agent,
 Chat Display, monitors' sinks, Toolchain — for version probing), and
 `ThreadedManualNode` (user/pulse-triggered: GGUF Loader, Pool Monitor). The
 choices are all *correct*, but the decision procedure lives in nobody's head but
@@ -403,7 +403,7 @@ Beyond the already-recorded G16/G17/G18:
 
 1. **Sign-Off node vs D51** — resolved by R6's rule, but the spec must say so
    (today it reads as a contradiction).
-2. **`silk_agents` validation is shape-only** — `hasattr(s, "model_handle")` —
+2. **`silk_workers` validation is shape-only** — `hasattr(s, "model_handle")` —
    while the Orchestrator's real preconditions (distinct toolsets per worker,
    D52(1)) are checked nowhere. If R5 option 2 lands, this resolves itself;
    until then the validator is the only place a bad worker list could be caught

@@ -102,7 +102,7 @@ class PoolMonitorNode(ThreadedManualNode):
     # Worker → main-thread bridge for display updates.
     _display_update = Signal(str, str)
 
-    node_class: ClassVar[str] = "AI"
+    node_class: ClassVar[str] = "Silk AI"
     node_subclass: ClassVar[str] = "Monitor"
     node_name: ClassVar[Optional[str]] = "Pool Monitor"
     node_description: ClassVar[Optional[str]] = (

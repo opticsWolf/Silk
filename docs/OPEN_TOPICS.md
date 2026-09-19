@@ -1047,7 +1047,7 @@ it is never billed for what it did not get and cannot raise the global
 ceiling. The greedy worker now exhausts its own share and the others keep
 theirs. The surface followed the same day, because a mechanism nothing
 constructs is a mechanism nobody has: the Agent/Orchestrator node carries a
-**Budget** field for the shared cap and the Agent Spec node one for a
+**Budget** field for the shared cap and the Worker node one for a
 worker's share (`requests=20, tool_calls=50, output=8k`, empty for no cap).
 An unreadable field refuses the run rather than running uncapped.
 

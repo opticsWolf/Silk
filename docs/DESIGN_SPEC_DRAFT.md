@@ -1060,7 +1060,7 @@ Three things this needs, all small and all currently absent:
    resolving again. **Done 2026-09-18**, the other half of it: a remote
    backend is now something a person can *say* -- the **Model Endpoint**
    node (`functions/model_endpoint.py`, `nodes/model_endpoint.py`) emits
-   the same handle the loader does, so Agent, Agent Spec and the ToolBox's
+   the same handle the loader does, so Agent, Worker and the ToolBox's
    embedding input take it without knowing the difference. See **D86** for
    the wire-format decision under it. What remains of D45 is the pool
    holding N *named* backends and routing at `checkout()` -- one endpoint
@@ -1242,7 +1242,7 @@ the fan-out keeps theirs.
 **The surface, built the same day.** A mechanism nothing constructs is a
 mechanism nobody has: until the field existed, every cap had to be written
 in Python, so a *running graph* had no caps at all. The Agent node (and so
-the Orchestrator, which is one) and the Agent Spec node each carry one
+the Orchestrator, which is one) and the Worker node each carry one
 text field, read by `parse_budget`: `requests=20, tool_calls=50,
 output=8k`, empty for no cap. Four names, four short aliases, `k`/`m`
 suffixes, and no prefix matching.
@@ -1250,13 +1250,13 @@ suffixes, and no prefix matching.
 Three things follow from what a budget is *for*. An unreadable field
 **refuses the run** -- before the role is bound or a token is spent --
 because running anyway would run without the cap that was asked for while
-looking like it obeyed one; on the Agent Spec node the same answer means
+looking like it obeyed one; on the Worker node the same answer means
 the worker is not added, since a registered worker gets delegated to.
 The orchestrator's budget is *one object* shared with its workers,
 including its own requests, because a cap it spent from separately would
 not be a cap on the fan-out. And it is the **run's**, not the node's: the
 counters are released when the run ends, or a second run would start
-already spent. `AgentSpec.usage_limits` is the worker's own field, and
+already spent. `WorkerSpec.usage_limits` is the worker's own field, and
 `nest` puts it inside the shared one exactly as above.
 
 ---
@@ -1325,6 +1325,52 @@ delegation-chain cycle guard are in place.
 Nothing below changes that shape. What follows is the gap between the design
 and what `delegate_parallel` actually does once N > 1 -- which is where
 "direct numerous subagents" lives.
+
+**D93. The worker node is called Worker, and Silk's nodes have their own
+menu.** Two renames, both for the same reason: a name that describes the
+wrong thing costs more than the rename does.
+
+*"Agent Spec" -> "Silk Worker."* The old name read as configuration for the
+Agent node -- an Agent and its Spec -- and the question it produced ("why
+are there two, is one an older artefact?") is the one the name should have
+answered. They are not two versions of one thing. The **Agent** node runs an
+agent where it sits: `run`/`done` pins, a `user_prompt`, a `response`. The
+**Worker** node runs nothing; it *describes* an agent for an Orchestrator to
+delegate to, which is why it carries a `name` and a speciality -- an
+orchestrator's model addresses it by name, not by wire -- and why it has no
+execution surface at all. Nor could it: `delegate` spawns workers inside a
+single tool call, on a worker thread, several at once, so a worker must be
+data the orchestrator carries, not a box the engine schedules.
+
+The rename runs all the way down, because a node called Worker backed by an
+`AgentSpec` on a `silk_agents` port is the same drift starting over:
+
+| was | now |
+|---|---|
+| `Silk Agent Spec` / `SilkAgentSpecNode` | `Silk Worker` / `SilkWorkerNode` |
+| `nodes/agent_spec.py` | `nodes/worker.py` |
+| `AgentSpec` | `WorkerSpec` |
+| port type `silk_agents` | `silk_workers` |
+| ports `agents_in` / `agents` | `workers_in` / `workers` |
+
+The output is now called `workers` at both ends, so the wire into the
+Orchestrator's `workers` input reads as one word rather than two.
+
+*Menu category "AI" -> "Silk AI."* Fourteen nodes moved. Silk's nodes were
+mixed into whatever AI nodes a host already had; they are a plugin's nodes
+and now say so. Four observability nodes (Hook Monitor, Plan Viewer, Task
+Hub, Chat Log Display) stay under `Display`, where they sit beside Weave's
+own display nodes rather than beside Silk's machinery -- deliberate, but
+worth revisiting if that split reads as an oversight on the canvas.
+
+**No migration, by instruction.** `node_supersedes` exists and would have
+carried the class rename (`weave/node/base.py`, consumed by the serializer,
+rehydrate and hot-reload), but nothing carries a *port* rename, and the
+ports had to change for the rename to be worth anything. A graph saved with
+an Agent Spec node loses that node and its wires. This is the same call D86
+made for `gguf_model` -> `model_handle`, taken explicitly rather than by
+omission.
+
 
 **D52. `delegate_parallel` is unsound with N > 1 today: four independent
 defects, all silent.**
@@ -1978,8 +2024,8 @@ Three consequences, each of which was a small decision:
 - **The port is `model_handle`, not `gguf_model`** (renamed 2026-09-18).
   The old name described the one case that existed; every gate that read
   `backend == "gguf"` now reads "has a backend and a client" -- the port
-  validator, `GraphEngine`, the Agent and Agent Spec nodes,
-  `AgentSpec.is_runnable`, and `embedder_for`, which routes a client
+  validator, `GraphEngine`, the Agent and Worker nodes,
+  `WorkerSpec.is_runnable`, and `embedder_for`, which routes a client
   carrying a `base_url` to the HTTP embedder by asking the *object* what it
   is rather than the handle what it was called. `backend` names the wire
   format because that is the only thing the engine cares about; the

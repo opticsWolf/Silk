@@ -68,7 +68,7 @@ bare `base_url`; what was missing was a way to *say* one on the canvas.
 `backend` names the *wire format*, not a vendor, because that is the only
 thing the engine cares about. Everything downstream widened from
 `== "gguf"` to "has a backend and a client": the port validator, the
-engine, the Agent and Agent Spec nodes, `AgentSpec.is_runnable` and
+engine, the Agent and Worker nodes, `WorkerSpec.is_runnable` and
 `embedder_for` — which routes a client carrying a `base_url` to the HTTP
 embedder rather than the in-process one, by asking the object what it is
 instead of asking the handle what it was called.

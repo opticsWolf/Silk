@@ -9,7 +9,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 Silk Orchestrator Node — a Silk Agent that delegates to worker agents.
 
 An orchestrator *is* a :class:`SilkAgentNode`: same model + toolset + role + Exec
-chaining. The only addition is a ``workers`` input (a chain of Agent Spec nodes)
+chaining. The only addition is a ``workers`` input (a chain of Silk Worker nodes)
 whose specs are mounted onto the agent's toolset as ``delegate`` /
 ``delegate_parallel`` / ``list_workers`` tools right before the run. From then on
 the ordinary agent loop drives everything — the model plans, and calls
@@ -37,7 +37,7 @@ from weave.registry import register_node
 from weave.logger import get_logger
 
 from .agent import SilkAgentNode
-from .silk_ports import SILK_AGENTS_TYPE  # noqa: F401
+from .silk_ports import SILK_WORKERS_TYPE  # noqa: F401
 from ..functions.stream_events import EventWorker
 from ..functions.orchestrator import (
     DEFAULT_MAX_DEPTH,
@@ -81,8 +81,8 @@ class SilkOrchestratorNode(SilkAgentNode):
     def __init__(self, title: str = "Silk Orchestrator", **kwargs: Any) -> None:
         super().__init__(title=title, **kwargs)
         # The roster of workers this orchestrator may delegate to (a chain of
-        # Agent Spec nodes). Everything else is inherited from SilkAgentNode.
-        self.add_input("workers", datatype="silk_agents")
+        # Silk Worker nodes). Everything else is inherited from SilkAgentNode.
+        self.add_input("workers", datatype="silk_workers")
 
         # Delegation depth is a graph-visible decision, not a class constant
         # (D55): a fan-out that may itself fan out is the difference between

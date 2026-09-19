@@ -48,7 +48,7 @@ class SilkRoleNode(ActiveNode):
     # declaration for the typechecker, not a runtime change (G9).
     _widget_core: WidgetCore
 
-    node_class: ClassVar[str] = "AI"
+    node_class: ClassVar[str] = "Silk AI"
     node_subclass: ClassVar[str] = "Agents"
     node_name: ClassVar[Optional[str]] = "Silk Role"
     node_description: ClassVar[Optional[str]] = (

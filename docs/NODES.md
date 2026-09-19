@@ -1,7 +1,12 @@
 # Silk Node Reference
 
-All nodes search under the **AI** category unless noted. Ports are listed as
-they are registered; `exec` ports are trigger pulses.
+All nodes search under the **Silk AI** category unless noted — the four
+observability nodes (Hook Monitor, Plan Viewer, Task Hub, Chat Log Display)
+sit under **Display**, alongside Weave's own display nodes. Ports are listed
+as they are registered; `exec` ports are trigger pulses.
+
+*(The category was plain "AI" until 2026-09-19; it was renamed so Silk's
+nodes do not sit mixed in with a host's own AI nodes.)*
 
 ## Model
 
@@ -38,7 +43,7 @@ prompts are small enough that prefill does not matter; the Pool Monitor's
 
 ### Model Endpoint — `nodes/model_endpoint.py` (`SilkModelEndpointNode`)
 A model that runs somewhere else, wired where the loader would go (D45).
-Emits the same `model_handle`, so Agent, Agent Spec and the ToolBox's
+Emits the same `model_handle`, so Agent, Worker and the ToolBox's
 embedding input take it without knowing the difference.
 
 | Direction | Port | Type |
@@ -242,7 +247,7 @@ not cost a handshake.
 | in | `mcp_in` | `mcp_servers` |
 | out | `mcp` | `mcp_servers` |
 
-### Silk Task — `nodes/task.py` *(AI / Agents)*
+### Silk Task — `nodes/task.py` *(Silk AI / Agents)*
 Names the plan agents work on, so the store never has to guess which plan a
 root means (D23). Lists the plans that already exist under the root with
 their goal and open-task count; `(new plan)` plus a name creates one at a
@@ -292,6 +297,8 @@ controls; save and recall configurations as named presets.
 ### Silk Agent — `nodes/agent.py`
 The autonomous tool-calling agent: wires model + toolset + role into the
 Qt-free `AgentLoop`. Exec `run`/`done` ports let agents chain into networks.
+This is the node that **runs an agent where it sits**; to describe an agent
+for an Orchestrator to delegate to instead, use **Silk Worker** below.
 
 | Direction | Port | Type |
 |---|---|---|
@@ -376,9 +383,9 @@ cost me", with the per-model breakdown that makes the number actionable:
 a total says you spent eleven dollars, the breakdown says nine of them
 went to one model you could have put a cheaper one behind.
 
-### Silk Agent Spec — `nodes/agent_spec.py`
-A named worker bundle (model + toolset + role) for the Orchestrator; chain
-specs to build a `silk_agents` roster.
+### Silk Worker — `nodes/worker.py`
+Describes a named worker (model + toolset + role) that a Silk Orchestrator
+can delegate to. Chain several to build a `silk_workers` roster.
 
 | Direction | Port | Type |
 |---|---|---|
@@ -386,8 +393,30 @@ specs to build a `silk_agents` roster.
 | in | `toolset` | `silk_toolset` |
 | in | `role` | `silk_role` |
 | in | `description` | `string` |
-| in | `agents_in` | `silk_agents` |
-| out | `agents` | `silk_agents` |
+| in | `budget` | `string` |
+| in | `workers_in` | `silk_workers` |
+| out | `workers` | `silk_workers` |
+
+**This node runs nothing on its own.** Its `workers` output must reach a
+Silk Orchestrator's `workers` input; nothing else consumes the type, so a
+Worker with no Orchestrator downstream does exactly nothing.
+
+That is the whole difference from the **Silk Agent** node above, which runs
+where it sits — hence `run`/`done` and a `response` output, none of which a
+Worker has. What a Worker has instead is a **name** (an orchestrator's model
+addresses it by name, not by wire) and a **speciality** (advertised through
+`list_workers` so the model can choose it). Neither means anything for an
+Agent node.
+
+It could not be a node that runs, either: `delegate` spawns workers inside
+a single tool call, on a worker thread, possibly several at once, so a
+worker has to be data the orchestrator carries rather than a box the engine
+schedules.
+
+*Renamed from "Silk Agent Spec"* (class `SilkAgentSpecNode`, ports
+`agents_in`/`agents`, type `silk_agents`), which read like configuration
+for an Agent node — the one thing it is not. Saved graphs using the old
+node are not migrated.
 
 ### Silk Orchestrator — `nodes/orchestrator.py`
 A Silk Agent that delegates self-contained sub-tasks to a roster of worker
@@ -396,7 +425,7 @@ plus:
 
 | Direction | Port | Type |
 |---|---|---|
-| in | `workers` | `silk_agents` |
+| in | `workers` | `silk_workers` |
 | in | `max_depth` | `int` (spin box, default 2) |
 
 `max_depth` is how deep delegation may nest: `1` lets the orchestrator call
@@ -461,7 +490,7 @@ thread as markdown/HTML.
 |---|---|---|
 | in | `event` | `dict` | (the Agent's `events` stream; keeps `chat.turn`) |
 
-### Pool Monitor — `nodes/pool_monitor.py` *(AI / Monitor)*
+### Pool Monitor — `nodes/pool_monitor.py` *(Silk AI / Monitor)*
 Live snapshot of GGUF pool state (active/idle instances, capacity). Wire any
 agent's `done` port to `refresh` for updates without polling.
 
@@ -499,7 +528,7 @@ first:
                               │ silk_toolset
                      ┌────────┴────────┐
                      ▼                 ▼
-              [Silk Role]         [Silk Agent Spec] ─agents─▶ [Silk Orchestrator]
+              [Silk Role]         [Silk Worker] ─agents─▶ [Silk Orchestrator]
                      │ silk_role              ▲ (worker bundles)
                      ▼                        │
   [GGUF Loader] ─model_handle─▶ [Silk Agent] ───┘

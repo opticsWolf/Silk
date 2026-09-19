@@ -6,18 +6,34 @@ Copyright (c) 2026 opticsWolf
 
 SPDX-License-Identifier: Apache-2.0 OR MIT
 
-Silk Agent Spec Node — a named worker bundle for the Orchestrator.
+Silk Worker Node — a named worker an Orchestrator can delegate to.
+
+**This node does not run anything.** It describes an agent; a Silk
+Orchestrator runs it. Its ``workers`` output must reach an Orchestrator's
+``workers`` input, or nothing happens at all -- there is no other consumer
+of this port type.
+
+That is the whole difference from the **Silk Agent** node, which runs where
+it sits and has the ``run``/``done`` pins and a ``response`` output to prove
+it. A Worker has none of those, and has two things an Agent has no use for:
+a ``name``, because an orchestrator's model addresses it by name rather than
+by wire, and a ``description``, advertised through ``list_workers`` so the
+model can pick it. Write that as the model should read it ("researches the
+web", "writes and edits prose", …).
+
+It cannot be a node that runs, either: ``delegate`` spawns workers inside a
+single tool call, on a worker thread, several at once -- so a worker has to
+be *data the orchestrator carries*, not a box the engine schedules.
 
 Bundles a model + (optional) toolset + (optional) role into a single
-:class:`~..functions.subagent.AgentSpec` and appends it to a **chain** of agent
-specs on the ``agents`` port (the same accumulate-down-the-chain pattern the
-Toolchain nodes use). Wire several Agent Spec nodes in series, then feed the
-final ``agents`` list into a Silk Orchestrator's ``workers`` input: each becomes
-a specialist the orchestrator can ``delegate`` to by name.
+:class:`~..functions.subagent.WorkerSpec` and appends it to a **chain** on
+the ``workers`` port (the accumulate-down-the-chain pattern the Toolchain
+nodes use). Wire several Worker nodes in series, then feed the final list
+into the Orchestrator.
 
-The ``name`` is how the orchestrator (and its model) addresses the worker;
-``description`` is the speciality advertised via ``list_workers``, so write it as
-the model should read it ("researches the web", "writes and edits prose", …).
+Renamed from "Silk Agent Spec" (ports ``agents_in``/``agents``, type
+``silk_agents``), which read like configuration for an Agent node -- the
+one thing it is not.
 """
 
 from typing import Any, ClassVar, Dict, List, Optional
@@ -35,20 +51,20 @@ from weave.widgets.markdown_widget import MarkdownWidget
 
 from .silk_ports import (  # noqa: F401
     MODEL_HANDLE_TYPE,
-    SILK_AGENTS_TYPE,
+    SILK_WORKERS_TYPE,
     SILK_ROLE_TYPE,
     SILK_TOOLSET_TYPE,
 )
 from ..functions.role import DEFAULT_ROLE
-from ..functions.subagent import AgentSpec
+from ..functions.subagent import WorkerSpec
 from ..functions.usage_limits import describe_budget, parse_budget
 
-log = get_logger("SilkAgentSpec")
+log = get_logger("SilkWorker")
 
 
 @register_node
-class SilkAgentSpecNode(ActiveNode):
-    """Names a model+toolset+role bundle as a delegatable worker agent."""
+class SilkWorkerNode(ActiveNode):
+    """Names a model+toolset+role bundle an Orchestrator can delegate to."""
     # Weave declares `_widget_core` as `WidgetCoreLike` -- the subset the
     # *dataflow engine* relies on. A node uses the widget-facing whole
     # (`register_widget`, `push_display`, `apply_port_value`), which is
@@ -56,12 +72,13 @@ class SilkAgentSpecNode(ActiveNode):
     # declaration for the typechecker, not a runtime change (G9).
     _widget_core: WidgetCore
 
-    node_class: ClassVar[str] = "AI"
+    node_class: ClassVar[str] = "Silk AI"
     node_subclass: ClassVar[str] = "Agents"
-    node_name: ClassVar[Optional[str]] = "Silk Agent Spec"
+    node_name: ClassVar[Optional[str]] = "Silk Worker"
     node_description: ClassVar[Optional[str]] = (
-        "A named worker bundle (model + toolset + role) for the Orchestrator; "
-        "chainable into a workers list."
+        "Describes a named worker (model + toolset + role) for a Silk "
+        "Orchestrator to delegate to. Does not run on its own: chain these "
+        "and wire the last one's 'workers' output into an Orchestrator."
     )
     node_tags: ClassVar[Optional[List[str]]] = [
         "silk", "agent", "orchestration", "worker", "llm",
@@ -69,9 +86,9 @@ class SilkAgentSpecNode(ActiveNode):
     node_icon: ClassVar[Optional[str]] = "robot"
     vertical_size_policy: ClassVar[VerticalSizePolicy] = VerticalSizePolicy.FIT
     node_state_api = 1   # owns a hand-written state dict
-    node_version = 1     # bump on any state-shape change (G20)
+    node_version = 2     # renamed from SilkAgentSpecNode; ports renamed
 
-    def __init__(self, title: str = "Silk Agent Spec", **kwargs: Any) -> None:
+    def __init__(self, title: str = "Silk Worker", **kwargs: Any) -> None:
         super().__init__(title=title, **kwargs)
 
         # ── Ports ──
@@ -83,8 +100,8 @@ class SilkAgentSpecNode(ActiveNode):
         # This worker's own caps, wireable like the speciality text.
         self.add_input("budget", datatype="string")
         # Chain input: the workers accumulated so far (optional first link).
-        self.add_input("agents_in", datatype="silk_agents")
-        self.add_output("agents", datatype="silk_agents")
+        self.add_input("workers_in", datatype="silk_workers")
+        self.add_output("workers", datatype="silk_workers")
 
         # ── Layout & WidgetCore ──
         form = QFormLayout()
@@ -148,7 +165,7 @@ class SilkAgentSpecNode(ActiveNode):
     # ── Worker thread ─────────────────────────────────────────────────
 
     def compute(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
-        chain = list(inputs.get("agents_in") or [])
+        chain = list(inputs.get("workers_in") or [])
 
         model_handle = inputs.get("model_obj")
         if not isinstance(model_handle, dict) or not (
@@ -158,7 +175,7 @@ class SilkAgentSpecNode(ActiveNode):
             self._sync_status = (
                 "No valid model connected — this worker is not added."
             )
-            return {"agents": chain}
+            return {"workers": chain}
 
         try:
             budget = parse_budget(inputs.get("budget"))
@@ -167,11 +184,11 @@ class SilkAgentSpecNode(ActiveNode):
             # worker registered without the caps someone typed would be
             # delegated to and run uncapped (D26).
             self._sync_status = f"Budget not readable ({exc}) - worker not added."
-            return {"agents": chain}
+            return {"workers": chain}
 
         name = str(inputs.get("worker_name") or "").strip()
         role = inputs.get("role") or DEFAULT_ROLE
-        spec = AgentSpec(
+        spec = WorkerSpec(
             model_handle=model_handle,
             toolset=inputs.get("toolset"),
             role=role,
@@ -185,7 +202,7 @@ class SilkAgentSpecNode(ActiveNode):
             f"role '{getattr(role, 'id', '?')}', {describe_budget(budget)}). "
             f"{len(chain) + 1} in chain."
         )
-        return {"agents": chain + [spec]}
+        return {"workers": chain + [spec]}
 
     # ── State ─────────────────────────────────────────────────────────
 

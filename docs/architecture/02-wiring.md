@@ -22,7 +22,7 @@ Silk Agent.events (dict) ────────────► Hook Monitor / 
 
 Full per-node port tables are in [NODES.md](../NODES.md); the custom port
 datatypes (`model_handle`, `silk_toolbox`, `silk_toolset`, `silk_role`,
-`silk_agents`, `agent_message`, `file_permissions`, `dirpath_list`,
+`silk_workers`, `agent_message`, `file_permissions`, `dirpath_list`,
 `toolchains`) are declared once in `nodes/silk_ports.py`. The load-bearing
 pieces:
 
@@ -63,7 +63,7 @@ pieces:
 - `Inference Settings` (`nodes/inference_settings.py`) emits a `gen_params`
   `dict` (sampling/decoding knobs).
 - `Silk Orchestrator` (`nodes/orchestrator.py`) **is a `Silk Agent` with an
-  extra `workers` input** (`silk_agents` — a chain of `Silk Agent Spec`
+  extra `workers` input** (`silk_workers` — a chain of `Silk Worker`
   nodes): on evaluation it mounts the delegation tools on the agent's
   toolset (`attach_orchestrator_tools`, or an in-place roster refresh via
   `set_orchestrator_workers` if already mounted), passing its default

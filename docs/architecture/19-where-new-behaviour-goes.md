@@ -37,12 +37,12 @@
 | Find out why a fan-out feels slow | the Pool Monitor's flags line and `snapshot()["serialization"]` — one server serves one request at a time (D43), and the queue is counted rather than hidden (§22 q1c) |
 | Have runs remembered at all | tick the `remember` hook on the ToolSet; the Agent node binds the run identity and the hook writes turns as they happen (§17, D65) |
 | Make memory find things the words missed | wire an embedding model to the ToolSet's `embedding_model` port; `recall` becomes hybrid search and every hit says which arm found it (§17) |
-| Cap what a run may cost | the Agent/Orchestrator node's **Budget** field (`requests=20, output=8k`); a worker's own share goes on its Agent Spec node and nests inside it (D26) |
-| Stop one worker eating the fan-out's budget | give its `AgentSpec` a `usage_limits`; `run_subagent` nests it inside the orchestrator's shared cap rather than replacing it (D26) |
+| Cap what a run may cost | the Agent/Orchestrator node's **Budget** field (`requests=20, output=8k`); a worker's own share goes on its Worker node and nests inside it (D26) |
+| Stop one worker eating the fan-out's budget | give its `WorkerSpec` a `usage_limits`; `run_subagent` nests it inside the orchestrator's shared cap rather than replacing it (D26) |
 | Require a human before a tool runs | the `tool_approval` catalog hook (risk band or tool names) — the same middleware the `signoff` policy uses |
 | Let a user say "don't ask again" | a `remember` scope on the decision: run-scoped in the gate closure, or a durable grant in `~/.weave/silk/grants.json` |
 | Give agents the tools of an MCP server | a `Silk MCP Server` node per server (it owns the session), optionally a `Silk MCP Aggregator` to switch individual tools off, into the ToolBox node's `mcp` input (D19–D22) |
-| Delegate work across agents | `Silk Agent Spec` nodes feeding the `Silk Orchestrator` (`delegate` / `delegate_parallel`) |
+| Delegate work across agents | `Silk Worker` nodes feeding the `Silk Orchestrator` (`delegate` / `delegate_parallel`) |
 | Persist a node's configuration | `functions/presets.py` (`PresetStore`, `~/.weave/presets/`) |
 | Pass structured data between agents | `AgentMessage` on the `outbox` → `inbox` ports |
 | Let an agent build graph | tick classes in the `Silk ToolBox` node's **Placeable Nodes** tree; the six tools mount only when the list is non-empty, and default-deny is the empty state (D69, D71) |

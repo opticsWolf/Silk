@@ -99,10 +99,14 @@ def handle_supports_tools(model_handle: Any) -> bool:
 # ── data ─────────────────────────────────────────────────────────────────────
 
 @dataclass
-class AgentSpec:
+class WorkerSpec:
     """A runnable agent bundle: model handle + optional toolset + role.
 
-    A worker registered with an orchestrator, or a lightweight headless agent.
+    A worker registered with an orchestrator, or a lightweight headless
+    agent. Named for the Silk Worker node that builds it and the
+    orchestrator's ``workers`` roster that holds it; it was ``WorkerSpec``,
+    which read like configuration for the Agent node rather than the
+    description of somebody else's agent, which is what it is.
     ``toolset`` is a ToolBox instance (from ``build_toolset``); ``None`` means
     pure chat (tool fences are treated as final output). ``name`` /
     ``description`` are what the orchestrator advertises to its model.
@@ -148,7 +152,7 @@ class SubagentResult:
 # ── the runner ───────────────────────────────────────────────────────────────
 
 def run_subagent(
-    spec: AgentSpec,
+    spec: WorkerSpec,
     prompt: str,
     *,
     history: Optional[list[dict[str, Any]]] = None,

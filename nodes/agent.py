@@ -148,7 +148,7 @@ class SilkAgentNode(ThreadedManualNode):
     decision_requested = Signal(dict)
     decision_settled = Signal(str)
 
-    node_class: ClassVar[str] = "AI"
+    node_class: ClassVar[str] = "Silk AI"
     node_subclass: ClassVar[str] = "Agents"
     node_name: ClassVar[Optional[str]] = "Silk Agent"
     node_description: ClassVar[Optional[str]] = (

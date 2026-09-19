@@ -36,15 +36,15 @@ The request/response shapes are Pydantic models (`DelegateArgs`,
 `DelegateParallelArgs`, `Assignment`, `DelegateResult`,
 `DelegateParallelResult`, `ListWorkersResult`, `WorkerInfo`).
 
-In the graph, the roster is supplied by `Silk Agent Spec` nodes (their
-`silk_agents` output feeds the `Silk Orchestrator`'s `workers` input);
+In the graph, the roster is supplied by `Silk Worker` nodes (their
+`silk_workers` output feeds the `Silk Orchestrator`'s `workers` input);
 because the orchestrator node subclasses the agent node, an orchestrator is
 also a fully working agent that can do the work itself when delegation
 isn't warranted.
 
 ### `functions/subagent.py`
 
-**`AgentSpec`** — a runnable agent bundle: a `model_handle` (the port payload
+**`WorkerSpec`** — a runnable agent bundle: a `model_handle` (the port payload
 of that name), an optional `toolset` (a `ToolBox` from `build_toolset`; `None` means
 pure chat, where tool fences are treated as final output), a `role`,
 `name`/`description` (what the orchestrator advertises to its model),
@@ -68,7 +68,7 @@ stack sub-budget on sub-budget.
 
 Both halves are typed on a node, not in Python: the Agent/Orchestrator
 node's **Budget** field is the shared cap (the orchestrator's own requests
-count against it), the Agent Spec node's is that worker's share, and
+count against it), the Worker node's is that worker's share, and
 `parse_budget` reads both — `requests=20, tool_calls=50, output=8k`, empty
 for no cap. An unreadable field refuses the run (or, on a spec, leaves the
 worker out), because a budget that quietly parses as "unlimited" is the
