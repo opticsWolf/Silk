@@ -87,6 +87,52 @@ provider-specific translation stays in a process that specialises in it,
 and Silk's model layer stays one wire format wide. An Unsloth fine-tune is
 an ordinary model once vLLM or llama.cpp is serving it.
 
+### Model Fallback — `nodes/model_fallback.py` (`SilkModelFallbackNode`)
+One model behind another (D89). When the primary fails for good — the
+server is gone, the key was revoked, the model was retired, or three
+spaced retries all came back 503 — the run continues on the fallback
+instead of ending.
+
+| Direction | Port | Type |
+|---|---|---|
+| in | `primary` | `model_handle` (tried first) |
+| in | `fallback` | `model_handle` (tried when the primary fails) |
+| out | `model_obj` | `model_handle` (the chain, as one handle) |
+
+What it emits *is* a model handle, so the Agent downstream sees one model
+and runs the way it always has. Wire two of these in series for a chain
+three deep; the flattening is done here, so nothing downstream recurses.
+The same model wired into both ports is deduplicated — falling back to
+the model that just failed cannot help.
+
+**A chain is as capable as its weakest link**, and the status line says
+so, because the trade is real:
+
+| | rule | why |
+|---|---|---|
+| native tool calling | only if **every** member has it | the transport is chosen once, before the first request, and the system prompt is written to match it |
+| context window | the **smallest** known one | compaction plans its cuts against it, and a conversation grown to fit the primary must still fit whatever catches it |
+| price | only if **every** member quotes one | a cost cap that stops binding when the cheap fallback takes over is not a cap (D88) |
+
+So a fence-only local model behind a native-tools gateway puts the whole
+chain on fences. That is a trade, not a mistake — the status line states
+it and lets you decide, rather than making it quietly.
+
+**What a switch does not do.** It does not spend a round (`max_rounds`
+bounds the model's reasoning, and being handed a dead server is not a
+thought), it does not restart the conversation, and it does not happen
+after tokens have already reached you — a second model continuing over a
+partial answer would splice two voices into one turn. It also never
+happens on a context overflow, which is compaction's (D40): the next
+model's window is no larger. The fallback starts with a retry budget of
+its own.
+
+**What it does do** is yield an `EventModelSwitch` on the `events` port,
+and the Agent node's status line says which model took over. The answer
+from that point comes from a different model at a different price; a run
+that finished on the cheap fallback should not look identical to one that
+finished on the paid primary.
+
 ## Tool assembly
 
 ### Silk ToolBox — `nodes/toolbox.py`

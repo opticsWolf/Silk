@@ -1973,6 +1973,83 @@ Four rules, and the first is the one that makes the rest allowable.
 
 ---
 
+### D89 -- A model handle may name its successor
+
+D87 taught the loop to ask the *same* backend again, because a 429 passes.
+This is the other half: what to do when it does not. A retry budget runs out,
+or the failure was terminal from the first word -- the server is gone, the key
+was revoked, the model was retired -- and the run ends holding nothing, on a
+canvas where a perfectly good local model was sitting one node away.
+
+**The chain rides on the handle, under `fallbacks`.** A chained handle *is*
+the primary handle with one extra key, so every consumer that only wants a
+model works unchanged; only `GraphEngine` reads it, and only once the current
+model has failed for good. `chain_of` flattens nesting at build time, so
+nothing downstream recurses, and deduplicates by client identity -- falling
+back from a model to itself is the one arrangement that certainly cannot help.
+
+**It is a node, not a field.** Fallback is a relationship between two models,
+and a relationship belongs on the canvas: you can see which model backs which,
+a local GGUF behind a paid gateway is one wire, and two of these nodes in
+series give three deep without a list widget nobody wants to edit. The
+alternative -- a "fallback model" field on the endpoint -- hides the second
+model inside the first, which is exactly where nobody looks when a run
+mysteriously got cheap.
+
+**A chain is as capable as its weakest link.** This is the load-bearing rule
+and the one that costs something. The transport is chosen once, before the
+first request, and the system prompt is written to match it; the context
+window is the denominator compaction has already planned its cuts against.
+Neither can be renegotiated mid-run, because the conversation has *already
+been written* in them. So the chain answers for all its members at once:
+`supports_tools` only if every member does, `context_length` is the smallest
+known one, and a price only if every member quotes one -- a cost cap that
+stops binding the moment a cheap local model catches the run is not a cap, and
+the person finds out from the bill of the expensive one it started on (D88).
+Each of those is a real loss on the primary. That is the trade the node states
+in its status line, rather than making it and staying quiet.
+
+**When a switch happens is the same boundary D87 already drew**, reused rather
+than reimplemented:
+
+- **Only after the retries say no.** Either the verdict was terminal, or the
+  same backend was asked three times and kept refusing. Both mean this model
+  is not going to answer.
+- **Never after deltas reached the consumer.** A second model continuing over
+  a partial answer the caller has already rendered would splice two voices
+  into one turn. The round keeps what it got.
+- **Never on overflow.** Compaction owns that verdict (D40), and the chain
+  reports the *smallest* window of all its members, so the next model has no
+  more room than this one had -- a switch would be a second way to fail the
+  same request.
+- **Not a round, and with a fresh retry budget.** `max_rounds` bounds the
+  model's reasoning steps, and being handed a dead server is not one of them.
+  The new backend has refused nothing yet, so inheriting the dead one's
+  exhausted attempt count would give it no chance at all. What bounds the
+  switching is the chain's own length.
+
+**A switch is an event, not a log line.** `EventModelSwitch` (`model.switch`)
+is yielded on the stream, because the two things it changes are things a
+reader is entitled to know without reading the source: the answer from here on
+comes from a different model, and it is billed at a different rate. A run that
+quietly finished on the cheap fallback and one that finished on the paid
+primary look identical otherwise. The error that caused it is still yielded
+first -- a fallback that hides the primary's death is a fallback nobody can
+debug -- and the Agent node clears it once the switch lands, so a run that
+recovered is not labelled with the dead model's last words. No second hook
+fires: `on_model_request_error` already reported that failure, and firing it
+again here would report one dead server twice.
+
+Verified over real HTTP: a stub that serves `/models` cheerfully and 503s
+every completion, wired as primary, with LM Studio behind it. That is the case
+fallback is actually for -- an endpoint dead at *graph-build* time never
+produces a handle at all, because `connect` probes first (D45), and the chain
+simply passes the survivor through. The run classified both 503s retryable,
+spent its retry, switched, and gemma-4-12b-it answered; the outcome was
+`completed`, not `error`.
+
+---
+
 ## 18. Graph authoring -- the agent places nodes
 
 A tool family that lets an agent **build graph** -- place nodes on the canvas

@@ -30,6 +30,25 @@ well, which does not unblock it -- the numbers are still someone's to
 produce -- but removes "I have no second backend" as a reason it cannot
 be run.
 
+**2026-09-19.** The model layer learned what to do when a request fails.
+Three decisions, built in order, each of which turned out to close a
+latent hole rather than add a feature: **D87** retries a transient
+verdict `classify_model_error` had been computing and discarding since
+D40 (a 429 used to end a run); **D88** makes spend a fifth ceiling in
+`UsageLimits`, with prices read off `/models` at connect time and a run
+that sets an unmeasurable cap refused before its first request; **D89**
+lets a handle name its successor, so a terminal failure walks to the next
+model instead of ending the run. A **Model Fallback** node draws that
+chain on the canvas.
+
+Still outstanding from D88, and named here so it is not mistaken for
+built: **the cost ledger.** Spend is now *enforced* and lands in
+`UsageLimits.snapshot()`, but nothing subscribes to
+`after_model_response` to record per-model spend across runs — so "what
+did this week cost me" has no answer yet. The seam is already there
+(D85's event sink and the hook), which is why this is a small piece of
+work rather than a design question.
+
 Legend:
 
 - **GAP** — the machinery exists (or is declared) but the implementation

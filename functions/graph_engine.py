@@ -20,6 +20,10 @@ import time
 from collections.abc import Iterator
 from typing import Any, Optional
 
+from .model_fallback import (
+    chain_can_price, chain_context_length, chain_of, chain_supports_tools,
+    describe_chain, model_label,
+)
 from .pricing import price_from_handle
 from .prefix_guard import PrefixGuard
 from .reflection import ReflectionConfig
@@ -47,7 +51,16 @@ class GraphEngine:
     ) -> None:
         if not isinstance(model_handle, dict) or not model_handle.get("backend"):
             raise ValueError("GraphEngine needs a model_handle dict.")
-        self._handle = model_handle
+        #: The handle exactly as the graph passed it, kept so `sibling`
+        #: hands the summarizer the same chain rather than pinning it to
+        #: whichever member happened to be current.
+        self._given_handle = model_handle
+        #: Every model this engine may run against, in order (D89). An
+        #: ordinary handle flattens to one element, so there is no second
+        #: code path for the common case.
+        self._chain = chain_of(model_handle) or [model_handle]
+        self._chain_index = 0
+        self._handle = self._chain[0]
         self.system_prompt = system_prompt
         # History is caller-owned state (the Agent node persists it); we
         # mutate the same list so the node sees every appended turn.
@@ -64,7 +77,7 @@ class GraphEngine:
         #: What this model costs per token, when the endpoint quoted one
         #: (D88). None means unpriced, which is not the same as free --
         #: `can_price` is how the loop tells a cost cap it cannot bind.
-        self._price = price_from_handle(model_handle)
+        self._price = price_from_handle(self._handle)
 
         self._native_tools_enabled = False
         self._tool_schemas: list[dict[str, Any]] = []
@@ -114,8 +127,58 @@ class GraphEngine:
         price. The distinction matters only to a run that set a cost cap:
         a ceiling over an unmeasurable quantity is not a ceiling, so the
         loop refuses the run rather than letting it look capped (D88).
+
+        Answered for the whole fallback chain, not the current model: a
+        cap that stops binding the moment a cheap local model catches the
+        run is not a cap, and the person would find out from the bill of
+        the expensive one it started on (D89).
         """
-        return self._price is not None
+        return chain_can_price(self._chain)
+
+    def model_description(self) -> str:
+        """The model currently running, named (D89).
+
+        Bare: where it sits in the chain is `chain_position`, and the
+        switch event carries both, so folding the position in here only
+        made it appear twice in the one line that reports a fallback.
+        """
+        return model_label(self._handle)
+
+    def describe_chain(self) -> str:
+        """The whole chain, in the order it will be walked."""
+        return describe_chain(self._chain)
+
+    def chain_position(self) -> tuple[int, int]:
+        """Which model of how many is running, 1-based."""
+        return (self._chain_index + 1, len(self._chain))
+
+    def has_fallback(self) -> bool:
+        """Whether another model is left to try after the current one."""
+        return self._chain_index + 1 < len(self._chain)
+
+    def advance_model(self) -> Optional[str]:
+        """Move to the next model in the chain; name it, or ``None``.
+
+        Called by the loop when the current model has failed for good --
+        a terminal error, or a transient one whose retries ran out. It is
+        deliberately *not* called for a context overflow: that is
+        compaction's, and the next model's window is no larger (the chain
+        reports the smallest one), so a switch would be a second way to
+        fail the same request.
+
+        Only the model changes. The conversation, the budget, the
+        transport and the system prompt all stay exactly as they were --
+        the run continues, it does not restart. What does change is the
+        price: from here on, tokens are charged at the new model's rate,
+        which is the whole point of putting a cheap model behind an
+        expensive one.
+        """
+        if not self.has_fallback():
+            return None
+        self._chain_index += 1
+        self._handle = self._chain[self._chain_index]
+        self._price = price_from_handle(self._handle)
+        return model_label(self._handle)
 
     def price_description(self) -> str:
         """The per-million prices as a person compares them, or a denial."""
@@ -132,8 +195,12 @@ class GraphEngine:
         established keeps using the fence protocol -- which works
         everywhere, where a `tools` field a server cannot render is a
         refused request. This is the gate ``select_transport`` consults.
+
+        Answered for the whole fallback chain: one fence-only member puts
+        every member on fences, because the transport is chosen once and
+        the system prompt is written to match it (D89).
         """
-        return bool(self._handle.get("supports_tools", False))
+        return chain_supports_tools(self._chain)
 
     def enable_native_tools(self, schemas: list[dict[str, Any]]) -> None:
         """Arm structured tool calling and advertise *schemas* to the model."""
@@ -226,7 +293,7 @@ class GraphEngine:
         prefills, and it is why compaction is meant to be rare.
         """
         return GraphEngine(
-            self._handle,
+            self._given_handle,
             system_prompt=system_prompt,
             history=list(history or []),
             usage_limits=self.usage_limits,
@@ -281,13 +348,13 @@ class GraphEngine:
         started with it -- and used to stop at the loader, so the loop had
         no idea how much room it was working in (G14c). Read from the handle
         first (an explicit value wins) and from the pool second.
+
+        Across a fallback chain it is the *smallest* known window (D89):
+        a conversation grown to fit the primary must still fit whatever
+        catches the run, and compaction has already planned its cuts
+        against this number by the time a switch happens.
         """
-        explicit = self._handle.get("context_length")
-        if explicit:
-            return int(explicit)
-        pool = self._handle.get("pool")
-        value = getattr(pool, "context_length", None) if pool is not None else None
-        return int(value) if value else None
+        return chain_context_length(self._chain)
 
     def count_prompt_tokens(self) -> int:
         """Best-effort input-token estimate for the current prompt state."""

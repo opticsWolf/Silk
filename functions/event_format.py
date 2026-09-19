@@ -75,6 +75,12 @@ def format_event(event: dict[str, Any]) -> str:
             f"{event.get('tokens_before', '?')} → {event.get('tokens_after', '?')}"
             f"{cost}"
         )
+    elif kind == EventType.MODEL_SWITCH.value:
+        body = (
+            f"⇄ {event.get('from_model', '?')} failed "
+            f"({event.get('kind', 'error')}) → {event.get('to_model', '?')} "
+            f"[{event.get('position', '?')}/{event.get('chain_length', '?')}]"
+        )
     elif kind == EventType.DECISION_REQUEST.value:
         body = f"? {event.get('kind', 'approval')} needed — {event.get('prompt', '')}"
     elif kind == EventType.DECISION_RESPONSE.value:

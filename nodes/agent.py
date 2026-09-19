@@ -99,6 +99,7 @@ from ..functions.stream_events import (
     EventModelRequest,
     EventModelResponse,
     EventPlan,
+    EventModelSwitch,
     EventReflection,
     EventRunFinished,
     EventRunResult,
@@ -941,6 +942,16 @@ class SilkAgentNode(ThreadedManualNode):
                     self.status_changed.emit(
                         f"Compacted {event.turns_dropped} turns to free context…"
                     )
+                elif isinstance(event, EventModelSwitch):
+                    self.status_changed.emit(
+                        f"{event.from_model} failed - falling back to "
+                        f"{event.to_model}..."
+                    )
+                    # The failure that caused the switch has already been
+                    # reported and is now recovered: leaving it in
+                    # `run_error` would label a run that finished on the
+                    # fallback with the primary's last words (D89).
+                    run_error = None
                 elif isinstance(event, EventReflection):
                     self.status_changed.emit(
                         f"Reflection retry {event.retry_count + 1}/{event.max_retries}…"

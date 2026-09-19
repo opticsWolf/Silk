@@ -48,6 +48,7 @@ class EventType(Enum):
     TOOL_CALL = "tool.call"
     TOOL_RESULT = "tool.result"
     REFLECTION = "reflection"
+    MODEL_SWITCH = "model.switch"
     USAGE_LIMIT = "usage_limit"
     ERROR = "error"
     RUN_RESULT = "run.result"
@@ -278,6 +279,33 @@ class EventReflection:
     error_message: str = ""
 
 
+@dataclass
+class EventModelSwitch:
+    """The run moved to the next model in its fallback chain (D89).
+
+    Its own event rather than a log line, because the two things it
+    changes are things a reader is entitled to know without reading the
+    source: the answer from here on comes from a different model, and it
+    is billed at a different rate. A run that quietly finished on the
+    cheap local fallback and a run that finished on the paid primary look
+    identical otherwise.
+
+    Content-free like the rest (Â§16): which models, and why the last one
+    was abandoned -- not what either of them said.
+    """
+    timestamp: datetime = field(default_factory=datetime.now)
+    #: The model that just failed, and the one now running (``model_label``
+    #: form: backend first, then the name).
+    from_model: str = ""
+    to_model: str = ""
+    #: 1-based position in the chain after the switch, and its length.
+    position: int = 0
+    chain_length: int = 0
+    #: ``classify_model_error``'s verdict on the failure that caused it.
+    kind: str = ""
+    error: str = ""
+
+
 # â”€â”€ Hook-path Events â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 #
 # Typed members of the same vocabulary, emitted from hook callbacks rather
@@ -451,6 +479,7 @@ def _register_types() -> None:
         "EventToolCall": EventType.TOOL_CALL,
         "EventToolResult": EventType.TOOL_RESULT,
         "EventReflection": EventType.REFLECTION,
+        "EventModelSwitch": EventType.MODEL_SWITCH,
         "EventUsageLimit": EventType.USAGE_LIMIT,
         "EventError": EventType.ERROR,
         "EventRunResult": EventType.RUN_RESULT,

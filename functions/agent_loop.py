@@ -52,6 +52,7 @@ from .stream_events import (
     EventDelta,
     EventError,
     EventFinalResult,
+    EventModelSwitch,
     EventReflection,
     EventRunResult,
     EventStart,
@@ -436,6 +437,65 @@ class AgentLoop:
             time.sleep(min(0.1, max(0.0, deadline - time.time())))
         return True
 
+    def _switch_model(
+        self, event: EventError,
+    ) -> Generator[AgentEvent, None, bool]:
+        """Move to the next model in the chain, if there is one (D89).
+
+        Asked only after :meth:`_retry_transient` has said no -- so either
+        the failure was terminal from the first word, or the same backend
+        was asked three times and kept refusing. Both mean the same thing
+        to the run: *this* model is not going to answer.
+
+        Two failures are deliberately excluded:
+
+        * **Overflow.** Compaction owns it (D40), and the chain reports
+          the smallest context window of all its members, so the next
+          model has no more room than this one had.
+        * **A failure after deltas reached the consumer.** The same rule
+          the retry path follows: the caller has already rendered part of
+          an answer, and a second model continuing over the top of it
+          would splice two voices into one turn. The round keeps what it
+          got. That check belongs to the caller, which is the only place
+          that knows how much of this attempt has already been yielded.
+
+        A switch does not spend a round. The model's reasoning steps are
+        what ``max_rounds`` bounds, and being handed a dead server is not
+        one of them; the chain's own length is what bounds the switching.
+        """
+        engine = self.engine
+        advance = getattr(engine, "advance_model", None)
+        if event.kind == OVERFLOW or not callable(advance):
+            return False
+        previous = self._model_name()
+        name = advance()
+        if name is None:
+            return False
+        position = getattr(engine, "chain_position", None)
+        index, length = position() if callable(position) else (1, 1)
+        log.warning(
+            f"Model {previous} failed ({event.error}); falling back to "
+            f"{name} ({index} of {length})."
+        )
+        # No second hook: the caller already fired on_model_request_error
+        # for this failure, and firing it again here would report one dead
+        # server twice. The switch is announced on the stream instead,
+        # which is where a consumer can act on it.
+        yield EventModelSwitch(
+            from_model=previous, to_model=name,
+            position=index, chain_length=length,
+            kind=event.kind, error=event.error,
+        )
+        return True
+
+    def _model_name(self) -> str:
+        """The current model as the switch event names it, best effort."""
+        label = getattr(self.engine, "model_description", None)
+        try:
+            return str(label()) if callable(label) else ""
+        except Exception:      # noqa: BLE001 - a label never fails a run
+            return ""
+
     def _recover_or_stop(
         self, event: EventError, round_index: int, *, reported: bool = False,
     ) -> Generator[AgentEvent, None, bool]:
@@ -549,9 +609,18 @@ class AgentLoop:
                 # both decisions below read the same verdict.
                 failure = self._model_failed(failed, _round)
                 yield failure
-                if not self._retry_transient(failure, attempt, emitted):
+                if self._retry_transient(failure, attempt, emitted):
+                    attempt += 1
+                elif not emitted and (
+                    yield from self._switch_model(failure)
+                ):
+                    # A different model answers the same round, with a
+                    # fresh retry budget of its own: the new backend has
+                    # not refused anything yet, and inheriting the dead
+                    # one's exhausted count would give it no chance at all.
+                    attempt = 0
+                else:
                     break
-                attempt += 1
                 # The partial answer is dropped with the attempt that
                 # produced it: nothing was emitted, so nothing downstream
                 # has seen it, and carrying it into the retry would
