@@ -1070,6 +1070,9 @@ Two corrections fall out of the same reading:
 
 **D47. Three mechanisms restore prefix reuse; they attack different terms,
 and the choice between them is a measurement, not a preference.**
+**Measured and decided 2026-09-19: mechanism A. See D91** for the numbers,
+what the gate does with them, and the two defects in the harness that
+taking the measurement exposed.
 
 First the shape of the problem. Reuse is lost two ways, independently:
 
@@ -1156,6 +1159,15 @@ Applied in order, and the first rule that matches wins:
 Rules 3 and 5 are not exclusive: implementing C does not retire A, because
 the moment concurrent conversations outnumber backends, contention returns
 and A is what handles it.
+
+**Outcome (2026-09-19): rule 3.** Prefill share is 33-80% at agent-sized
+prompts, so rule 1 does not fire; contention is 100% and reuse falls to
+0.2-0.4% under interleaving, so rule 2 does not either. A is built
+(`functions/session_affinity.py`); B stays unbuilt because A subsumes it;
+C stays open as the additive answer of D45. **Rule 1 nearly fired on a
+first capture that used 200-token prompts** -- prefill share is a
+statement about the prompt-to-answer ratio, so the threshold has to be
+read off the workload Silk actually runs. D91 records that.
 
 ---
 
@@ -2106,6 +2118,103 @@ down per model.
 
 ---
 
+### D91 -- D47 is decided: affinity, and the hold is priced
+
+**Built 2026-09-19.** G15 asked for numbers and had none, because the
+numbers needed a live backend. They exist now, against Silk's own
+`GGUFModelPool` (gemma-4-E4B, Q4_K_M, RTX 3090, `n_ctx` 16384, 80-token
+answers). Two conversations, four rounds each, driven from two threads
+the way `delegate_parallel` drives them:
+
+| Prompt | Shape | Reuse | Contention | Prefill | Wall |
+|---|---|---|---|---|---|
+| ~230 tok | one session | 71.1% | 0% | 26.0% | 0.4 s |
+| ~230 tok | two, at once | 10.3% | 100% | 39.9% | 0.6 s |
+| ~1600 tok | one session | 74.8% | 0% | 33.1% | 1.1 s |
+| ~1600 tok | two, at once | **0.4%** | 100% | 74.1% | **4.5 s** |
+| ~4250 tok | one session | 74.9% | 0% | 66.4% | 1.9 s |
+| ~4250 tok | two, at once | **0.2%** | 100% | 80.3% | **11.4 s** |
+
+The rule's first clause -- *prefill share under ~15%, do nothing* -- does
+not fire, and the reason it nearly did is worth keeping. **A first
+capture said 5%, and it was measuring the wrong shape.** Prefill share is
+prompt-eval over total, so it is a statement about the ratio of prompt to
+answer, and that capture used 200-token prompts answered in 120 tokens. A
+real agent round is the inverse: a system prompt, tool schemas and a grown
+history, answered in a sentence. At the size Silk actually runs at,
+prefill is two thirds to four fifths of the request. **The threshold in a
+rule is only as good as the workload it is read off.**
+
+So clause 2: reuse near zero, contention at 100%, the loss is
+interleaving -- **mechanism A**. And since "A largely subsumes B", B
+(`LlamaCache`, D44) stays unbuilt, and C (D45) remains a separate,
+additive answer for when concurrent conversations outnumber backends.
+
+**A hold window is the mechanism, not an implementation detail.** When a
+round ends, the same conversation's next request does not exist yet -- the
+agent is parsing the answer or running a tool. A queue that admits
+whoever is waiting therefore admits the *other* conversation every time,
+which is precisely the alternation being fixed. So a release opens a
+short window in which the outgoing session keeps its claim. Grouping
+without anticipation is not grouping.
+
+**And the hold is priced, which is the part that keeps it honest.** A
+hold is a bet that a lost prefix costs more than the wait. The pool
+already measures the stake -- `prefix_report()['full_prefill_ms']`, the
+average prompt re-evaluated at the rate this server was observed to
+evaluate at -- so the window never exceeds it. A 40 ms prefix cannot buy
+a 250 ms wait; a 7-second one gets the whole quarter second. Two further
+limits: three consecutive windows that elapse unused suppress the hold
+(while it keeps watching for a return that would have been in time, so
+recovery is free), and after `max_streak` consecutive grants a
+conversation with somebody waiting yields a slot. **Fairness was A's one
+stated cost, and it is bounded rather than argued away.**
+
+The same measurement, with the gate on:
+
+| Prompt | Reuse | Contention | Wall | vs. off |
+|---|---|---|---|---|
+| ~230 tok | 70.9% | 14.3% | 0.7 s | *slower* by 0.1 s |
+| ~1600 tok | **74.8%** | 14.3% | **1.9 s** | 2.4x faster |
+| ~4250 tok | **74.9%** | 14.3% | **3.8 s** | 3.0x faster |
+
+Two conversations now reuse exactly what one does -- 74.8 against 74.8,
+74.9 against 74.9 -- which is the whole claim: contention is removed, not
+managed. The first row is the honest cost and is left visible: at prompts
+too small for prefill to matter the gate is still a small net loss, and
+the pricing above is what keeps it small. Before the window was priced
+that row cost 0.5 s over eight requests with a 127 ms average wait; with
+it, 0.1 s and 60 ms, and not one hold window went unused.
+
+**Two defects in the harness, found by running it.** Neither is
+cosmetic, and both would have quietly skewed the decision:
+
+- **The first prefill after a load is booked as load time.** It prints
+  `prompt eval time = 0.11 ms / 24 tokens` -- 218,000 tokens a second on
+  hardware that does 550. Counted, that puts a near-zero prefill on the
+  single largest prefill of a run, understating the one number clause 1
+  reads. A rate that cannot be true is now dropped and reported as
+  unknown; the token counts, which are real, are kept.
+- **`verbose` was hard-coded False in the GGUF loader.** The measurement
+  is a read of the server's own stderr, and that flag is what makes the
+  server write the lines it reads. So `prefix_report()` said "nothing
+  measured" on the canvas forever while working perfectly from a script
+  -- which is why the numbers took until now to exist. It costs about six
+  lines per request into a file the pool already keeps, and logs no
+  prompt or completion text.
+
+**And one thing the spec had wrong.** G15 recorded that "prefix reuse is
+real and automatic". On some architectures it is not: Qwen3.5-4B logs
+`prefix-match found but partial kv removal not supported, re-evaluating
+full prompt` -- llama.cpp finds the prefix and then re-evaluates the
+whole thing anyway. Measured reuse there is 0% in *every* shape, and no
+amount of scheduling changes it. That is a third failure mode alongside
+contention and prefix instability, it belongs to the backend, and the
+correct response to seeing it in the Pool Monitor is to change models,
+not to turn knobs.
+
+---
+
 ## 18. Graph authoring -- the agent places nodes
 
 A tool family that lets an agent **build graph** -- place nodes on the canvas
@@ -2595,7 +2704,7 @@ cannot be chosen before it runs.
 | 3. `outcome` on `EventRunResult` (G13) + G7's `limit_type`/`scope` | landed 2026-09-03 |
 | 4. `context_length` → loop (G14(c)) | `functions/agent_loop.py` (`context_length()`, forwarded per round) |
 | 5. Hook error family + registration validation (D15) | `functions/hooks.py`; `tests/test_silk_hook_error_family.py` |
-| 6. **Measure prefix reuse (D41, D47)** | *harness only*: `functions/prefix_stats.py`, `ModelPool.prefix_report()`. The numbers need a live backend — the one open Phase 1 item (G15, §22 q1b) |
+| 6. **Measure prefix reuse (D41, D47)** | **Done 2026-09-19.** `functions/prefix_stats.py`, `ModelPool.prefix_report()`, Pool Monitor row. The numbers were taken against a live GGUF server and decided D47 (→ **D91**); taking them also fixed a bogus cold-prefill timing and a hard-coded `verbose=False` that had kept the measurement unavailable on the canvas |
 | 7. Model-request error classifier (D40) | `functions/model_errors.py` |
 | 8. `interrupt_requests=False` + no terminal `finish_reason` is an error (D43) | `functions/model_pool.py`, `functions/graph_engine.py`, `functions/agent_loop.py` |
 | 9. `delegate_parallel` made honest (D52, D53) | `functions/orchestrator.py` (sequential assignments, `finally` reset, same-worker refusal, `UsageLimits` lock); `tests/test_silk_delegation.py` |
@@ -2609,7 +2718,7 @@ cannot be chosen before it runs.
 | 2. Parked-state machinery deleted (D31–D33) | gone: no `signoff_node.py`, no `awaiting_signoff` / `pending_goal` / `signoff_*` columns; `functions/signoff.py` keeps the resolution rules only |
 | 3. Inline approval gate (D30, D11, D36–D39, D48–D50) | `functions/decision_seam.py`, `approval.py`, `grants.py`, `main_thread_call.py`, and the D82 floor in `approval_floor.py`; `tests/test_silk_decision_seam.py`, `test_silk_approval_gate.py`, `test_silk_approval_floor.py` |
 | 4. Spill hook, option A (D41, D57) | `functions/spill.py`; `tests/test_silk_spill.py` |
-| 5. D47 mechanism + I11 prefix rules | I11 is unconditional and landed (`functions/prefix_guard.py`); C's `Authorization` header landed 2026-09-03; A's corruption was fixed at the source (`_bound_sessions`, no `_session_instances`). **Which mechanism** waits on Phase 1 item 6 |
+| 5. D47 mechanism + I11 prefix rules | I11 is unconditional and landed (`functions/prefix_guard.py`); C's `Authorization` header landed 2026-09-03; A's corruption was fixed at the source (`_bound_sessions`, no `_session_instances`). **Which mechanism: decided 2026-09-19 by the Phase 1 numbers — A.** Built: `functions/session_affinity.py`, on by default, one checkbox on the GGUF loader, reported on the Pool Monitor (D91) |
 | 6. Loop compaction (D24, D25, D40, D41) | `functions/compaction.py`; `tests/test_silk_compaction.py` |
 
 | Phase 3 | Landed in |
@@ -2696,12 +2805,19 @@ with no `.git`. A quarantine record can name a build now.
    `projects()` and `all()` for it.
    *(The former question 1b -- who answers when nobody is listening -- is
    closed by D36: every missing-answer path denies.)*
-1b. Which of D47's three mechanisms to build — decided by the rule in §12,
-   not by argument, and blocked only on the Phase 1 measurement. What the
-   rule does *not* settle: if B is selected, `LlamaCache` size and backing
-   (RAM vs disk); if C, whether the backend is chosen by the Role, by the
-   Agent node, or by a pool-side rule keyed on session, and what happens
-   when a named backend is down.
+1b. ~~Which of D47's three mechanisms to build — decided by the rule in
+   §12, not by argument, and blocked only on the Phase 1 measurement.~~
+   **Answered (2026-09-19): A.** The measurement was taken against a live
+   GGUF server and the rule landed on clause 3 — reuse 74.8% alone against
+   0.4% interleaved, contention 100%, prefill share 33-80% at agent-sized
+   prompts. Built as `functions/session_affinity.py` (**D91**), which also
+   settles the sub-question the rule leaves open for A: the window is
+   sized by what a lost prefix was measured to cost, not by a constant.
+   **B's sub-question dies with B** — `LlamaCache` size and backing are
+   moot while A subsumes it. **C's remains open**, unchanged: if multiple
+   backends are built (D45), whether the backend is chosen by the Role, by
+   the Agent node, or by a pool-side rule keyed on session, and what
+   happens when a named backend is down.
 1c. ~~Whether session affinity (mechanism A) is the pool's business alone or
    needs a visible surface — an orchestrator fan-out that silently serializes
    is correct but looks hung, and D43 means it already does this today with

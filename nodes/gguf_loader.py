@@ -229,6 +229,19 @@ class GGUFLNode(ThreadedManualNode):
         form.addRow("Clear Cache on Return:", self.chk_clear_cache)
         self._widget_core.register_widget("clear_on_return", self.chk_clear_cache, role=PortRole.INTERNAL, datatype="bool", default=True, add_to_layout=False)
 
+        # One server holds one resident context, so two conversations
+        # running at once overwrite each other's prompt cache: measured
+        # at 74.8% prefix reuse alone against 0.4% together, same work in
+        # 1.1 s against 4.5 s (D47 mechanism A, G15). On by default --
+        # the setting exists to turn the grouping *off*, for a graph that
+        # would rather have arrival-order latency than the reuse.
+        self.chk_affinity = QCheckBox()
+        self.chk_affinity.setChecked(True)
+        form.addRow("Group Requests by Agent:", self.chk_affinity)
+        self._widget_core.register_widget(
+            "session_affinity", self.chk_affinity, role=PortRole.INTERNAL,
+            datatype="bool", default=True, add_to_layout=False)
+
         self.spin_cram = QSpinBox()
         self.spin_cram.setRange(0, 131072)
         form.addRow("Cache RAM (MB):", self.spin_cram)
@@ -277,7 +290,8 @@ class GGUFLNode(ThreadedManualNode):
                 "advanced": [
                     "seed", "n_threads", "n_batch", "flash_attn", "use_mmap",
                     "type_k", "type_v", "prompt_cache", "prompt_cache_all",
-                    "prompt_cache_ro", "clear_on_return", "cram"
+                    "prompt_cache_ro", "clear_on_return", "session_affinity",
+                    "cram"
                 ]
             }
         )
@@ -571,7 +585,15 @@ class GGUFLNode(ThreadedManualNode):
             "flash_attn": inputs.get("flash_attn", False),
             "embedding": bool(inputs.get("embedding", False)),
             "use_mmap": inputs.get("use_mmap", True),
-            "verbose": False,
+            # The prefix measurement (D41/D47, G15) is a *read* of the
+            # server's own stderr, and this is the switch that makes the
+            # server write the lines it reads. Left False, `prefix_report`
+            # reports "nothing measured" forever on the canvas while
+            # working perfectly from a script -- which is exactly why the
+            # numbers took until 2026-09-19 to exist. It costs about six
+            # lines per request into a temp file the pool already keeps,
+            # and it logs no prompt or completion text.
+            "verbose": True,
         }
 
         # KV-cache quantization: the UI provides type names, llama.cpp
@@ -616,6 +638,7 @@ class GGUFLNode(ThreadedManualNode):
                 model_path=model_path,
                 n_instances=int(inputs.get("pool_size", 2)),
                 clear_on_return=inputs.get("clear_on_return", True),
+                session_affinity=bool(inputs.get("session_affinity", True)),
                 **llama_kwargs
             )
         except Exception as exc:  # noqa: BLE001 - surface the reason to the UI

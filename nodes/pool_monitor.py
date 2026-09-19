@@ -19,6 +19,8 @@ from weave.node import VerticalSizePolicy
 from weave.registry import register_node
 from weave.widgets.sync_button import SyncButton
 
+from ..functions.session_affinity import describe_gate
+
 
 def queue_note(info: dict) -> str:
     """What to add to the flags line about requests waiting (§22 q1c).
@@ -71,6 +73,20 @@ def prefix_note(info: dict) -> str:
             requests=requests,
         )
     )
+
+
+def affinity_note(info: dict) -> str:
+    """What the queue is doing about the number above it (D47 mech. A).
+
+    Shown next to the reuse rate on purpose: affinity exists only to
+    protect that number, and the pair is what says whether it is working.
+    ``describe_gate`` says "no requests yet" rather than 0% for the same
+    reason the row above it does.
+    """
+    report = info.get("session_affinity")
+    if not isinstance(report, dict):
+        return "— (this pool does not group by conversation)"
+    return describe_gate(report).split(":", 1)[-1].strip()
 
 
 @register_node
@@ -144,6 +160,17 @@ class PoolMonitorNode(ThreadedManualNode):
             datatype="str", add_to_layout=False,
         )
 
+        # What the pool does about the row above: grouping the queue by
+        # conversation is the only reason that reuse rate can stay high
+        # when two agents are live (D47 mechanism A).
+        self._label_affinity = QLabel("—")
+        self._label_affinity.setWordWrap(True)
+        form.addRow("Affinity:", self._label_affinity)
+        self._widget_core.register_widget(
+            "display_affinity", self._label_affinity, role=PortRole.DISPLAY,
+            datatype="str", add_to_layout=False,
+        )
+
         self._label_flags = QLabel("—")
         self._label_flags.setWordWrap(True)
         form.addRow("Flags:", self._label_flags)
@@ -182,6 +209,7 @@ class PoolMonitorNode(ThreadedManualNode):
             "usage": "display_usage",
             "flags": "display_flags",
             "prefix": "display_prefix",
+            "affinity": "display_affinity",
         }
         target = mapping.get(field)
         if target:
@@ -218,6 +246,7 @@ class PoolMonitorNode(ThreadedManualNode):
         clear_flag = "clear-on-return: on" if info.get("clear_on_return") else "clear-on-return: off"
         self._display_update.emit("flags", clear_flag + queue_note(info))
         self._display_update.emit("prefix", prefix_note(info))
+        self._display_update.emit("affinity", affinity_note(info))
 
         return {"pool_status": info}
 

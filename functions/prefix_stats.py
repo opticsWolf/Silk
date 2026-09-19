@@ -66,6 +66,20 @@ _PROMPT_EVAL = re.compile(
 #: ``...       total time =  1980.44 ms / ...``
 _TOTAL_TIME = re.compile(r"total time\s*=\s*([\d.]+)\s*ms")
 
+#: Above this, a reported prompt-eval rate is not a measurement.
+#:
+#: Observed live on 2026-09-19: the **first** request after a model loads
+#: prints ``prompt eval time = 0.11 ms / 24 tokens`` -- 218,000 tokens a
+#: second, on hardware that does 550 -- because that first prefill is
+#: booked against the load, not against the request. Every later request
+#: reports a believable 1-2 ms per token.
+#:
+#: Left in, it would be a near-zero prefill on the single largest prefill
+#: of a run, dragging down the one number D47's rule reads first. So the
+#: timing is dropped and the sample keeps its token counts: the request is
+#: still measured for reuse, and unknown is reported as unknown.
+_IMPLAUSIBLE_TOKENS_PER_S = 20_000.0
+
 
 @dataclass(frozen=True)
 class PrefixLine:
@@ -138,6 +152,15 @@ class PrefixReport:
     contention_rate: Optional[float] = None
     prefill_share: Optional[float] = None
     bare_hits: int = 0
+    #: What one *lost* prefix costs, in milliseconds: the average prompt,
+    #: re-evaluated at the rate this server was observed to evaluate at.
+    #:
+    #: Not an observation -- an arithmetic combination of two -- but the
+    #: quantity every D47 mechanism is buying, which the three rates
+    #: describe without ever pricing. The affinity gate reads it to size
+    #: its hold window against what the hold is protecting, so a cheap
+    #: prefix does not buy an expensive wait.
+    full_prefill_ms: Optional[float] = None
 
     def as_dict(self) -> dict:
         return {
@@ -148,6 +171,7 @@ class PrefixReport:
             "reuse_rate": self.reuse_rate,
             "contention_rate": self.contention_rate,
             "prefill_share": self.prefill_share,
+            "full_prefill_ms": self.full_prefill_ms,
             "bare_hits": self.bare_hits,
         }
 
@@ -164,6 +188,15 @@ class PrefixReport:
             f"contention rate : {pct(self.contention_rate)}\n"
             f"prefill share   : {pct(self.prefill_share)}"
         )
+
+
+def _plausible(ms: Optional[float], tokens: Optional[int]) -> bool:
+    """Whether a prompt-eval timing can be believed (see the constant)."""
+    if ms is None or not tokens:
+        return ms is not None
+    if ms <= 0.0:
+        return False
+    return (tokens / (ms / 1000.0)) <= _IMPLAUSIBLE_TOKENS_PER_S
 
 
 class PrefixMeter:
@@ -216,7 +249,9 @@ class PrefixMeter:
                     sample.evaluated = fact.evaluated
             elif fact.kind == "prompt_eval":
                 seen = True
-                sample.prompt_eval_ms = fact.ms
+                sample.prompt_eval_ms = (
+                    fact.ms if _plausible(fact.ms, fact.evaluated) else None
+                )
                 if sample.evaluated is None:
                     sample.evaluated = fact.evaluated
                 if sample.matched is None:
@@ -253,6 +288,8 @@ def summarize(samples: list[PrefixSample]) -> PrefixReport:
     matched = evaluated = 0
     measured = 0
     prompt_ms = total_ms = 0.0
+    timed_tokens = 0
+    prompt_tokens = 0
     contended = comparable = 0
     for sample in samples:
         if sample.matched is None and sample.evaluated is None:
@@ -261,6 +298,10 @@ def summarize(samples: list[PrefixSample]) -> PrefixReport:
             measured += 1
             matched += sample.matched or 0
             evaluated += sample.evaluated or 0
+        if sample.prompt_tokens:
+            prompt_tokens += sample.prompt_tokens
+        if sample.prompt_eval_ms is not None and sample.evaluated:
+            timed_tokens += sample.evaluated
         if sample.prompt_eval_ms is not None and sample.total_ms:
             prompt_ms += sample.prompt_eval_ms
             total_ms += sample.total_ms
@@ -277,6 +318,11 @@ def summarize(samples: list[PrefixSample]) -> PrefixReport:
         report.contention_rate = contended / comparable
     if total_ms:
         report.prefill_share = prompt_ms / total_ms
+    if timed_tokens and measured:
+        # Per-token evaluation rate observed here, applied to the average
+        # prompt: what it would cost to re-evaluate one from scratch.
+        report.full_prefill_ms = (prompt_ms / timed_tokens) * (
+            prompt_tokens / measured)
     return report
 
 

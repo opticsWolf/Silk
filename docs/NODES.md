@@ -23,6 +23,19 @@ That is what puts the agent on the native protocol instead of the text
 fence. A file with no chat template at all (an embedding model, a vision
 projector) is "unknown" rather than "no", and unknown uses fences.
 
+**Group Requests by Agent** (advanced mode, on by default) is D47
+mechanism A. One server holds one resident KV context, so two agents
+taking turns overwrite each other's prompt cache and each round
+re-prefills everything past the system prompt: measured at 74.8% prefix
+reuse for one conversation against **0.4%** for two running at once, and
+the same work in 1.1 s against 4.5 s. With grouping on, two conversations
+reuse exactly what one does. It changes only the *order* of a queue that
+already exists -- the server serialises every request anyway (D43) -- so
+it costs no throughput, only a short wait at a switch, and that wait is
+capped by what a lost prefix was measured to cost. Turn it off if your
+prompts are small enough that prefill does not matter; the Pool Monitor's
+*Affinity* row reports the wait it costs beside the reuse it buys.
+
 ### Model Endpoint — `nodes/model_endpoint.py` (`SilkModelEndpointNode`)
 A model that runs somewhere else, wired where the loader would go (D45).
 Emits the same `model_handle`, so Agent, Agent Spec and the ToolBox's
@@ -451,6 +464,20 @@ thread as markdown/HTML.
 ### Pool Monitor — `nodes/pool_monitor.py` *(AI / Monitor)*
 Live snapshot of GGUF pool state (active/idle instances, capacity). Wire any
 agent's `done` port to `refresh` for updates without polling.
+
+Two rows are worth reading together, because the second exists for the
+first:
+
+- **Prefix reuse** — `reuse · contention · prefill · n measured` (D41,
+  D47). Before any request it says *no requests measured yet* rather than
+  0%, because those lead to opposite decisions. Reuse at 0% in every
+  shape usually means the backend refuses partial KV removal; see
+  [docs/prefix_reuse_measurement.md](prefix_reuse_measurement.md).
+- **Affinity** — what the request queue is doing about it: the share of
+  requests that followed one from the same conversation, the average wait
+  that grouping cost, and how many hold windows paid off against how many
+  elapsed unused. If the hold stops paying it suppresses itself and says
+  so.
 
 | Direction | Port | Type |
 |---|---|---|

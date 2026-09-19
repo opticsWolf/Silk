@@ -581,7 +581,7 @@ hook attaches, by age then total size, over the writer's own names only.
 Compaction archives into the same directory and is covered by the same
 sweep, which is the point of there being one place.
 
-### G15. Prompt-prefix reuse is unconfigured and unmeasured
+### G15. Prompt-prefix reuse is unconfigured and unmeasured — CLOSED 2026-09-19
 
 The machinery exists in the runtime and Silk neither configures nor observes
 it. Verified against the installed llama-cpp-python 0.3.34:
@@ -661,10 +661,52 @@ and "nobody looked" lead to opposite decisions. The procedure (which two
 runs to capture, and D47's rule applied to what comes back) is in
 [docs/prefix_reuse_measurement.md](prefix_reuse_measurement.md).
 
-**Still open, and only this:** the numbers themselves, which need a live
-backend and are therefore the user's to produce, plus the sub-questions
-the rule does not settle — `LlamaCache` size and backing if B is
-selected; who chooses the backend, and the down-backend path, if C is.
+**Closed 2026-09-19 — the numbers exist and the rule decided.** Taken
+against Silk's own `GGUFModelPool` (gemma-4-E4B Q4_K_M, RTX 3090,
+`n_ctx` 16384), two conversations of four rounds each driven from two
+threads, at three prompt sizes. Full tables in
+[docs/prefix_reuse_measurement.md](prefix_reuse_measurement.md); the
+decision is spec **D91**. At ~1600-token prompts:
+
+| Shape | Reuse | Contention | Prefill | Wall |
+|---|---|---|---|---|
+| one session | 74.8% | 0% | 33.1% | 1.1 s |
+| two at once | **0.4%** | 100% | 74.1% | **4.5 s** |
+
+Which is clause 2 of the rule -- the loss is interleaving -- so
+**mechanism A**, built as `functions/session_affinity.py`, on by default,
+one checkbox on the GGUF loader and an *Affinity* row on the Pool
+Monitor. With it on, two conversations reuse exactly what one does
+(74.8%), and the 4250-token case goes from 11.4 s to 3.8 s.
+
+**This gap prediction held exactly** -- "parallel delegation is
+considerably more expensive than it looks" was 0.2% reuse and a 2.9x
+wall-clock penalty -- but **three things written here were wrong or
+missing**, and each was found only by running it:
+
+- **"Prefix reuse is real and automatic" is not universal.** Qwen3.5-4B
+  logs `prefix-match found but partial kv removal not supported,
+  re-evaluating full prompt`: llama.cpp finds the prefix and re-evaluates
+  the whole thing anyway. Reuse is 0% there in *every* shape. That is a
+  third failure mode beside contention and prefix instability, it belongs
+  to the backend, and the answer is a different model, not a knob.
+- **"`verbose` is already forwarded" was true of the pool and false of
+  the node.** `nodes/gguf_loader.py` hard-coded `verbose: False`, so the
+  server never wrote the lines the meter reads and `prefix_report()`
+  returned "nothing measured" on the canvas forever -- while working
+  perfectly from a script. *That* is why the numbers waited two weeks for
+  someone to produce them, and it is the more useful lesson: a
+  measurement that only works off the canvas has not landed.
+- **The prefill-share threshold is read off a workload, not off a
+  system.** A first capture said 5% -- clause 1, do nothing -- because it
+  used 200-token prompts answered in 120 tokens. An agent round is the
+  inverse shape. At the sizes Silk actually runs, prefill is 33-80% of
+  the request.
+
+**Still open, and only this:** the sub-questions the rule does not
+settle for the mechanisms *not* built -- who chooses the backend, and the
+down-backend path, if C (D45) is ever built. B's (`LlamaCache` size and
+backing, D44) dies with B: A subsumes it.
 
 ### G21. Write authority over an importable directory is process authority — REPORTED
 

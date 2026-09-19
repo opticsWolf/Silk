@@ -35,6 +35,7 @@ from weave.logger import get_logger
 
 from .credentials import missing_credential, resolve_credential
 from .prefix_stats import LogDrain, PrefixMeter
+from .session_affinity import SessionAffinityGate
 
 log = get_logger("SilkModelPool")
 
@@ -239,6 +240,7 @@ class GGUFModelPool:
         n_instances: int = 4,
         clear_on_return: bool = True,
         credential: str = "",
+        session_affinity: bool = True,
         **llama_kwargs: Any,
     ) -> None:
         if not LLAMA_SERVER_AVAILABLE:
@@ -304,6 +306,18 @@ class GGUFModelPool:
         self._prefix_meter = PrefixMeter()
         self._prefix_drain = LogDrain(self._log_path)
         self._prefix_lock = threading.Lock()
+
+        # ... and reading it is what selected this (D47 mechanism A). One
+        # server holds one resident context, so two conversations running
+        # at once overwrite each other's: measured 74.8% reuse alone
+        # against 0.4% together, and the same work in 1.1 s against 4.5 s.
+        # The gate groups the queue by session instead of by arrival.
+        self._affinity = SessionAffinityGate(
+            enabled=bool(session_affinity),
+            # The meter sizes the gate: a hold is only worth what a lost
+            # prefix costs, and this is the module that knows.
+            prefill_cost_s=self._measured_prefill_s,
+        )
 
         # How much of the fan-out is actually running at once (§22 q1c).
         # One server means requests queue inside it; correct, and invisible
@@ -448,6 +462,9 @@ class GGUFModelPool:
     def cleanup(self, timeout: float = _SHUTDOWN_TIMEOUT_S) -> None:
         """Stop the server and free its VRAM.  Safe to call twice."""
         log.info("GGUF server: shutting down process and freeing VRAM.")
+        # Anyone queued for a turn on a server that is going away must be
+        # let out, or the shutdown waits on a slot nobody will release.
+        self._affinity.release_all()
         self._unregister()
         with self._lock:
             if self._process is not None and self._process.poll() is None:
@@ -494,10 +511,24 @@ class GGUFModelPool:
         pass
 
     def checkout(self, session_id: str = "default") -> Optional[Any]:
-        with self._lock:
-            self._bound_sessions.add(str(session_id))
-            log.debug(f"Checkout: session {session_id[:8]}… → server client")
-            return self._client
+        # Blocks until this conversation may talk to the server (D47 A).
+        # Outside self._lock on purpose: the wait is for another *request*
+        # to finish, and holding the pool's lock across it would stop the
+        # very checkin that ends it.
+        self._affinity.acquire(session_id)
+        try:
+            with self._lock:
+                self._bound_sessions.add(str(session_id))
+                log.debug(f"Checkout: session {session_id[:8]}… → server client")
+                client = self._client
+            if client is None:
+                self._affinity.release(session_id)
+            return client
+        except BaseException:
+            # Nothing below can currently raise, but a slot acquired and
+            # never released is a hung graph, so it is not left to luck.
+            self._affinity.release(session_id)
+            raise
 
     def checkin(
         self, instance: Any, session_id: str = "default",
@@ -508,6 +539,10 @@ class GGUFModelPool:
         A checkin only *unbinds* when asked to: a run ends every round with
         one, and the conversation it belongs to is still live.
         """
+        # Released first, and unconditionally: every checkout takes a slot,
+        # and the engine calls this from a `finally`, so this is the one
+        # place that is reached however the request ended.
+        self._affinity.release(session_id)
         if release_session:
             self.release_session(session_id)
 
@@ -522,6 +557,9 @@ class GGUFModelPool:
         with self._lock:
             known = str(session_id) in self._bound_sessions
             self._bound_sessions.discard(str(session_id))
+        # A finished conversation should not keep the next slot warm on a
+        # server nobody is going to ask it about again.
+        self._affinity.forget(session_id)
         if known:
             log.debug(f"Released session {str(session_id)[:8]}…")
         return known
@@ -605,6 +643,29 @@ class GGUFModelPool:
         with self._prefix_lock:
             self._prefix_meter.reset()
 
+    # -- session affinity (spec D47 mechanism A) --------------------------
+
+    def affinity_report(self) -> dict:
+        """What the affinity gate did -- grouping rate, waits, holds."""
+        return self._affinity.report()
+
+    def _measured_prefill_s(self) -> Optional[float]:
+        """What re-evaluating one prompt from scratch costs, in seconds.
+
+        ``None`` until the server has said enough to know, which the gate
+        reads as "no reason to shorten the window yet".
+        """
+        with self._prefix_lock:
+            ms = self._prefix_meter.report().full_prefill_ms
+        return None if ms is None else ms / 1000.0
+
+    def reset_affinity_stats(self) -> None:
+        self._affinity.reset_stats()
+
+    @property
+    def session_affinity(self) -> bool:
+        return self._affinity.enabled
+
     def snapshot(self) -> dict:
         with self._lock:
             return {
@@ -623,6 +684,10 @@ class GGUFModelPool:
                 # The number the context design hangs on, surfaced where the
                 # pool is already being watched (D41; G15).
                 "prefix_reuse": self.prefix_report(),
+                # ... and what is being done about it. Reported beside the
+                # number that justified it, so the two can be read against
+                # each other rather than taken on faith (D47).
+                "session_affinity": self.affinity_report(),
                 # What a fan-out actually got: one server, one request at a
                 # time. Reported where the pool is already watched (§22 q1c).
                 "serialization": self.serialization_report(),

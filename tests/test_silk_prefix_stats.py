@@ -220,3 +220,51 @@ def test_the_engine_measures_through_the_pool_and_survives_a_pool_that_cannot():
 def test_sample_reports_unknown_reuse_without_numbers():
     assert PrefixSample(session="a").reuse is None
     assert PrefixSample(session="a").prompt_tokens is None
+
+
+# -- timings that cannot be true (observed live, 2026-09-19) ----------------
+
+def test_the_first_prefill_after_a_load_is_not_a_measurement():
+    """`prompt eval time = 0.11 ms / 24 tokens` is 218,000 tokens a second
+    on hardware that does 550: the cold prefill is booked against the load,
+    not the request. Counted, it would put a near-zero prefill on the
+    largest prefill of a run -- and that is the number D47 reads first."""
+    meter = PrefixMeter()
+    sample = meter.record_lines([
+        "llama_perf_context_print: prompt eval time = 0.11 ms / 24 tokens",
+        "llama_perf_context_print:       total time = 297.10 ms / 29 tokens",
+    ], session="A")
+    assert sample is not None
+    assert sample.evaluated == 24          # the token count is still real
+    assert sample.prompt_eval_ms is None   # the timing is not
+    assert meter.report().prefill_share is None
+
+
+def test_a_believable_timing_is_kept():
+    meter = PrefixMeter()
+    sample = meter.record_lines([
+        "llama_perf_context_print: prompt eval time = 23.89 ms / 13 tokens",
+        "llama_perf_context_print:       total time = 82.15 ms / 18 tokens",
+    ], session="A")
+    assert sample.prompt_eval_ms == 23.89
+    assert meter.report().prefill_share == pytest.approx(23.89 / 82.15)
+
+
+def test_a_lost_prefix_is_priced_from_the_rate_and_the_prompt():
+    """What every D47 mechanism is buying, which the three rates describe
+    without ever pricing: the average prompt at the observed rate."""
+    meter = PrefixMeter()
+    for _ in range(2):
+        meter.record_lines([
+            "Llama.generate: 900 prefix-match hit, remaining 100 prompt "
+            "tokens to eval",
+            "llama_perf_context_print: prompt eval time = 200.0 ms / 100 tokens",
+            "llama_perf_context_print:       total time = 400.0 ms / 120 tokens",
+        ], session="A")
+    report = meter.report()
+    # 2 ms per token observed, 1000-token prompts -> 2 s to redo one.
+    assert report.full_prefill_ms == pytest.approx(2000.0)
+
+
+def test_nothing_measured_prices_nothing():
+    assert PrefixMeter().report().full_prefill_ms is None

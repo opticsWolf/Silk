@@ -26,13 +26,21 @@ import threading
 
 
 from silk.functions.model_pool import GGUFModelPool  # noqa: E402
+from silk.functions.session_affinity import SessionAffinityGate  # noqa: E402
 
 
 def _pool() -> GGUFModelPool:
-    """A pool with only its session bookkeeping wired up."""
+    """A pool with only its session bookkeeping wired up.
+
+    The affinity gate is real but its hold window is zero: checkout now
+    takes a turn on the server (D47 mechanism A) and these tests are about
+    what gets *counted*, not about how long anyone waits for it. Its own
+    behaviour is pinned in test_silk_session_affinity.py.
+    """
     pool = object.__new__(GGUFModelPool)
     pool._lock = threading.RLock()
     pool._bound_sessions = set()
+    pool._affinity = SessionAffinityGate(hold_s=0.0)
     pool._client = object()
     pool._in_flight = 0
     pool._peak_in_flight = 0
@@ -45,18 +53,25 @@ def test_a_fresh_pool_has_no_bound_sessions():
     assert _pool().bound_sessions == 0
 
 
+def _request(pool, session):
+    """One request: a turn taken and given back, as a round does."""
+    client = pool.checkout(session)
+    pool.checkin(client, session_id=session)
+    return client
+
+
 def test_many_requests_from_one_session_bind_it_once():
     """The bug: checkout runs per request, so counting checkouts only grew."""
     pool = _pool()
     for _ in range(10):
-        assert pool.checkout("conversation-a") is pool._client
+        assert _request(pool, "conversation-a") is pool._client
     assert pool.bound_sessions == 1
 
 
 def test_two_conversations_are_two_bound_sessions():
     pool = _pool()
-    pool.checkout("conversation-a")
-    pool.checkout("conversation-b")
+    _request(pool, "conversation-a")
+    _request(pool, "conversation-b")
     assert pool.bound_sessions == 2
 
 
@@ -78,7 +93,7 @@ def test_a_releasing_checkin_unbinds():
 
 def test_release_session_reports_whether_it_knew_the_session():
     pool = _pool()
-    pool.checkout("conversation-a")
+    _request(pool, "conversation-a")
     assert pool.release_session("conversation-a") is True
     assert pool.release_session("conversation-a") is False, "already gone"
     assert pool.release_session("never-seen") is False
@@ -88,7 +103,7 @@ def test_release_session_reports_whether_it_knew_the_session():
 def test_releasing_one_conversation_leaves_the_others():
     pool = _pool()
     for name in ("a", "b", "c"):
-        pool.checkout(name)
+        _request(pool, name)
     pool.release_session("b")
     assert pool.bound_sessions == 2
     assert pool._bound_sessions == {"a", "c"}
@@ -97,9 +112,9 @@ def test_releasing_one_conversation_leaves_the_others():
 def test_a_released_session_rebinds_on_its_next_request():
     """Clear Context is not an eviction from the pool; it is a fresh start."""
     pool = _pool()
-    pool.checkout("conversation-a")
+    _request(pool, "conversation-a")
     pool.release_session("conversation-a")
-    pool.checkout("conversation-a")
+    _request(pool, "conversation-a")
     assert pool.bound_sessions == 1
 
 
@@ -110,8 +125,8 @@ def test_the_snapshot_reports_distinct_conversations():
     pool._clear_on_return = False
     pool.prefix_report = lambda: {}
     for _ in range(5):
-        pool.checkout("conversation-a")
-    pool.checkout("conversation-b")
+        _request(pool, "conversation-a")
+    _request(pool, "conversation-b")
 
     assert pool.snapshot()["bound_sessions"] == 2, (
         "the Pool Monitor reads this; it must not be a request counter"
@@ -226,3 +241,44 @@ def test_a_metric_the_log_never_stated_is_unknown_not_zero():
         "contention_rate": None, "prefill_share": None,
     }})
     assert "contention unknown" in note and "prefill unknown" in note
+
+
+# -- the turn a checkout takes (D47 mechanism A) --------------------------
+
+def test_checkout_takes_a_turn_and_checkin_gives_it_back():
+    """The gate lives at this seam, so the seam is what has to be paired:
+    a slot taken and never returned is a graph that stops."""
+    pool = _pool()
+    pool.checkout("a")
+    assert pool._affinity._busy is True
+    pool.checkin(pool._client, session_id="a")
+    assert pool._affinity._busy is False
+
+
+def test_a_released_conversation_stops_holding_the_next_turn():
+    """Clear Context should not keep a slot warm for an agent that has
+    finished with the server."""
+    pool = _pool()
+    _request(pool, "a")
+    assert pool._affinity._affinity == "a"
+    pool.release_session("a")
+    assert pool._affinity._affinity is None
+
+
+def test_shutdown_lets_go_of_everyone_waiting():
+    pool = _pool()
+    pool.checkout("a")
+    pool._affinity.release_all()
+    pool.checkout("b")          # would block on a server that is going away
+
+
+def test_the_snapshot_carries_what_the_gate_did():
+    pool = _pool()
+    pool._model_path = "/models/some-model.gguf"
+    pool._max_instances = 1
+    pool._clear_on_return = False
+    pool.prefix_report = lambda: {}
+    _request(pool, "a")
+    report = pool.snapshot()["session_affinity"]
+    assert report["enabled"] is True
+    assert report["grants"] == 1
