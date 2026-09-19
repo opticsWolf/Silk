@@ -175,11 +175,36 @@ both fit the one port. The roots are the hard ceiling of the whole graph,
 and a ceiling that can also be set inside the node is a ceiling you
 cannot read off the canvas. Unwired, the node builds nothing and says so.
 
-**Two levels of tool selection, and they are not redundant.** The group
-checkboxes (File Read / Write / Manage, Ripgrep, Task Planning, Recall,
-Plugin authoring) decide what is *attached*; the checkbox on each row of
-the tool tree decides what survives. A group is a capability — *this box
-can write files* — and a tick is an instrument — *but not `move_file`*.
+**The tool tree is the only selector.** There used to be a row of group
+checkboxes above it — File Read, File Write, Ripgrep, Task Planning and
+the rest — and they asked the same question the ticks already answered,
+in a way that could disagree with them. They are gone. A group is
+attached because something in it is ticked, and that is the whole rule
+(`groups_for`). Everything else falls out of the same selection:
+
+* the sandbox is **writable** because a write tool is ticked
+  (`WRITING_GROUPS`), not because a separate switch says so;
+* **plugin authoring** is on because a `suite_tools` tool is ticked, and
+  that is what adds `~/.weave/plugins` to the sandbox as a writable root;
+* **graph authoring** mounts because a graph tool is ticked *and* the
+  whitelist behind its gear names at least one class.
+
+**The tree is populated before anything is wired.** It is seeded from a
+static catalog (`functions/tool_groups.py`) built once by running every
+attacher against a throwaway sandbox and recording what it registered —
+nothing is executed, only described. The root is usually the thing being
+wired *because* tools are wanted, so a tree that filled in only after the
+root arrived was a tree that could not be set up first. `file_read` and
+`ripgrep` start ticked; writing, planning, memory, graph authoring and
+plugin authoring are each a different request, and start off.
+
+**Unticking is reversible.** The tree lists what is *offered*, which is
+the static catalog plus whatever the last build added dynamically — not
+what survived the narrowing. Reading it off the finished box is what used
+to make an unticked tool vanish from the tree altogether: the box no
+longer had it, so the catalog no longer mentioned it, so there was
+nothing left to tick back on. For the same reason a group with nothing
+ticked keeps its row.
 
 The narrowing is the **last entry of the build recipe**, not something
 the node applies to its own output, so every ToolSet derived from this
@@ -188,15 +213,23 @@ its ToolBox had been told to drop.
 
 A tool the tree has never shown cannot have been unticked, so the node
 remembers which ones it has offered (`seen_tools`, saved with the graph).
-Switching a group on adds its tools live and already ticked, rather than
-adding them pre-excluded by a selection that could not have mentioned
-them — while a tool you did untick stays out across that change and
-across a reload.
+The static tools are seen at construction; a toolchain pack or an MCP
+server's tools are seen when they first arrive, and arrive **ticked** —
+otherwise they would be pruned on the same evaluation that created them,
+and wiring a toolchain would appear to do nothing.
 
 Toolchain tools are ordinary tools: the packs register on the box like
 every other attacher and appear in the same tree under their own
 categories (`code`, `lint`, `build`), so they are ticked, filtered and
 inherited exactly like the file tools.
+
+**Some groups carry settings, and they sit on the group's own row.** A
+category row with a ⚙ opens its configuration on double-click, or from
+the row's context menu — the same affordance the Hooks list uses. Only
+graph authoring has one today (*Allowed node classes…*), and it is there
+rather than in a field of its own precisely because it is not a
+preference: it is the grant those tools run under, and a grant belongs
+beside the tools it governs.
 
 **Hooks start on.** Every hook in the catalog is ticked by default except
 the four that can refuse a call or stop to ask — `tool_approval`,
@@ -212,32 +245,39 @@ on. Left unwired, they discover the newest plan under the sandbox root —
 which is how several agents share one plan, and why two unrelated plans in
 one root used to find each other (D23).
 
-The **Recall (memory)** checkbox mounts the `recall` tool: keyword search
+Ticking **`recall`** mounts memory search: keyword search
 over the turns and runs remembered in this sandbox root's history ledger,
 including ones from earlier sessions and ones compaction dropped (§17,
 D66). It needs the `ledger` extra (`pip install macrame-db`); without it
 the tool registers and says so rather than quietly returning nothing.
 
-The **Placeable Nodes** tree is the graph-authoring grant (§18, D71):
-tick the node classes an agent may place, and the eight graph tools
+**Placeable nodes** is the graph-authoring grant (§18, D71), and it lives
+behind the ⚙ on the tree's `graph` row. Tick the graph tools
 (`list_placeable_nodes`, `describe_graph`, `list_node_settings`,
 `place_node`, `connect`, `set_node_value`, `disconnect`, `remove_node`)
-mount. Leave it empty — the default — and no
-agent fed by this ToolBox can build graph at all. Every edit an agent makes
+*and* name at least one node class there, and the pack mounts. Leave the
+whitelist empty — the default — and the pack stays out of the prompt
+entirely rather than mounting eight tools that refuse everything; the
+status line says so, because ticked-but-ungranted is a half-finished
+setup rather than a safe one. No agent fed by this ToolBox can build
+graph at all until a class is named. Every edit an agent makes
 goes onto the canvas's own undo stack, so one Ctrl+Z takes back one tool
 call; destructive calls reach only what that run itself placed, and no
 mutation may touch the agent, its tool chain, or anything upstream of it
 (D72, D73). The list travels in the saved graph and in presets: it carries
 no secret and no filesystem authority.
 
-The **Plugin authoring** checkbox (§19) lets the agent write node suites
-into `~/.weave/plugins` and load them into the running session. It adds
+**Plugin authoring** (§19) is the `plugins` category of the tree: ticking
+`list_suites`, `load_suite`, `reload_suite` or `request_relaunch` lets
+the agent write node suites into `~/.weave/plugins` and load them into
+the running session. It adds
 that directory to the sandbox as the only writable root (unless file
-writing is already on), and mounts `list_suites`, `load_suite`,
-`reload_suite` and `request_relaunch`. Every load asks you, every time,
+writing is already on). Every load asks you, every time,
 and shows you the diff of what this run wrote — no Role, preset or
 grant can pre-approve it, because importing runs that code with the
-full authority of the Weave process. A state-version finding
+full authority of the Weave process. The tools mount, and the load verb
+is what asks; unlike graph authoring there is no separate grant to name
+first, because the answer is given per load and never in advance. A state-version finding
 (WV520–WV522) stops the load before you are even asked: it means saved
 graphs would not survive it. Weave core and Silk stay read-only.
 

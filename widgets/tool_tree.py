@@ -45,11 +45,18 @@ class ToolTreeWidget(CompositeValueWidget):
     tool_focused = Signal(object)
     #: Display-state notify for panel mirroring (catalog rows).
     catalog_changed = Signal()
+    #: A configurable category row was asked to open its settings.
+    config_requested = Signal(str)
 
     def __init__(self, parent=None, checkable: bool = True) -> None:
         super().__init__(parent)
         self._checkable = checkable
         self._catalog: List[Dict[str, Any]] = []
+        # {category: menu label} for the rows that own configuration.
+        # Some tools are governed by settings that are not preferences --
+        # graph authoring's whitelist *is* its grant -- and those belong
+        # beside the tools they govern, not in a field elsewhere.
+        self._configurable: Dict[str, str] = {}
         # Checked names are kept even while absent from the catalog, so a
         # transient upstream disconnect (empty catalog) never wipes the
         # user's selection; names simply re-appear ticked on reconnect.
@@ -71,12 +78,43 @@ class ToolTreeWidget(CompositeValueWidget):
 
         self._tree.itemChanged.connect(self._on_item_changed)
         self._tree.currentItemChanged.connect(self._on_current_changed)
+        self._tree.itemDoubleClicked.connect(self._on_item_double_clicked)
 
         # Own the right-click: checkable mode shows the bulk-selection
         # menu; read-only mode swallows the event (no widget menu, and —
         # via the registered builder returning None — no node menu either).
         self._tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._tree.customContextMenuRequested.connect(self._show_context_menu)
+
+    # -- configurable categories -----------------------------------------
+
+    def set_configurable(self, categories: Dict[str, str]) -> None:
+        """Mark *categories* (``{name: label}``) as carrying settings."""
+        self._configurable = dict(categories or {})
+        self._refresh_category_markers()
+
+    @staticmethod
+    def _category_of(item: QTreeWidgetItem) -> str:
+        """The category name of a top-level row, without its count."""
+        return item.text(0).rsplit("  (", 1)[0]
+
+    def _refresh_category_markers(self) -> None:
+        for i in range(self._tree.topLevelItemCount()):
+            item = self._tree.topLevelItem(i)
+            configurable = self._category_of(item) in self._configurable
+            if configurable:
+                if ic := widget_menus._icon("settings"):
+                    item.setIcon(0, ic)
+                item.setToolTip(0, "Double-click to configure this group.")
+            else:
+                item.setToolTip(0, "")
+
+    def _on_item_double_clicked(self, item: QTreeWidgetItem, _column) -> None:
+        if item.data(0, _NAME_ROLE) is not None:
+            return                      # a tool row, not a category
+        category = self._category_of(item)
+        if category in self._configurable:
+            self.config_requested.emit(category)
 
     # -- context menu ----------------------------------------------------
 
@@ -107,6 +145,20 @@ class ToolTreeWidget(CompositeValueWidget):
             deselect_all.setIcon(ic)
         deselect_all.triggered.connect(self.check_none)
         menu.addAction(deselect_all)
+
+        item = self._tree.currentItem()
+        if item is not None and item.data(0, _NAME_ROLE) is None:
+            category = self._category_of(item)
+            label = self._configurable.get(category)
+            if label:
+                menu.addSeparator()
+                configure = QAction(label, menu)
+                if ic := widget_menus._icon("settings"):
+                    configure.setIcon(ic)
+                configure.triggered.connect(
+                    lambda _=False, c=category: self.config_requested.emit(c)
+                )
+                menu.addAction(configure)
 
         menu.addSeparator()
 
@@ -165,6 +217,7 @@ class ToolTreeWidget(CompositeValueWidget):
             if self._checkable:
                 self._sync_category_state(parent)
             parent.setExpanded(True)
+        self._refresh_category_markers()
         self._tree.blockSignals(False)
         # No value notification here: the checked set is untouched by a
         # catalog rebuild (set_catalog runs on every upstream evaluation;
@@ -181,6 +234,10 @@ class ToolTreeWidget(CompositeValueWidget):
 
     def categories(self) -> List[str]:
         return sorted({e.get("category", "uncategorized") for e in self._catalog})
+
+    def tool_names(self) -> List[str]:
+        """Every tool the tree is currently offering, ticked or not."""
+        return [str(e["name"]) for e in self._catalog]
 
     def catalog(self) -> List[Dict[str, Any]]:
         return list(self._catalog)
@@ -308,7 +365,7 @@ class ToolTreeWidget(CompositeValueWidget):
         return [self._tree]
 
     __mirror__ = MirrorContract(
-        clone=lambda src, _b: ToolTreeWidget(checkable=src._checkable),
+        clone=lambda src, _b: _cloned_tree(src),
         # Catalog rows are display state outside the value — live-bound
         # into panel mirrors via reader catalog() / writer setCatalog().
         display_properties=(("catalog", "catalog_changed"),),
@@ -319,6 +376,13 @@ class ToolTreeWidget(CompositeValueWidget):
             args[0].get("name") if args and isinstance(args[0], dict) else None
         ),
     )
+
+
+def _cloned_tree(source: ToolTreeWidget) -> ToolTreeWidget:
+    """A mirror of *source*, configurable rows and all."""
+    clone = ToolTreeWidget(checkable=source._checkable)
+    clone.set_configurable(dict(source._configurable))
+    return clone
 
 
 class ToolDetailWidget(CompositeValueWidget):
