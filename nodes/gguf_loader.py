@@ -19,7 +19,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QProgressBar,
     QSpinBox,
-    QFrame,
 )
 
 from weave.widgetcore import WidgetCore, PortRole
@@ -27,11 +26,11 @@ from weave.node.threaded import ThreadedManualNode
 from weave.registry import register_node
 from weave.logger import get_logger
 from weave.node import VerticalSizePolicy
-from weave.panel.mirror_contracts import MirrorContract
 
 from weave.library.sync_tool_button.widgets.sync_tool_button import SyncToolButton
 from weave.widgets.sync_button import SyncButton
 from weave.widgets.path_picker import PathPickerWidget
+from weave.widgets.separator_line import SeparatorLine
 
 log = get_logger("GGUFLNode")
 
@@ -51,19 +50,6 @@ if not LLAMA_CPP_AVAILABLE:
     log.error("llama-cpp-python NOT found. GGUF Loader will be non-functional.")
 elif not LLAMA_SERVER_AVAILABLE:
     log.error(f"GGUF Loader non-functional: {server_missing_deps_message()}")
-
-# --- V6 Structural Mirror Widget ---
-class SeparatorLine(QFrame):
-    """A mirror-compliant horizontal line separator for the UI."""
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setFrameShape(QFrame.Shape.HLine)
-        self.setFrameShadow(QFrame.Shadow.Sunken)
-        self.setProperty("opaque_bg", True)
-
-    __mirror__ = MirrorContract(
-        clone=lambda src, _b: SeparatorLine(),
-    )
 
 # ==============================================================================
 # GGUF Loader Node (V6)
