@@ -248,7 +248,8 @@ class SilkAgentNode(ThreadedManualNode):
 
         # Clear context button (always visible)
         controls = QHBoxLayout()
-        self.btn_clear = SyncButton(initial_text="Clear Context")
+        self.btn_clear = SyncButton(initial_text="Clear Context",
+                                    initial_icon="eraser")
         self.btn_clear.clicked.connect(self._clear_context)
         controls.addWidget(self.btn_clear)
         controls.addStretch()
@@ -350,7 +351,8 @@ class SilkAgentNode(ThreadedManualNode):
         )
 
         # Run/Cancel action button.
-        self.btn_run = SyncButton(initial_text="Run Agent")
+        self.btn_run = SyncButton(initial_text="Run Agent",
+                                  initial_icon="player-play")
         self.btn_run.setFixedHeight(30)
         self.btn_run.setStyleSheet("font-weight: bold;")
         self.btn_run.clicked.connect(self.execute)
@@ -540,12 +542,13 @@ class SilkAgentNode(ThreadedManualNode):
             self.cancel_compute()
             return
         self.btn_run.set_label("Cancel Run")
+        self.btn_run.set_icon_name("player-stop")
         self._widget_core.push_display("preview_display", "<i>Running…</i>")
         super().execute()
 
     def on_evaluate_finished(self) -> None:
         super().on_evaluate_finished()
-        self.btn_run.set_label("Run Agent")
+        self._show_run_button()
         if self._last_run_ok:
             self._widget_core.apply_port_value("user_prompt", "")
             # Edge-trigger downstream agents / sinks in the network.
@@ -556,8 +559,12 @@ class SilkAgentNode(ThreadedManualNode):
         # `skip_results=True` when a result arrives for a cancelled or
         # disabled node, and an override without it raises TypeError on
         # exactly the path that is already going wrong.
-        self.btn_run.set_label("Run Agent")
+        self._show_run_button()
         super()._cleanup_after_worker(skip_results=skip_results)
+
+    def _show_run_button(self) -> None:
+        self.btn_run.set_label("Run Agent")
+        self.btn_run.set_icon_name("player-play")
 
     def cleanup(self) -> None:
         self.cancel_compute()

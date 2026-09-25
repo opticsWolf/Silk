@@ -264,7 +264,8 @@ class GGUFLNode(ThreadedManualNode):
         )
 
         # V6: Action Button Routing
-        self.btn_load = SyncButton(initial_text="Load GGUF Pool")
+        self.btn_load = SyncButton(initial_text="Load GGUF Pool",
+                                   initial_icon="download")
         self.btn_load.clicked.connect(self.execute)
         form.addRow("", self.btn_load)
         self._widget_core.register_widget("btn_load", self.btn_load, role=PortRole.INTERNAL, add_to_layout=False)
