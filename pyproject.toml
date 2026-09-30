@@ -27,7 +27,7 @@ dependencies = [
     # Decision Inbox, the Grant Manager) are Lace docks, so they need it
     # directly; a Weave host already brings it, and it is declared here for
     # the same reason PySide6 is -- what a module imports, its project says.
-    "lace-dock>=0.7",
+    "lace-dock>=0.8.2",
 ]
 
 [project.optional-dependencies]
