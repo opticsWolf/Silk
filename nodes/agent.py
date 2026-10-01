@@ -77,6 +77,7 @@ from ..functions.grants import SCOPE_ALWAYS, SCOPE_ONCE, SCOPE_RUN
 from ..functions.graph_engine import GraphEngine
 from ..functions.remember import RunIdentity, bind_run_identity
 from ..functions.cost_ledger import record_run
+from ..functions.port_text import text_input
 from ..functions.usage_limits import describe_budget, parse_budget
 from ..functions.hooks import (
     HOOK_AFTER_MODEL_RESPONSE,
@@ -625,7 +626,12 @@ class SilkAgentNode(ThreadedManualNode):
             self.compute_error.emit("No valid model connected.")
             return {"response": "Error: no valid model connected."}
 
-        prompt = str(inputs.get("user_prompt") or "").strip()
+        try:
+            prompt = text_input(inputs, "user_prompt")
+            system_text = text_input(inputs, "system_prompt")
+        except ValueError as exc:
+            self.compute_error.emit(f"Prompt: {exc}")
+            return {"response": f"Error: prompt not readable - {exc}"}
         # Clean A2A: fall back to an inbound message when no direct prompt is
         # wired; its content becomes the task, prefaced with the sender's
         # provenance. The message threads through to the outbox reply.
@@ -857,7 +863,7 @@ class SilkAgentNode(ThreadedManualNode):
                     event_hooks.append((event_name, callback))
 
             system_prompt = self._compose_system_prompt(
-                str(inputs.get("system_prompt") or ""), role, toolset,
+                system_text, role, toolset,
                 native_tools=toolset is not None
                 and handle_supports_tools(model_handle),
             )

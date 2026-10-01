@@ -41,6 +41,7 @@ from weave.logger import get_logger
 
 from .silk_ports import MODEL_HANDLE_TYPE  # noqa: F401
 from ..functions.model_endpoint import PROVIDERS, connect, provider_for
+from ..functions.port_text import text_input
 
 log = get_logger("SilkModelEndpointNode")
 
@@ -218,16 +219,23 @@ class SilkModelEndpointNode(ActiveNode):
     def spec_from(inputs: Dict[str, Any]) -> tuple:
         """What this endpoint is, as the tuple a re-probe compares on."""
         return (
-            str(inputs.get("provider") or "custom").strip(),
-            str(inputs.get("base_url") or "").strip(),
-            str(inputs.get("model") or "").strip(),
-            str(inputs.get("credential") or "").strip(),
+            text_input(inputs, "provider", "custom"),
+            text_input(inputs, "base_url"),
+            text_input(inputs, "model"),
+            text_input(inputs, "credential"),
             int(inputs.get("context_length") or 0),
             bool(inputs.get("supports_tools")),
         )
 
     def compute(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
-        spec = self.spec_from(inputs)
+        try:
+            spec = self.spec_from(inputs)
+        except ValueError as exc:
+            # Reported like an unreachable endpoint: never raised (below).
+            self._handle = None
+            self._last_spec = ()
+            self._sync_status = f"Invalid input: {exc}."
+            return {"model_obj": None}
 
         # A graph re-evaluates on every unrelated edit. Re-probing a
         # working endpoint on each of those would add a request per

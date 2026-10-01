@@ -41,6 +41,7 @@ from ..functions.task_store import (
     render_markdown,
 )
 from ..functions.plan_render import markdown_to_html
+from ..functions.port_text import text_input
 from ..functions.stream_events import EventType
 
 log = get_logger("SilkPlanViewer")
@@ -196,9 +197,13 @@ class SilkPlanViewerNode(ThreadedNode):
         if self.is_compute_cancelled():
             return {"plan_json": None, "plan_text": None, "plan_html": None}
 
-        root = inputs.get("root")
+        try:
+            root = text_input(inputs, "root")
+        except ValueError as exc:
+            log.warning(f"Plan viewer: keeping the previous root: {exc}")
+            root = ""
         if root:
-            self._root = str(root)
+            self._root = root
         ref = inputs.get("plan_ref")
         if ref is not None:
             self._plan_ref = ref

@@ -32,6 +32,7 @@ from weave.logger import get_logger
 from .silk_ports import SILK_PLAN_TYPE  # noqa: F401
 from ..functions.plan_discovery import scan_all
 from ..functions.task_store import PlanRef, SqliteTaskStore
+from ..functions.port_text import text_input
 
 log = get_logger("SilkTask")
 
@@ -122,7 +123,7 @@ class SilkTaskNode(ActiveNode):
                  if str(p).strip()]
         if roots:
             return roots[0]
-        return str(inputs.get("root") or "").strip()
+        return text_input(inputs, "root")
 
     @staticmethod
     def plan_ref(root: str, choice: Optional[str], name: Optional[str],
@@ -156,9 +157,16 @@ class SilkTaskNode(ActiveNode):
                        label=stem)
 
     def compute(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
-        root = self.resolve_root(inputs)
-        if not root:
+        try:
+            root = self.resolve_root(inputs)
+            choice = text_input(inputs, "plan_choice")
+            name = text_input(inputs, "plan_name")
+        except ValueError as exc:
             self._sync_rows: List[dict] = []
+            self._sync_status = f"Invalid input: {exc}."
+            return {"plan": None}
+        if not root:
+            self._sync_rows = []
             self._sync_status = "Connect a root (or the ToolBox root_paths)."
             return {"plan": None}
 
@@ -168,8 +176,7 @@ class SilkTaskNode(ActiveNode):
             rows = []
             log.debug(f"Plan scan of {root} failed: {exc}")
 
-        ref = self.plan_ref(root, inputs.get("plan_choice"),
-                            inputs.get("plan_name"), rows)
+        ref = self.plan_ref(root, choice or None, name or None, rows)
         self._sync_rows = rows
         chosen = next((r for r in rows if r["db_path"] == ref.db_path), None)
         if chosen is not None:

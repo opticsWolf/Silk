@@ -57,6 +57,7 @@ from .silk_ports import (  # noqa: F401
 )
 from ..functions.role import DEFAULT_ROLE
 from ..functions.subagent import WorkerSpec
+from ..functions.port_text import text_input
 from ..functions.usage_limits import describe_budget, parse_budget
 
 log = get_logger("SilkWorker")
@@ -186,14 +187,19 @@ class SilkWorkerNode(ActiveNode):
             self._sync_status = f"Budget not readable ({exc}) - worker not added."
             return {"workers": chain}
 
-        name = str(inputs.get("worker_name") or "").strip()
+        try:
+            name = text_input(inputs, "worker_name")
+            description = text_input(inputs, "description")
+        except ValueError as exc:
+            self._sync_status = f"Invalid input: {exc} - worker not added."
+            return {"workers": chain}
         role = inputs.get("role") or DEFAULT_ROLE
         spec = WorkerSpec(
             model_handle=model_handle,
             toolset=inputs.get("toolset"),
             role=role,
             name=name or f"worker{len(chain) + 1}",
-            description=str(inputs.get("description") or "").strip(),
+            description=description,
             usage_limits=budget,
         )
         self._sync_status = (

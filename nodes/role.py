@@ -28,6 +28,7 @@ from weave.widgets.markdown_widget import MarkdownWidget
 from .silk_ports import SILK_ROLE_TYPE, SILK_TOOLSET_TYPE  # noqa: F401
 from ..functions.file_grants import FileGrants
 from ..functions.hook_catalog import build_hooks
+from ..functions.port_text import text_input
 from ..functions.presets import PresetStore, RolePreset
 from ..functions.role import Role, ToolSelector
 from ..functions.toolset_build import tool_catalog
@@ -215,7 +216,14 @@ class SilkRoleNode(ActiveNode):
             getattr(toolset, "catalog_hook_names", ())
         )
 
-        role_id = str(inputs.get("role_id") or "role").strip() or "role"
+        role_id = text_input(inputs, "role_id", "role")   # widget-only: text
+        # Wired text is data like a grant (below): a value that is not text
+        # is ignored, never read as instructions through its repr.
+        try:
+            instructions = text_input(inputs, "instructions")
+        except ValueError as exc:
+            log.warning(f"Role '{role_id}': ignoring instructions: {exc}")
+            instructions = ""
 
         # Invalid grants are refused here rather than two nodes later, in
         # the sandbox (D17). A refusal grants nothing; it never falls back
@@ -244,7 +252,7 @@ class SilkRoleNode(ActiveNode):
         role = Role(
             id=role_id,
             name=role_id,
-            instructions=str(inputs.get("instructions") or ""),
+            instructions=instructions,
             selector=selector,
             max_rounds=int(inputs.get("max_rounds") or 16),
             # Names/configs → callables happens here, at build time;

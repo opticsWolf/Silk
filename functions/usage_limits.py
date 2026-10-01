@@ -517,9 +517,14 @@ def parse_budget(text: Any) -> UsageLimits | None:
         ValueError: naming the part that could not be read, and what may be
             written. Deliberately *not* forgiving: the caller asked for a
             ceiling, and a misspelled key quietly parsed as "unlimited"
-            would be a budget that is not a budget (D77's shape).
+            would be a budget that is not a budget (D77's shape). Also
+            when *text* is not text at all: the budget port takes
+            pass-through wires (an array, a list), and truth-testing one
+            raises -- or its repr would be parsed as a budget.
     """
-    body = str(text or "").strip()
+    if text is not None and not isinstance(text, str):
+        raise ValueError(f"a budget is text, got {type(text).__name__}")
+    body = (text or "").strip()
     if not body:
         return None
 
