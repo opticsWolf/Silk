@@ -158,21 +158,43 @@ class SilkMCPServerNode(ActiveNode):
     # ── Worker thread ─────────────────────────────────────────────────
 
     @staticmethod
-    def spec_from(inputs: Dict[str, Any]) -> MCPServerSpec:
+    def _text(inputs: Dict[str, Any], key: str, default: str = "") -> str:
+        """Input *key* as stripped text, *default* when absent or blank.
+
+        A String port also accepts pass-through wires (List, Dict, NdArray,
+        ...: ``_PASS_THROUGH`` in the port registry), so the value need not
+        be a str. Truth-testing it (``value or default``) raises on an
+        array, and ``str()`` of a container is a repr, not a command or a
+        URL -- so anything but text is refused by name.
+        """
+        value = inputs.get(key)
+        if value is None:
+            return default
+        if not isinstance(value, str):
+            raise TypeError(
+                f"'{key}' needs text, got {type(value).__name__}")
+        return value.strip() or default
+
+    @classmethod
+    def spec_from(cls, inputs: Dict[str, Any]) -> MCPServerSpec:
         """The server description these inputs describe (D22-safe)."""
-        raw_args = str(inputs.get("args") or "").strip()
         return MCPServerSpec(
-            id=str(inputs.get("server_id") or "mcp").strip() or "mcp",
-            transport=str(inputs.get("transport") or STDIO).strip() or STDIO,
-            command=str(inputs.get("command") or "").strip(),
-            args=raw_args.split() if raw_args else [],
-            url=str(inputs.get("url") or "").strip(),
-            credential=str(inputs.get("credential") or "").strip(),
+            id=cls._text(inputs, "server_id", "mcp"),
+            transport=cls._text(inputs, "transport", STDIO),
+            command=cls._text(inputs, "command"),
+            args=cls._text(inputs, "args").split(),
+            url=cls._text(inputs, "url"),
+            credential=cls._text(inputs, "credential"),
         )
 
     def compute(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
         upstream = MCPBundle.coerce(inputs.get("mcp_in"))
-        spec = self.spec_from(inputs)
+        try:
+            spec = self.spec_from(inputs)
+        except TypeError as exc:
+            # Reported like an unreachable server: never raised (below).
+            self._sync_status = f"Invalid input: {exc}."
+            return {"mcp": upstream}
 
         # Reconnect only when the description actually changed. A graph
         # re-evaluates for every unrelated edit, and dropping a live
