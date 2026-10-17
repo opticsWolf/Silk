@@ -240,6 +240,47 @@ class HookEntry:
         return bool(category and str(category) in self.categories)
 
 
+class ToolboxBound:
+    """A hook that needs the ToolBox it ends up registered on.
+
+    Hook maps are built before a toolbox exists -- a Role builds its hooks at
+    graph-evaluation time, and a catalog factory is handed only its config.
+    Most hooks need nothing more; a few (the classifier hooks, C4) read
+    run-scoped bindings off the toolbox, the way the approval gate reads its
+    seam. Such a hook is declared as ``ToolboxBound(make)``; when
+    :func:`register_hook_map` puts it on a registry, it calls
+    ``make(registry.owner)`` and registers what that returns. The declaration
+    rides a :class:`HookEntry` like any other callback, binding and tier
+    included.
+    """
+
+    def __init__(self, make: Callable[[Any], Callable], name: str = "") -> None:
+        self.make = make
+        self.name = name or getattr(make, "__name__", "hook")
+
+    def bind(self, toolbox: Any) -> Callable:
+        if toolbox is None:
+            raise RuntimeError(
+                f"hook '{self.name}' needs a ToolBox, and this registry has no owner"
+            )
+        return self.make(toolbox)
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError(
+            f"hook '{self.name}' was called before it was bound to a ToolBox"
+        )
+
+
+def bind_to_owner(registry: "HookRegistry", callback: Any) -> Any:
+    """Resolve a :class:`ToolboxBound` (bare or in a :class:`HookEntry`)."""
+    if isinstance(callback, ToolboxBound):
+        return callback.bind(registry.owner)
+    if isinstance(callback, HookEntry) and isinstance(callback.callback, ToolboxBound):
+        from dataclasses import replace
+        return replace(callback, callback=callback.callback.bind(registry.owner))
+    return callback
+
+
 def bind_tools(*tools: str, categories: Iterable[str] = ()) -> Callable:
     """Declare which tools a hook applies to (D13), as a decorator.
 
@@ -288,6 +329,21 @@ class HookRegistry:
         # the safe direction (a category-bound hook stays quiet rather than
         # firing for every tool).
         self._category_of: Callable[[str], Any] | None = None
+        # The ToolBox this registry belongs to, held weakly. Only hooks that
+        # declare they need it (:class:`ToolboxBound`) are handed it, when
+        # they are registered through :func:`register_hook_map`.
+        self._owner: Any = None
+
+    @property
+    def owner(self) -> Any:
+        """The ToolBox this registry belongs to, or ``None``."""
+        ref = self._owner
+        return ref() if ref is not None else None
+
+    @owner.setter
+    def owner(self, toolbox: Any) -> None:
+        import weakref
+        self._owner = weakref.ref(toolbox) if toolbox is not None else None
 
     def bind_categories(self, resolver: Callable[[str], Any] | None) -> None:
         """Teach the registry how to map a tool name to its category."""
@@ -1068,6 +1124,7 @@ def register_hook_map(
             if not isinstance(callbacks, (list, tuple)):
                 callbacks = [callbacks]
             for callback in callbacks:
+                callback = bind_to_owner(registry, callback)
                 if is_middleware_event(event):
                     entry = registry.register_middleware(event, callback)
                 else:

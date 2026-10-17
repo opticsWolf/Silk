@@ -41,8 +41,17 @@ from weave.logger import get_logger
 
 from .approval import (
     LEVEL_HUMAN,
+    LEVEL_TRIAGE,
     attach_approval_gate,
     tool_preset_policy,
+)
+from .classifier_hooks import (
+    FindingsGateConfig,
+    ProseQuestionConfig,
+    TaskDriftConfig,
+    findings_gate_hooks,
+    prose_question_hooks,
+    task_drift_hooks,
 )
 from .grants import GrantStore
 from .ledger import HistoryLedger, available as ledger_available
@@ -481,7 +490,10 @@ def _make_task_audit(config: Optional[BaseModel]) -> HookMap:
     }
 
 
-_Level = Literal["agent", "human"]
+#: ``triage``: a connected Classifier may let the change through inside the
+#: bands calibrated for its model; otherwise -- no classifier, mode off or
+#: shadow, outside the bands -- the user is asked, exactly as for ``human``.
+_Level = Literal["agent", "triage", "human"]
 
 
 class SignoffConfig(BaseModel):
@@ -490,7 +502,9 @@ class SignoffConfig(BaseModel):
     ``preset`` picks a ready-made policy; set it to ``custom`` to use the per-type
     levels below. ``agent`` = the agent self-signs (applies now); ``human`` = the
     change needs the user's approval, which the run asks for inline and
-    applies if the answer is yes (D30; D31–D33 deleted the parked path).
+    applies if the answer is yes (D30; D31–D33 deleted the parked path);
+    ``triage`` = a connected Classifier decides whether to ask (D-S6), and
+    with none connected it is ``human``.
     """
 
     preset: Literal["custom", "auto", "completions", "final", "strict"] = Field(
@@ -606,15 +620,43 @@ class ToolApprovalConfig(BaseModel):
             "~/.weave/silk/grants.json. Off means every run asks again."
         ),
     )
+    triage_bands: Literal["off", "low", "medium", "low_medium"] = Field(
+        "off",
+        description=(
+            "Risk bands a connected Classifier may triage instead of always "
+            "asking. A band the preset already gates stays 'human'."
+        ),
+    )
+    triage_tools: str = Field(
+        "",
+        description=(
+            "Tool names a connected Classifier may triage, comma-separated. "
+            "Never weaker than the tool's band or a name listed above."
+        ),
+    )
+
+
+_TRIAGE_BANDS = {"off": (), "low": ("low",), "medium": ("medium",),
+                 "low_medium": ("low", "medium")}
 
 
 def tool_policy_from_config(cfg: ToolApprovalConfig) -> dict:
-    """Resolve a :class:`ToolApprovalConfig` to a ``{tool_or_risk: level}`` map."""
+    """Resolve a :class:`ToolApprovalConfig` to a ``{tool_or_risk: level}`` map.
+
+    ``human`` entries always win over ``triage`` ones: triage is configured
+    only where nothing stricter already is.
+    """
     policy = tool_preset_policy(cfg.preset)
     for name in str(cfg.tools or "").split(","):
         name = name.strip()
         if name:
             policy[name] = LEVEL_HUMAN
+    for band in _TRIAGE_BANDS.get(cfg.triage_bands, ()):
+        policy.setdefault(band, LEVEL_TRIAGE)
+    for name in str(cfg.triage_tools or "").split(","):
+        name = name.strip()
+        if name:
+            policy.setdefault(name, LEVEL_TRIAGE)
     return policy
 
 
@@ -712,6 +754,36 @@ HOOK_CATALOG: dict[str, HookSpec] = {
             ),
             factory=_make_remember,
             config_model=RememberConfig,
+        ),
+        HookSpec(
+            name="task_drift",
+            description=(
+                "Bounce a task_add once when the connected Classifier finds it "
+                "unneeded for the goal or a duplicate; the retry goes through. "
+                "Inert without a Classifier."
+            ),
+            factory=task_drift_hooks,
+            config_model=TaskDriftConfig,
+        ),
+        HookSpec(
+            name="prose_question",
+            description=(
+                "When a run ends by asking you something in plain text, file it "
+                "as a question on the task (needs the work ledger). Inert "
+                "without a Classifier."
+            ),
+            factory=prose_question_hooks,
+            config_model=ProseQuestionConfig,
+        ),
+        HookSpec(
+            name="findings_gate",
+            description=(
+                "Turn your decisions that carry a reason into knowledge findings, "
+                "or offer them (needs decision records and a knowledge sink). "
+                "Inert without a Classifier."
+            ),
+            factory=findings_gate_hooks,
+            config_model=FindingsGateConfig,
         ),
         HookSpec(
             name="tool_approval",

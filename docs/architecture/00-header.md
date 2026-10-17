@@ -36,4 +36,5 @@ It is the companion to [NODES.md](../NODES.md) (what the graph nodes do) and
 - [Where new behaviour goes](#where-new-behaviour-goes)
 - [Graph authoring](#graph-authoring--the-agent-places-nodes)
 - [Self-modification](#self-modification--the-agent-extends-weave)
+- [The classifier](#the-classifier--triage-hooks-and-the-classify-tool)
 

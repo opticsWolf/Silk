@@ -50,6 +50,7 @@ restored by the reconstruction below.
 - [Where new behaviour goes](19-where-new-behaviour-goes.md)
 - [Graph authoring](20-graph-authoring.md)
 - [Self-modification](21-self-modification.md)
+- [The classifier](22-classifier.md)
 
 ## Files
 
@@ -77,5 +78,6 @@ restored by the reconstruction below.
 | `19-where-new-behaviour-goes.md` | Where new behaviour goes |
 | `20-graph-authoring.md` | Graph authoring |
 | `21-self-modification.md` | Self-modification |
+| `22-classifier.md` | The classifier — triage, hooks and the `classify` tool |
 | `README.md` | this index (not part of the reconstruction) |
 | `RECONSTRUCT.md` | how to remerge everything into one file |

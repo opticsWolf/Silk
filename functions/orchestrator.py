@@ -66,6 +66,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from weave.logger import get_logger
 
+from .classifier_binding import inherit_run_classifier, restore_run_classifier
 from .messaging import AgentMessage
 from .subagent import WorkerSpec, run_subagent
 
@@ -294,6 +295,10 @@ def _run_one(
     if child_toolset is not None:
         setattr(child_toolset, _DEPTH_ATTR, depth + 1)
         setattr(child_toolset, _CHAIN_ATTR, chain + [worker])
+    # The worker triages with the classifier its parent's run has (D-S8):
+    # same push/restore as depth and chain, and for the same reason.
+    classifier_saved = (inherit_run_classifier(toolbox, child_toolset)
+                        if child_toolset is not None else None)
 
     on_event = getattr(toolbox, _ON_EVENT_ATTR, None)
     should_stop = getattr(toolbox, _SHOULD_STOP_ATTR, None)
@@ -309,6 +314,8 @@ def _run_one(
         if child_toolset is not None:
             _restore(child_toolset, _DEPTH_ATTR, had_depth, prev_depth)
             _restore(child_toolset, _CHAIN_ATTR, had_chain, prev_chain)
+            if classifier_saved is not None:
+                restore_run_classifier(child_toolset, classifier_saved)
 
     reply = request.reply(result.text, sender=worker,
                           kind="result" if result.ok else "error")

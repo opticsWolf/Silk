@@ -47,6 +47,18 @@ to ask, which denies (D36).
 run-scoped grant, then a durable grant, then the policy, then the human.
 Grants can only *skip* the question, never create one, so consulting them
 first cannot make the gate stricter than the policy says.
+
+**The triage level (D-S6, C2).** Between ``agent`` and ``human`` sits
+``triage``: the run's classifier (bound per run like the seam, see
+:mod:`.classifier_binding`) is consulted after the grants. It may let the
+call through only in ``live`` mode and only inside the bands calibrated for
+the model that answered; in every other case -- no classifier, mode off or
+shadow, outside the bands, nothing answered -- the call goes to the human
+exactly as a ``human``-level call does. For ``human``-level calls the
+classifier only ranks the question and suggests an answer. It never denies.
+The step lives *inside* the gate, not in a hook of its own: the gate is
+outermost (D37), so anything outside it could not see grants and levels,
+and a hook could be deselected (D11/I7).
 """
 from __future__ import annotations
 
@@ -63,6 +75,7 @@ from .decision_seam import (
     DecisionSeam,
     new_decision_id,
 )
+from .classifier_binding import GATE_USES_TRIAGE_ATTR, note_triaged, run_classifier
 from .grants import SCOPE_ALWAYS, SCOPE_RUN, GrantStore, RunGrants
 from .hooks import HOOK_WRAP_TOOL_EXECUTE
 from .self_modify import ALWAYS_APPROVE
@@ -73,6 +86,7 @@ from .signoff import (
     preset_policy,
 )
 from .task_store import open_task_ids
+from .triage import build_state, check_completion, effective_level, stricter, triage_approval
 
 if TYPE_CHECKING:
     from .tool_box import ToolBox
@@ -83,7 +97,10 @@ log = get_logger("SilkApproval")
 #: Approval levels, shared with the task domain: the agent self-signs, or a
 #: human must say yes.
 LEVEL_AGENT = "agent"
+LEVEL_TRIAGE = "triage"
 LEVEL_HUMAN = "human"
+#: Ordered least to most strict; "the stricter answer wins" ranks by this.
+LEVELS = (LEVEL_AGENT, LEVEL_TRIAGE, LEVEL_HUMAN)
 
 #: Risk keys a tool policy may name, alongside literal tool names. A tool
 #: name always wins over its risk band -- the specific beats the general.
@@ -109,7 +126,7 @@ def normalize_tool_policy(policy: Optional[dict]) -> dict:
     """
     out: dict[str, str] = {}
     for key, level in (policy or {}).items():
-        if level in (LEVEL_AGENT, LEVEL_HUMAN) and str(key):
+        if level in LEVELS and str(key):
             out[str(key)] = level
     return out
 
@@ -210,9 +227,17 @@ def attach_approval_gate(
     """
     tasks = normalize_policy(task_policy) if task_policy else {}
     tools = normalize_tool_policy(tool_policy)
-    gated_tasks = {t for t in CHANGE_TYPES if tasks.get(t) == LEVEL_HUMAN}
+    gated_tasks = {t for t in CHANGE_TYPES if tasks.get(t) in (LEVEL_HUMAN, LEVEL_TRIAGE)}
+    uses_triage = (any(tasks.get(t) == LEVEL_TRIAGE for t in CHANGE_TYPES)
+                   or LEVEL_TRIAGE in tools.values())
     if not gated_tasks and not tools:
         return None
+
+    # Told to the run's start, which says once when nothing can triage (C3).
+    try:
+        setattr(toolbox, GATE_USES_TRIAGE_ATTR, uses_triage)
+    except AttributeError:
+        pass
 
     run_scoped = run_grants if run_grants is not None else RunGrants()
     durable = grants
@@ -250,11 +275,37 @@ def attach_approval_gate(
         return ctype
 
     def _level_for_tool(tool_name: str) -> str:
-        """Policy level for a tool call: the name beats the risk band."""
-        if tool_name in tools:
-            return tools[tool_name]
+        """Policy level for a tool call: the name beats the risk band.
+
+        Except downwards into ``triage``: naming a tool ``triage`` can lift
+        it from ``agent`` but never lower it from a band gated ``human``.
+        """
         risk = str((toolbox.tools.get(tool_name) or {}).get("risk", "low"))
-        return tools.get(risk, LEVEL_AGENT)
+        band = tools.get(risk, LEVEL_AGENT)
+        if tool_name in tools:
+            named = tools[tool_name]
+            return stricter(named, band) if named == LEVEL_TRIAGE else named
+        return band
+
+    def _triage_state(tool_name: str, args: dict) -> dict:
+        """What the classifier reads: the plan and the call -- never the
+        transcript, where a ``classify`` tool result could sit (C5)."""
+        store = getattr(toolbox, "_task_store", None)
+        plan = None
+        try:
+            plan = store.load() if store is not None else None
+        except Exception:
+            plan = None
+        goal = plan.goal.text if plan is not None else ""
+        acceptance = list(plan.goal.acceptance) if plan is not None else []
+        active = [t.title for t in (plan.tasks if plan is not None else [])
+                  if t.status == "in_progress"]
+        knowledge = getattr(toolbox, "_knowledge", None)          # S6, when present
+        decisions = getattr(toolbox, "_decision_log", None)       # S2, when present
+        prior = decisions.similar(tool_name) if decisions is not None else []
+        rules = knowledge.rules_for(tool_name) if knowledge is not None else []
+        return build_state(goal=goal, task="; ".join(active), acceptance=acceptance,
+                           tool=tool_name, args=args, prior=prior, rules=rules)
 
     def _prompt(tool_name: str, ctype: Optional[str], args: dict) -> str:
         if ctype is not None:
@@ -299,8 +350,10 @@ def attach_approval_gate(
         levels = {_level_for_tool(tool_name) if tools else LEVEL_AGENT}
         if ctype is not None:
             levels.add(tasks.get(ctype, LEVEL_AGENT))
-        level = LEVEL_HUMAN if LEVEL_HUMAN in levels else LEVEL_AGENT
-        if level != LEVEL_HUMAN:
+        classifier = run_classifier(toolbox)
+        # `triage` with nothing to triage with is `human` (C3).
+        level = effective_level(stricter(*levels), classifier)
+        if level == LEVEL_AGENT:
             return await handler()
 
         # Grants skip the question; they never create one.
@@ -310,6 +363,31 @@ def attach_approval_gate(
             return await handler()
 
         target = str(args.get("id") or (tool_name if ctype is None else "goal"))
+
+        # The classifier (D-S6): may skip the question at `triage`, live,
+        # in band; otherwise ranks it. Never raises, never denies.
+        tri = triage_approval(classifier, _triage_state(tool_name, args), level=level)
+        completion = None
+        if ctype == "complete_final" and classifier is not None and tri is not None:
+            # Closing the plan needs the acceptance criteria met as well:
+            # a triaged allow also requires the completion check to accept.
+            store = getattr(toolbox, "_task_store", None)
+            plan = store.load() if store is not None else None
+            completion = check_completion(
+                classifier, acceptance=list(plan.goal.acceptance) if plan else [],
+                evidence=str(args.get("rationale", "")))
+            if tri.route == "allow" and completion.get("verdict") != "accept":
+                tri.route, tri.why = "ask", "completion not shown to meet the acceptance"
+            if completion.get("verdict") == "reject":
+                tri.suggestion = "deny"
+        if tri is not None and tri.route == "allow":
+            note_triaged(toolbox, {"tool": tool_name, "change_type": ctype or "",
+                                   "model": tri.verdict.get("model", ""),
+                                   "backend": tri.verdict.get("backend", ""),
+                                   "why": tri.why})
+            log.info(f"'{tool_name}' allowed by triage "
+                     f"({tri.verdict.get('model', '?')}: {tri.why})")
+            return await handler()
         # Late-bound on purpose: the gate outlives any one run, the seam
         # does not. An explicit seam passed at attach time still wins, which
         # is what the tests and a headless embedder use.
@@ -350,6 +428,12 @@ def attach_approval_gate(
                                                                     "low")),
                 "change_type": ctype or "",
                 "project": root,
+                "level": level,
+                # What the classifier made of it, for the card (S4); absent
+                # when no classifier is wired.
+                **({"priority": tri.priority, "suggestion": tri.suggestion,
+                    "why": tri.why, "triage": tri.record()} if tri is not None else {}),
+                **({"completion": completion} if completion is not None else {}),
             },
         ))
 

@@ -45,8 +45,10 @@ from __future__ import annotations
 
 from typing import Optional
 
-#: Approval levels: agent self-signs (applies now) or human approval required.
-SIGNOFF_LEVELS = ("agent", "human")
+#: Approval levels: agent self-signs (applies now), triage (a connected
+#: classifier may let it through inside calibrated bands, else the human is
+#: asked -- D-S6), or human approval required. Ordered least to most strict.
+SIGNOFF_LEVELS = ("agent", "triage", "human")
 
 #: Configurable change types. ``complete_final`` is a completion that closes the
 #: plan (the last open task), resolved dynamically from ``task_complete``.

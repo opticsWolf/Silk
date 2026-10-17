@@ -34,6 +34,7 @@ document — merge the numbered files back together in manifest order.
 | 19 | `19-where-new-behaviour-goes.md` | Where new behaviour goes |
 | 20 | `20-graph-authoring.md` | Graph authoring |
 | 21 | `21-self-modification.md` | Self-modification |
+| 22 | `22-classifier.md` | The classifier — triage, hooks and the `classify` tool |
 
 The merge contract is the order above. Per-file line counts are
 deliberately not tracked (they churn on every edit); the rebuild script

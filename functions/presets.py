@@ -47,6 +47,19 @@ class RolePreset(BaseModel):
     hook_configs: dict[str, dict] = Field(default_factory=dict)
 
 
+class ClassifierPreset(BaseModel):
+    """Persisted state of a Silk Classifier node (D-S8).
+
+    The node's whole form is a :class:`~.classifier.ClassifierSpec`, kept as
+    a plain dict here so this module stays importable without the classifier
+    (validated when the node applies it). Secrets are never in it: the
+    credential is stored by *name* (D22).
+    """
+
+    name: str
+    spec: dict = Field(default_factory=dict)
+
+
 class InferenceSettingsPreset(BaseModel):
     """Persisted state of an Inference Settings node."""
 

@@ -96,6 +96,8 @@ class ToolBox:
 
         # Phase 2: Lifecycle hooks
         self.hooks = HookRegistry()
+        # Lent to hooks that declare they need it (ToolboxBound, C4).
+        self.hooks.owner = self
         # A category-bound hook (D13) needs to know a tool's category, and
         # the registry has no tool index of its own. This is that index.
         self.hooks.bind_categories(self.tool_category)

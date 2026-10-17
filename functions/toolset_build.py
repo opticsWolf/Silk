@@ -83,6 +83,13 @@ def tool_catalog(toolbox: Any) -> list[dict[str, Any]]:
             "tags": sorted(meta.get("tags") or ()),
             "risk": meta.get("risk", "low"),
         })
+    # Port-provided tools exist only during a run whose agent has the port
+    # wired (``classify``, C5). Listed here so a Role can allow one before
+    # the run that registers it.
+    from .classify_tool import CATALOG_ENTRY
+    if CATALOG_ENTRY["name"] not in toolbox.tools:
+        catalog.append(dict(CATALOG_ENTRY, tags=list(CATALOG_ENTRY["tags"])))
+        catalog.sort(key=lambda e: e["name"])
     return catalog
 
 

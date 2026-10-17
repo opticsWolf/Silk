@@ -53,10 +53,13 @@ from weave.logger import get_logger
 from weave.widgets.markdown_widget import MarkdownWidget
 from weave.widgets.sync_button import SyncButton
 
-from .silk_ports import MODEL_HANDLE_TYPE, SILK_ROLE_TYPE, SILK_TOOLSET_TYPE  # noqa: F401
+from .silk_ports import (  # noqa: F401
+    MODEL_HANDLE_TYPE, SILK_CLASSIFIER_TYPE, SILK_ROLE_TYPE, SILK_TOOLSET_TYPE,
+)
 from ..functions.agent_loop import AgentLoop, DEFAULT_MAX_ROUNDS
 from ..functions.event_sink import RunSink
 from ..functions.approval import bind_run_seam, headless_refusals
+from ..functions.classifier_binding import begin_classifier_run, end_classifier_run
 from ..functions.graph_author import CanvasBinding, RunScope, bind_canvas
 from ..functions.self_modify import (
     ALWAYS_APPROVE, ChangeSet, attach_change_tracking, bind_changes,
@@ -211,6 +214,10 @@ class SilkAgentNode(ThreadedManualNode):
         # that turns recording on for a batch of runs should not need
         # someone to tick a box first (T7, D85).
         self.add_input("event_log", datatype="bool")
+        # The classifier resource (D-S8), next to the model: approval triage,
+        # classifier hooks and the classify tool read it for one run at a
+        # time. Unwired, `triage` levels ask the human (C3).
+        self.add_input("classifier", datatype="silk_classifier")
 
         self.add_output("response", datatype="string")
         # Clean A2A: the reply wrapped as a self-describing AgentMessage
@@ -768,6 +775,18 @@ class SilkAgentNode(ThreadedManualNode):
                 self._seam = DecisionSeam(_ask, timeout_s=DEFAULT_TIMEOUT_S)
                 bind_run_seam(toolset, self._seam)
 
+                # The classifier, for this run only (D-S8, D38). A judge
+                # that is this agent's own model refuses the run (C3).
+                classifier_start = begin_classifier_run(
+                    toolset, inputs.get("classifier"), run_id=run_id,
+                    agent_model=model_handle,
+                )
+                if classifier_start.error:
+                    self.compute_error.emit(classifier_start.error)
+                    return {"response": f"Error: {classifier_start.error}"}
+                for notice in classifier_start.notices:
+                    self.status_changed.emit(notice)
+
                 # The same identity, for the ledger's keys (§17, D60): a
                 # remembered turn and a streamed event must be joinable, so
                 # the run id the memory hook files under is the run id on
@@ -1084,6 +1103,9 @@ class SilkAgentNode(ThreadedManualNode):
                 DECISIONS.clear_run(run_id)
             if toolset is not None:
                 bind_run_seam(toolset, None)
+                # Unbound with the seam; says what triage let through.
+                for notice in end_classifier_run(toolset):
+                    self.status_changed.emit(notice)
                 bind_canvas(toolset, None)
                 # The change record is this run's, like the run scope: the
                 # next run's approval must not show diffs this one wrote.

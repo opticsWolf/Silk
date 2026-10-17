@@ -26,6 +26,8 @@ Types:
                       Aggregator switched off (D19-D21)
     silk_plan         a PlanRef: which plan file, named outright rather
                       than discovered by mtime (D23)
+    silk_classifier   a ClassifierHandle: the Classifier node's backend chain,
+                      spec and meter; each run takes ``for_run`` (D-S8)
 """
 from __future__ import annotations
 
@@ -265,6 +267,23 @@ if "silk_plan" not in PortRegistry._by_name:
         casts_to={},
     )
 
+# The classifier resource (D-S8): a ClassifierHandle from a Classifier node,
+# consumed by the Agent node next to model_obj. Unwired means humans decide.
+if "silk_classifier" not in PortRegistry._by_name:
+    PortRegistry.register(
+        name="silk_classifier",
+        python_type=object,
+        color_index=118,
+        type_id=None,
+        default=lambda: None,
+        validator=lambda v: v is None or (hasattr(v, "for_run") and hasattr(v, "spec")),
+        formatter=lambda v: (
+            f"<Classifier: {getattr(getattr(v, 'spec', None), 'mode', '?')}>"
+            if v is not None else "<no classifier>"
+        ),
+        casts_to={},
+    )
+
 MODEL_HANDLE_TYPE = PortRegistry._by_name["model_handle"]
 SILK_TOOLBOX_TYPE = PortRegistry._by_name["silk_toolbox"]
 SILK_TOOLSET_TYPE = PortRegistry._by_name["silk_toolset"]
@@ -276,3 +295,4 @@ AGENT_MESSAGE_TYPE = PortRegistry._by_name["agent_message"]
 SILK_WORKERS_TYPE = PortRegistry._by_name["silk_workers"]
 MCP_SERVERS_TYPE = PortRegistry._by_name["mcp_servers"]
 SILK_PLAN_TYPE = PortRegistry._by_name["silk_plan"]
+SILK_CLASSIFIER_TYPE = PortRegistry._by_name["silk_classifier"]
