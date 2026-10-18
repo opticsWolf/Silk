@@ -101,7 +101,7 @@ class SilkClassifierNode(ActiveNode):
         "Typed classifier for approval triage, completion checks, classifier hooks and "
         "the classify tool. Hosted Jev, a local judge model, or unwired: you decide.")
     node_tags: ClassVar[Optional[List[str]]] = ["jev", "classifier", "triage", "judge", "silk"]
-    node_icon: ClassVar[Optional[str]] = "scale-balanced"
+    node_icon: ClassVar[Optional[str]] = "a-b"
     vertical_size_policy: ClassVar[VerticalSizePolicy] = VerticalSizePolicy.FIT
     node_state_api = 1
     node_version = 1

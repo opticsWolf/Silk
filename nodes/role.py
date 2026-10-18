@@ -31,7 +31,7 @@ from ..functions.hook_catalog import build_hooks
 from ..functions.port_text import text_input
 from ..functions.presets import PresetStore, RolePreset
 from ..functions.role import Role, ToolSelector
-from ..functions.toolset_build import tool_catalog
+from ..functions.toolset_build import tool_catalog, with_port_tools
 from ..widgets.hook_select import HookSelectWidget
 from ..widgets.preset_bar import PresetBarWidget
 from ..widgets.tool_tree import ToolTreeWidget
@@ -209,7 +209,7 @@ class SilkRoleNode(ActiveNode):
 
     def compute(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
         toolset = inputs.get("toolset")
-        self._sync_catalog = tool_catalog(toolset) if toolset is not None else []
+        self._sync_catalog = with_port_tools(tool_catalog(toolset)) if toolset is not None else []
         # Infrastructure hooks already active on the connected toolset —
         # shown in the hook list so double-selection is a visible choice.
         self._sync_inherited_hooks = tuple(

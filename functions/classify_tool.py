@@ -42,8 +42,8 @@ def run_classifier(toolbox: Any) -> Any:
     return _rc(toolbox)
 
 
-#: What the Role and ToolSet catalogs show while no classifier is wired, so a
-#: Role can allow the tool before the port exists (``tool_catalog``).
+#: What the Role's catalog shows while no classifier is wired, so a Role can
+#: allow the tool before the port exists (``toolset_build.with_port_tools``).
 CATALOG_ENTRY = {
     "name": CLASSIFY_TOOL,
     "description": ("Classify items with typed questions. Present only while a Classifier "

@@ -83,14 +83,18 @@ def tool_catalog(toolbox: Any) -> list[dict[str, Any]]:
             "tags": sorted(meta.get("tags") or ()),
             "risk": meta.get("risk", "low"),
         })
-    # Port-provided tools exist only during a run whose agent has the port
-    # wired (``classify``, C5). Listed here so a Role can allow one before
-    # the run that registers it.
-    from .classify_tool import CATALOG_ENTRY
-    if CATALOG_ENTRY["name"] not in toolbox.tools:
-        catalog.append(dict(CATALOG_ENTRY, tags=list(CATALOG_ENTRY["tags"])))
-        catalog.sort(key=lambda e: e["name"])
     return catalog
+
+
+def with_port_tools(catalog: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """*catalog* plus the tools a port provides during a run (``classify``,
+    C5), so a Role can allow one before the run that registers it. Kept out
+    of :func:`tool_catalog`, which is what a toolbox's own tree lists."""
+    from .classify_tool import CATALOG_ENTRY
+    if any(entry["name"] == CATALOG_ENTRY["name"] for entry in catalog):
+        return catalog
+    out = list(catalog) + [dict(CATALOG_ENTRY, tags=list(CATALOG_ENTRY["tags"]))]
+    return sorted(out, key=lambda e: e["name"])
 
 
 def catalog_categories(catalog: Iterable[dict[str, Any]]) -> list[str]:
