@@ -256,7 +256,7 @@ class LocalJudgeBackend:
                 ps = _softmax(self._score(p, [f" {k}" for k in keys]))
                 best = max(range(len(keys)), key=lambda i: ps[i])
                 out[name] = {"type": "choice", "choice": keys[best],
-                             "probabilities": dict(zip(keys, ps)), "confidence": _certainty(ps)}
+                             "probabilities": dict(zip(keys, ps, strict=True)), "confidence": _certainty(ps)}
             else:
                 levels = list(q["criteria"])
                 ps = _softmax(self._score(p, [f" {lv}" for lv in levels]))

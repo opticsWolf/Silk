@@ -53,7 +53,7 @@ _BAD = QBrush(QColor(200, 60, 60, 60))
 def _row_bands(cells: List[str]) -> BandsConfig:
     """Validate one row's cells (everything after the model id)."""
     raw: Dict[str, Any] = {}
-    for (_header, field, _tip), text in zip(COLUMNS[1:], cells):
+    for (_header, field, _tip), text in zip(COLUMNS[1:], cells, strict=False):
         text = (text or "").strip()
         if field == "allow_intents":
             raw[field] = [t.strip() for t in text.split(",") if t.strip()]

@@ -40,7 +40,7 @@ def option_logprob(resp: dict, prompt_chars: int) -> float:
     """
     lp = resp["choices"][0]["logprobs"]
     total, seen = 0.0, 0
-    for off, val in zip(lp["text_offset"], lp["token_logprobs"]):
+    for off, val in zip(lp["text_offset"], lp["token_logprobs"], strict=False):
         if off >= prompt_chars and val is not None:
             total += float(val)
             seen += 1
