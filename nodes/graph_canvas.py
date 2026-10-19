@@ -32,9 +32,9 @@ from PySide6.QtCore import QObject, Qt, Signal
 from weave.logger import get_logger
 
 from ..functions.graph_author import (
-    OP_CONNECT, OP_DESCRIBE, OP_DISCONNECT, OP_LIST, OP_PLACE, OP_REMOVE,
-    OP_SET_VALUE, OP_SETTINGS, check_settable, coerce_value, describe_class,
-    describe_instance, node_title, set_node_title,
+    OP_CONNECT, OP_DESCRIBE, OP_DISCONNECT, OP_EVALUATE, OP_LIST, OP_PLACE,
+    OP_READ, OP_REMOVE, OP_SET_VALUE, OP_SETTINGS, check_settable, coerce_value,
+    describe_class, describe_instance, node_title, set_node_title,
 )
 from ..functions.main_thread_call import CallRequest, MainThreadCall
 from ..functions.self_modify import (
@@ -102,6 +102,8 @@ class CanvasAuthor(QObject):
             OP_REMOVE: self._remove,
             OP_SETTINGS: self._settings,
             OP_SET_VALUE: self._set_value,
+            OP_EVALUATE: self._evaluate,
+            OP_READ: self._read,
         }.get(request.op)
         if handler is None:
             return {"ok": False, "error": f"unknown operation '{request.op}'"}
@@ -336,6 +338,53 @@ class CanvasAuthor(QObject):
                      "the widget adjusted the value; 'value' is what it "
                      "holds now"),
         }}
+
+    def _evaluate(self, canvas: Any, args: dict) -> dict:
+        """Evaluate the given nodes (or every dirty one), skipping the
+        agent's own execution path (*exclude*), as a click on each would."""
+        exclude = {str(u) for u in (args.get("exclude") or ())}
+        ids = [str(u) for u in (args.get("ids") or ())]
+        if ids:
+            nodes = [self._node_by_id(canvas, u) for u in ids]
+            missing = [u for u, n in zip(ids, nodes, strict=True) if n is None]
+            if missing:
+                return {"ok": False, "error": f"no node with id {missing} on the canvas"}
+        else:
+            nodes = [i for i in canvas.items() if hasattr(i, "unique_id")
+                     and getattr(i, "_is_dirty", False)]
+        errors, done = [], []
+        for node in nodes:
+            uid = str(getattr(node, "unique_id", ""))
+            if uid in exclude or not hasattr(node, "evaluate"):
+                continue
+            try:
+                node.evaluate()
+                done.append(uid)
+            except Exception as exc:  # noqa: BLE001 - reported to the model
+                errors.append({"uid": uid, "message": f"{type(exc).__name__}: {exc}"})
+        return {"ok": True, "value": {"evaluated": done, "errors": errors}}
+
+    def _read(self, canvas: Any, args: dict) -> dict:
+        """One output port's value (evaluated first unless asked not to)."""
+        uid, port = str(args.get("id") or ""), str(args.get("port") or "")
+        node = self._node_by_id(canvas, uid)
+        if node is None:
+            return {"ok": False, "error": f"no node with id '{uid}' on the canvas"}
+        names = [str(getattr(p, "name", "")) for p in getattr(node, "outputs", []) or []]
+        if port not in names:
+            return {"ok": False, "error": (
+                f"'{uid}' has no output '{port}' (its outputs: {', '.join(names) or 'none'}).")}
+        if args.get("evaluate", True) and hasattr(node, "request_data"):
+            value = node.request_data(port)
+        else:
+            value = node._get_cached_value(port) if hasattr(node, "_get_cached_value") else None
+        try:
+            from weave.control import to_json
+            value = to_json(value)
+        except ImportError:
+            value = repr(value)
+        state = getattr(getattr(node, "_state", None), "name", None)
+        return {"ok": True, "value": {"id": uid, "port": port, "value": value, "state": state}}
 
     def _connect(self, canvas: Any, args: dict) -> dict:
         from weave.canvas.undo_commands import AddConnectionCommand

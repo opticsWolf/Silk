@@ -50,10 +50,17 @@ OP_REMOVE = "remove_node"
 OP_SETTINGS = "list_node_settings"
 OP_SET_VALUE = "set_node_value"
 
-READ_OPS = (OP_LIST, OP_DESCRIBE, OP_SETTINGS)
+#: Running the graph and reading what it computed (Weave's control API,
+#: P3): on a canvas a result shows in a widget, but an agent working a
+#: headless graph has nothing to look at but the values.
+OP_EVALUATE = "evaluate_graph"
+OP_READ = "read_output"
+
+READ_OPS = (OP_LIST, OP_DESCRIBE, OP_SETTINGS, OP_READ)
 WRITE_OPS = (OP_PLACE, OP_CONNECT, OP_SET_VALUE)
 DESTRUCTIVE_OPS = (OP_DISCONNECT, OP_REMOVE)
-OPS = READ_OPS + WRITE_OPS + DESTRUCTIVE_OPS
+RUN_OPS = (OP_EVALUATE,)
+OPS = READ_OPS + WRITE_OPS + DESTRUCTIVE_OPS + RUN_OPS
 
 #: Widget roles a value may be written to. DISPLAY is computed output and
 #: INTERNAL is node-local state -- which is where the permission-bearing

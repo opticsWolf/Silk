@@ -20,7 +20,7 @@ to be true before it runs. Three things carry the weight:
 * **One undoable command per call** (D72) -- so the human undoes the
   agent's edit with the gesture they undo their own.
 
-Placement without inspection is blind, so three of the eight are read-only:
+Placement without inspection is blind, so three of the first eight are read-only:
 an agent that cannot see the graph cannot place a node *relative* to it,
 reuse what is already there, or know which ports are free.
 
@@ -32,6 +32,16 @@ command a user's own edit goes through. What stays out is the reason the
 question needed its own answer: DISPLAY and INTERNAL widgets are not
 settings (INTERNAL is where the permission switches live), and any port
 whose datatype is an object comes from a connection.
+
+Running and reading came with Weave's control API (P3, two more tools):
+`evaluate_graph` runs the graph, or some of its nodes, and `read_output`
+reads one output's value. A headless graph has no widget to show a
+result in, so without them an agent could build a graph it can never see
+work. Neither may touch the agent's own execution path: that is never
+evaluated, only read as it is. The seam is the canvas's main-thread call
+or, for a Weave without a canvas on this side, `ControlSeam`
+(`functions/control_seam.py`) over the control API; the tools cannot tell
+which.
 
 Deliberately not here: moving or resizing nodes, saving or loading graph
 files, placing classes off the whitelist, and anything touching another
@@ -47,9 +57,9 @@ from pydantic import BaseModel, Field
 # ``dynamic_tools.graph_authoring`` (no parent package), so a ``..``
 # relative import would be "beyond top-level".
 from ..graph_author import (
-    OP_CONNECT, OP_DESCRIBE, OP_DISCONNECT, OP_LIST, OP_PLACE, OP_REMOVE,
-    OP_SET_VALUE, OP_SETTINGS, Refusal, RunScope, Whitelist, canvas_binding,
-    check_self_modification,
+    OP_CONNECT, OP_DESCRIBE, OP_DISCONNECT, OP_EVALUATE, OP_LIST, OP_PLACE,
+    OP_READ, OP_REMOVE, OP_SET_VALUE, OP_SETTINGS, Refusal, RunScope, Whitelist,
+    canvas_binding, check_self_modification, protected_nodes,
 )
 
 if TYPE_CHECKING:
@@ -102,6 +112,20 @@ class SetValueArgs(BaseModel):
                                    "matching the setting's datatype.")
 
 
+class EvaluateArgs(BaseModel):
+    ids: list[str] = Field(
+        default_factory=list,
+        description="Ids of the nodes to evaluate (with what feeds them); "
+                    "empty evaluates the whole graph.")
+
+
+class ReadOutputArgs(BaseModel):
+    id: str = Field(..., description="Id of the node to read.")
+    port: str = Field(..., min_length=1, description="Output port name.")
+    evaluate: bool = Field(True, description="Evaluate the node first if it "
+                                             "is out of date (false: its last value).")
+
+
 class GraphResult(BaseModel):
     ok: bool = Field(..., description="Whether the operation happened.")
     op: str = Field("", description="Which operation this was.")
@@ -126,7 +150,7 @@ def _no_canvas(op: str) -> GraphResult:
 
 def attach_graph_tools(toolbox: "ToolBox", sandbox: "FileToolSandbox",
                        whitelist: Any = ()) -> None:
-    """Mount the eight graph-authoring tools against *whitelist*.
+    """Mount the ten graph-authoring tools against *whitelist*.
 
     The whitelist is fixed when the ToolBox is built -- it travels in the
     recipe, so a derived ToolSet replays it and may narrow it, never widen
@@ -435,3 +459,66 @@ def attach_graph_tools(toolbox: "ToolBox", sandbox: "FileToolSandbox",
         if scope is not None:
             scope.forget_node(id)
         return GraphResult(ok=True, op=OP_REMOVE, result=answer.value or {})
+
+    # ── running the graph and reading it (Weave's control API, P3) ──────
+
+    @toolbox.register(
+        name=OP_EVALUATE,
+        tags=("graph", "run"), category="graph", risk="medium",
+        description=(
+            "Evaluate the graph -- or the given nodes and what feeds them -- "
+            "so their outputs are current. Returns the nodes that failed."
+        ),
+        args_model=EvaluateArgs,
+        procedure=(
+            "Run what you built.\n"
+            "- After placing, configuring and connecting, evaluate before "
+            "reading an output.\n"
+            "- 'errors' lists nodes that failed, with why.\n"
+            "- This agent and what feeds it are never evaluated: the graph "
+            "running you is not yours to re-run."
+        ),
+    )
+    def _evaluate_graph(db_pool: Any, user_session: dict,
+                        ids: list[str] | None = None) -> GraphResult:
+        seam, _scope, agent_uid = _bound()
+        if seam is None:
+            return _no_canvas(OP_EVALUATE)
+        ids = list(ids or [])
+        edges = _graph_edges(seam)
+        if ids:
+            refusal = check_self_modification(OP_EVALUATE, agent_uid, edges, *ids)
+            if refusal is not None:
+                return _refused(refusal)
+        exclude = sorted(protected_nodes(agent_uid, edges))
+        answer = seam.call(OP_EVALUATE, ids=ids, exclude=exclude)
+        if not answer.ok:
+            return GraphResult(ok=False, op=OP_EVALUATE, message=answer.failure_text())
+        return GraphResult(ok=True, op=OP_EVALUATE, result=answer.value or {})
+
+    @toolbox.register(
+        name=OP_READ,
+        tags=("graph", "read"), category="graph", risk="low",
+        description=(
+            "Read one output port's value off a node: what it computed."
+        ),
+        args_model=ReadOutputArgs,
+        procedure=(
+            "Read a result.\n"
+            "- Port names come from describe_graph.\n"
+            "- An out-of-date node is evaluated first unless evaluate=false; "
+            "this agent and what feeds it are only ever read as they are.\n"
+            "- Large values come back summarised (an array's dtype and shape)."
+        ),
+    )
+    def _read_output(db_pool: Any, user_session: dict, id: str,  # noqa: A002
+                     port: str, evaluate: bool = True) -> GraphResult:
+        seam, _scope, agent_uid = _bound()
+        if seam is None:
+            return _no_canvas(OP_READ)
+        if evaluate and str(id) in protected_nodes(agent_uid, _graph_edges(seam)):
+            evaluate = False
+        answer = seam.call(OP_READ, id=id, port=port, evaluate=evaluate)
+        if not answer.ok:
+            return GraphResult(ok=False, op=OP_READ, message=answer.failure_text())
+        return GraphResult(ok=True, op=OP_READ, result=answer.value or {})
