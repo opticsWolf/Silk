@@ -1,0 +1,42 @@
+# Silk as a Weave plugin set (weave-plugin 1.0, Weave manifest P2).
+#
+# Weave reads this file to load Silk: it checks the Weave range, asks the
+# project once for the capabilities below, imports the `silk` package as
+# `weave.plugins.silk`, lints every node's declaration and registers the
+# nodes in the `silk` namespace. Silk's nodes carry live objects (model
+# handles, toolboxes), so they stay on the in-process Python provider.
+format = "weave-plugin 1.0"
+
+[plugin]
+id = "silk"
+version = "0.1.0"
+weave = ">=0.1, <0.2"
+name = "Silk"
+description = "Local-first agentic runtime as Weave nodes."
+license = "LGPL-3.0-only"
+
+[capabilities]
+# Model endpoints and MCP servers are whatever the user configures.
+net = ["*"]
+# Named credentials (D22), from ~/.weave/silk/secrets.json or the keyring.
+secrets = ["*"]
+# Silk's own data, and the sandboxed workspace its file tools grant (D71).
+fs = ["$HOME/.weave/silk", "$PROJECT"]
+# A llama.cpp server, MCP servers over stdio, toolchains in the sandbox.
+subprocess = true
+threads = true
+# The harness drives Weave through the control API (P3).
+control-api = true
+
+[[component]]
+id = "silk.nodes"
+provider = "python"
+module = "silk"
+contract = "weave-node 1.0"
+nodes = [
+    "AgentInferenceSettingsNode", "ChatDisplayNode", "GGUFLNode", "PoolMonitorNode",
+    "SilkAgentNode", "SilkClassifierNode", "SilkHookMonitorNode", "SilkMCPAggregatorNode",
+    "SilkMCPServerNode", "SilkModelEndpointNode", "SilkModelFallbackNode",
+    "SilkOrchestratorNode", "SilkPlanViewerNode", "SilkRoleNode", "SilkTaskHubNode",
+    "SilkTaskNode", "SilkToolBoxNode", "SilkToolSetNode", "SilkWorkerNode", "ToolchainNode",
+]
