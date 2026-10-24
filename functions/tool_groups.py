@@ -34,6 +34,7 @@ from .tools.file_manipulate import attach_file_manipulate_tools
 from .tools.file_read import attach_file_read_tools
 from .tools.file_write import attach_file_write_tools
 from .tools.graph_authoring import attach_graph_tools
+from .tools.node_dev_tools import attach_node_dev_tools
 from .tools.recall_tool import attach_recall_tool
 from .tools.ripgrep_tool import attach_ripgrep_tools
 from .tools.suite_tools import attach_suite_tools
@@ -52,6 +53,9 @@ GROUP_ATTACHERS: Dict[str, Callable[..., None]] = {
     "task_tracker": attach_task_tools,
     "graph_authoring": attach_graph_tools,
     "suite_tools": attach_suite_tools,
+    # Weave P6: a Rust compute node from a spec, proven, loaded, benched and
+    # signed off; its floor asks before code loads into Weave, every time.
+    "node_dev": attach_node_dev_tools,
     "recall": attach_recall_tool,
 }
 
