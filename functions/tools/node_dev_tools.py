@@ -352,14 +352,16 @@ def attach_node_dev_tools(toolbox: "ToolBox", sandbox: Optional["FileToolSandbox
         procedure=(
             "Step 7.\n- Only after build, proof and bench have passed on the same build.\n"
             "- The user decides; a classifier's view may be shown to them, never instead of them.\n"
-            "- The promoted set loads with Weave's next session."),
+            "- In a Weave that serves plugins.unload, the kind moves to the promoted set now; otherwise with "
+            "Weave's next session."),
     )
     def _promote(db_pool: Any, user_session: dict, kind: str, set_id: str) -> NodeDevResult:
         approver = getattr(toolbox, _APPROVER_ATTR, None)
         if approver is None:
             # Reached without the floor: refuse rather than promote unasked.
             return NodeDevResult(ok=False, op=OP_PROMOTE, message="Promotion needs the user's sign-off.")
-        return run(OP_PROMOTE, lambda: nd.promote(ws, kind, _promote_root(), set_id, approved_by=approver))
+        return run(OP_PROMOTE, lambda: nd.promote(ws, kind, _promote_root(), set_id, approved_by=approver,
+                                                  control=_weave(toolbox)))
 
     @toolbox.register(
         name=OP_STATUS, tags=("node-dev", "read"), category="node-dev", risk="low",

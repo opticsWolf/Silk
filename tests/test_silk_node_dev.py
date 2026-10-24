@@ -128,23 +128,31 @@ def box(tmp_path, weave, target, monkeypatch):
     return toolbox
 
 
-def _to_proven(box):
-    declared = call(box, nd.OP_DECLARE, **SPEC)
+def box_root(box):
+    from silk.functions.tools.node_dev_tools import node_dev_workspace
+    return node_dev_workspace(box).root
+
+
+def _to_proven(box, spec=None, reference=REFERENCE, compute=COMPUTE):
+    spec = spec or SPEC
+    kind = spec["kind"]
+    declared = call(box, nd.OP_DECLARE, **spec)
     assert declared["ok"], declared
     assert declared["result"]["findings"] == [] or all(f["severity"] != "error"
                                                        for f in declared["result"]["findings"])
-    ref = call(box, nd.OP_REFERENCE, kind="SumSquares", body=REFERENCE)
+    ref = call(box, nd.OP_REFERENCE, kind=kind, body=reference)
     assert ref["ok"], ref
-    scaffold = call(box, nd.OP_SCAFFOLD, kind="SumSquares")
-    assert scaffold["ok"] and UNWRITTEN in scaffold["result"]["lib_rs"], scaffold
-    source = scaffold["result"]["lib_rs"].replace(UNWRITTEN, COMPUTE)
-    assert call(box, nd.OP_WRITE_KERNEL, kind="SumSquares", source=source)["ok"]
-    built = call(box, nd.OP_BUILD, kind="SumSquares")
+    scaffold = call(box, nd.OP_SCAFFOLD, kind=kind)
+    unwritten = UNWRITTEN.replace("SumSquares", kind)
+    assert scaffold["ok"] and unwritten in scaffold["result"]["lib_rs"], scaffold
+    source = scaffold["result"]["lib_rs"].replace(unwritten, compute)
+    assert call(box, nd.OP_WRITE_KERNEL, kind=kind, source=source)["ok"]
+    built = call(box, nd.OP_BUILD, kind=kind)
     assert built["ok"], json.dumps(built, indent=1)
     assert built["result"]["errors"] == 0
-    proven = call(box, nd.OP_PROVE, kind="SumSquares")
+    proven = call(box, nd.OP_PROVE, kind=kind)
     assert proven["ok"], json.dumps(proven, indent=1)
-    assert proven["result"]["cases"] == 2 + SPEC["cases"]
+    assert proven["result"]["cases"] == len(spec["examples"]) + spec["cases"]
     return source
 
 
@@ -152,8 +160,10 @@ def test_from_a_spec_to_a_promoted_rust_node(box, weave, tmp_path):
     """The P6 gate."""
     _to_proven(box)
     person = box.person
-    # Nothing has been asked yet: building and proving ran outside Weave.
+    # Nothing has been asked yet: building and proving ran outside Weave,
+    # in staging; the scratch set Weave loads holds nothing yet.
     assert person.asked == []
+    assert not (tmp_path / "node-dev" / "sets" / "scratch").exists()
     loaded = call(box, nd.OP_LOAD, kind="SumSquares")
     assert loaded["ok"] and loaded["result"]["unreviewed"], loaded
     (asked,) = person.asked
@@ -191,9 +201,40 @@ def test_from_a_spec_to_a_promoted_rust_node(box, weave, tmp_path):
     assert json.loads((dest / "PROVENANCE.json").read_text())["SumSquares"]["approved_by"] == "frank"
     scratch = (tmp_path / "node-dev" / "sets" / "scratch" / "weave-plugin.toml").read_text()
     assert '"SumSquares"' not in scratch.replace('"SumSquaresReference"', ""), "it left the scratch set"
-    # The promoted set loads, in a new session (one set owns a kind).
+    # It moved in this session: the promoted set owns the kind now, and the
+    # scratch set (its reference left) loaded again.
+    assert promoted["result"]["moved"] is True, promoted
+    listed = {s["id"]: s for s in weave.call("plugins.list")["sets"]}
+    assert "fast_math:SumSquares" in listed["fast_math"]["kinds"] and not listed["fast_math"]["unreviewed"]
+    assert listed[nd.SCRATCH_SET]["unreviewed"] and all("Reference" in k for k in listed[nd.SCRATCH_SET]["kinds"])
+    decls = {d["kind"]: d for d in weave.call("graph.kinds")["kinds"]}
+    assert "unreviewed" not in decls["SumSquares"]["meta"].get("tags", [])
+    assert "unreviewed" in decls["SumSquaresReference"]["meta"]["tags"]
+    # And in a new session (one set owns a kind).
     fresh = PluginHost(ask=grant_all)
     assert fresh.load([tmp_path / "plugins"]).loaded == ["fast_math"]
+
+
+SUM_CUBES = dict(SPEC, kind="SumCubes", description="The sum of the cubes of a signal, scaled.",
+                 examples=[{"inputs": {"x": [1.0, 2.0]}, "outputs": {"total": 9.0}}])
+CUBES_REFERENCE = REFERENCE.replace("float(v) * float(v)", "float(v) ** 3")
+CUBES = COMPUTE.replace("v * v", "v * v * v")
+
+
+def test_a_kind_new_to_a_loaded_scratch_set_loads_in_the_same_session(box, weave, tmp_path):
+    _to_proven(box)
+    assert call(box, nd.OP_LOAD, kind="SumSquares")["ok"]
+    uid = weave.call("node.add", kind="SumSquares")["uid"]
+    _to_proven(box, SUM_CUBES, CUBES_REFERENCE, CUBES)
+    staged = (tmp_path / "node-dev" / "sets" / "scratch" / "weave-plugin.toml").read_text()
+    assert "SumCubes" not in staged, "built and proven, not yet let load"
+    loaded = call(box, nd.OP_LOAD, kind="SumCubes")
+    assert loaded["ok"] and loaded["result"]["set_reloaded"], loaded
+    kinds = {d["kind"] for d in weave.call("graph.kinds")["kinds"]}
+    assert {"SumSquares", "SumCubes", "SumCubesReference"} <= kinds
+    assert weave.call("node.describe", uid=uid)["kind"] == "SumSquares", "the open node stayed"
+    tags = {d["kind"]: d["meta"].get("tags", []) for d in weave.call("graph.kinds")["kinds"]}
+    assert "unreviewed" in tags["SumCubes"] and "unreviewed" in tags["SumSquares"]
 
 
 def test_a_kernel_that_disagrees_is_not_proven_and_not_offered(box):
@@ -242,6 +283,7 @@ def test_denied_or_unasked_nothing_loads_and_nothing_is_promoted(box, weave):
     box.person.answer = False
     denied = call(box, nd.OP_LOAD, kind="SumSquares")
     assert denied["applied"] is False and "frank" in denied["message"]
+    assert not (box_root(box) / "sets" / "scratch").exists(), "nothing reached the set Weave loads"
     assert nd.SCRATCH_SET not in {s["id"] for s in weave.call("plugins.list")["sets"]}
     early = call(box, nd.OP_PROMOTE, kind="SumSquares", set_id="fast_math")
     assert early["applied"] is False and "bench" in early["message"], "not ready: nobody is asked"

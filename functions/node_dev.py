@@ -25,18 +25,22 @@ The steps, each a tool (``functions/tools/node_dev_tools.py``):
    scaffolds a Rust guest crate (``weave.sdk.rust``); the agent writes its
    ``src/lib.rs``.
 4. **Build and lint** (:func:`build`): cargo, then lint tiers 1 to 3 on the
-   build in the scratch set; the findings are the tool's result.
+   build, staged (``ROOT/staging/scratch``: a set only the proof harness
+   loads); the findings are the tool's result.
 5. **Prove** (:func:`prove`): the examples, plus property cases -- inputs
    generated from the spec, the kernel's outputs against the reference's
    within the tolerance.
-6. **Hot-load and bench** (:func:`load`, :func:`bench`): the scratch set
-   loads into the Weave the agent drives (``plugins.load`` /
-   ``plugins.reload``; its kinds are *unreviewed*), and a test graph built
+6. **Hot-load and bench** (:func:`load`, :func:`bench`): after the
+   person's yes, the proven build goes into the scratch set and the set
+   loads into the Weave the agent drives (``plugins.load``; a kind it has
+   reloads in place, a kind new to it reloads the set through
+   ``plugins.unload``; its kinds are *unreviewed*), and a test graph built
    through the control API times the kernel and the reference with the
    engine's own per-node timing (``node.timing``). 3 to 6 repeat until
    the budget is met.
 7. **Sign off** (:func:`promote`): a person approves moving the kind from
-   ``scratch`` into a real plugin set, on the approval seam.
+   ``scratch`` into a real plugin set, on the approval seam; in a Weave
+   that serves ``plugins.unload`` it moves there at once, open nodes too.
 
 What runs where, and who is asked (D77, the toolchain rule):
 
@@ -233,7 +237,8 @@ class Workspace:
         ROOT/reference/KIND.py      the reference (a weave.sdk @node file)
         ROOT/crates/KIND/           the kernel's crate
         ROOT/target/                cargo's (or a shared one)
-        ROOT/sets/scratch/          the scratch plugin set
+        ROOT/staging/scratch/       builds being linted and proven (never loaded into Weave)
+        ROOT/sets/scratch/          the scratch plugin set: only what a person let load
     """
 
     def __init__(self, root: os.PathLike, *, target_dir: Optional[os.PathLike] = None) -> None:
@@ -266,7 +271,19 @@ class Workspace:
 
     @property
     def scratch(self) -> Path:
+        """The scratch set Weave loads: only builds a person approved."""
         return self.sets_root / SCRATCH_SET
+
+    @property
+    def staging_root(self) -> Path:
+        return self.root / "staging"
+
+    @property
+    def staging(self) -> Path:
+        """Where a build is linted and proven before anyone is asked to load
+        it. It is a set (id ``scratch``) so the tiers and the proof see it as
+        Weave will, but only the proof harness loads it, in its own process."""
+        return self.staging_root / SCRATCH_SET
 
     def kinds(self) -> List[str]:
         d = self.root / "specs"
@@ -565,16 +582,19 @@ def _reference_entry(spec: Spec) -> str:
             f'path = "reference/{spec.kind}.py"\ncontract = "weave-node 1.1"\nnodes = ["{spec.reference_kind}"]\n')
 
 
-def _write_reference_component(ws: Workspace, spec: Spec) -> None:
+_SCRATCH_DESCRIPTION = "Unreviewed kinds built by Silk's node-dev; promoted kinds leave it."
+
+
+def _write_reference_component(ws: Workspace, spec: Spec, set_dir: Path, source: Optional[Path] = None) -> None:
     from weave.sdk import rust
-    dest = ws.scratch / "reference" / f"{spec.kind}.py"
+    dest = set_dir / "reference" / f"{spec.kind}.py"
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_suffix(".py.new")
-    shutil.copy2(ws.reference_path(spec.kind), tmp)
+    shutil.copy2(source or ws.reference_path(spec.kind), tmp)
     os.replace(tmp, dest)
-    manifest = ws.scratch / "weave-plugin.toml"
+    manifest = set_dir / "weave-plugin.toml"
     text = manifest.read_text() if manifest.is_file() else rust.manifest_head(
-        SCRATCH_SET, description="Unreviewed kinds built by Silk's node-dev; promoted kinds leave it.")
+        SCRATCH_SET, description=_SCRATCH_DESCRIPTION)
     manifest.write_text(rust.put_component(text, component_id(spec.kind) + "_reference", _reference_entry(spec)))
 
 
@@ -586,7 +606,8 @@ def _summary(findings: Sequence[Mapping[str, Any]], limit: int = 30) -> List[Dic
 
 
 def build(ws: Workspace, kind: str, *, clippy: bool = True) -> Dict[str, Any]:
-    """Step 4: cargo, then lint tiers 1 to 3 on the build in the scratch set."""
+    """Step 4: cargo, then lint tiers 1 to 3 on the build, staged (not in
+    the scratch set Weave loads: that takes a person's yes, at load)."""
     from weave.sdk import rust
     spec, state = ws.load(kind)
     crate = ws.crate_dir(kind)
@@ -600,10 +621,10 @@ def build(ws: Workspace, kind: str, *, clippy: bool = True) -> Dict[str, Any]:
                 "next": "fix the compile errors and build again"}
     declared = rust.declarations_of(built.artefact)
     mismatch = _declaration_mismatch(state["declaration"], declared, kind)
-    rust.write_set(ws.scratch, SCRATCH_SET, built.artefact, component=component_id(kind),
-                   description="Unreviewed kinds built by Silk's node-dev; promoted kinds leave it.")
-    _write_reference_component(ws, spec)
-    checked = rust.check(crate, built, ws.scratch, plugin=SCRATCH_SET, component=component_id(kind),
+    rust.write_set(ws.staging, SCRATCH_SET, built.artefact, component=component_id(kind),
+                   description=_SCRATCH_DESCRIPTION)
+    _write_reference_component(ws, spec, ws.staging)
+    checked = rust.check(crate, built, ws.staging, plugin=SCRATCH_SET, component=component_id(kind),
                          tolerance=spec.tolerance, clippy=clippy, target_dir=ws.target_dir)
     every = [f for fs in checked["tiers"].values() for f in fs] + [f for f in built.findings
                                                                    if f["severity"] == "error"] + mismatch
@@ -646,11 +667,11 @@ def _digest(path: os.PathLike) -> str:
 
 def prove(ws: Workspace, kind: str, cases: Optional[int] = None, seed: int = 0) -> Dict[str, Any]:
     """Step 5: the examples and *cases* generated inputs, kernel against
-    reference, in a fresh interpreter that loads the scratch set."""
+    reference, in a fresh interpreter that loads the staged set."""
     spec, state = ws.load(kind)
     _require(state, "linted", f"The build does not pass tiers 1 to 3 yet ({OP_BUILD}).")
     n = spec.cases if cases is None else int(cases)
-    result = _harness(ws, spec, sets=[str(ws.sets_root)], cases=n, seed=seed)
+    result = _harness(ws, spec, sets=[str(ws.staging_root)], cases=n, seed=seed)
     ok = result["failed"] == 0
     ws.update(kind, proven=ok, proof={"cases": result["cases"], "max_error": result["max_error"],
                                       "digest": state.get("digest")})
@@ -689,34 +710,72 @@ def load_detail(ws: Workspace, kind: str) -> Dict[str, Any]:
     return detail
 
 
+def _publish(ws: Workspace, spec: Spec, state: Mapping[str, Any]) -> None:
+    """Copy the proven build and its reference from staging into the
+    scratch set Weave loads (after the person said yes)."""
+    from weave.sdk import rust
+    staged = ws.staging / "bin" / Path(state["artefact"]).name
+    proven = (state.get("proof") or {}).get("digest") or state.get("digest")
+    if not staged.is_file() or _digest(staged) != proven:
+        raise NodeDevError(f"The staged build of {spec.kind} is not the one proven; build and prove it again.")
+    rust.write_set(ws.scratch, SCRATCH_SET, staged, component=component_id(spec.kind),
+                   description=_SCRATCH_DESCRIPTION)
+    _write_reference_component(ws, spec, ws.scratch, source=ws.staging / "reference" / f"{spec.kind}.py")
+
+
+def _served(control: Any) -> set:
+    kinds = control.call("graph.kinds")
+    names = {k.get("kind") or k.get("name") for k in (kinds.get("kinds") if isinstance(kinds, dict) else kinds)}
+    return names | {n.split(":")[-1] for n in names if n}
+
+
+def _scratch_line(control: Any) -> Optional[Dict[str, Any]]:
+    return next((s for s in control.call("plugins.list").get("sets", []) if s.get("id") == SCRATCH_SET), None)
+
+
+def _load_scratch(control: Any, ws: Workspace) -> None:
+    report = control.call("plugins.load", roots=[str(ws.scratch)])
+    if SCRATCH_SET not in report.get("loaded", []):
+        line = next((s for s in report.get("sets", []) if s.get("id") == SCRATCH_SET), {})
+        raise NodeDevError("The scratch set did not load: " + json.dumps(line.get("findings") or report)[:2000])
+
+
 def load(control: Any, ws: Workspace, kind: str) -> Dict[str, Any]:
-    """Step 6a: the scratch set into the Weave *control* serves (the gate
-    has already asked). Loaded once, then reloaded in place."""
+    """Step 6a: the proven build into the scratch set, and the scratch set
+    into the Weave *control* serves (the floor has already asked). A kind
+    the loaded set has is reloaded in place; a kind new to it reloads the
+    set (``plugins.unload``, then ``plugins.load``), and the open nodes of
+    its other kinds move to their builds in place."""
     spec, state = ws.load(kind)
     _require(state, "proven", f"Prove the kernel first ({OP_PROVE}).")
-    listed = control.call("plugins.list")
-    if any(s.get("id") == SCRATCH_SET for s in listed.get("sets", [])):
-        reports = control.call("plugins.reload")["reports"]
+    _publish(ws, spec, state)
+    mine = {component_id(kind), component_id(kind) + "_reference"}
+    line = _scratch_line(control)
+    if line is None:
+        _load_scratch(control, ws)
+        outcome: Dict[str, Any] = {"loaded": SCRATCH_SET}
+    elif mine <= {c.get("id") for c in line.get("components", [])}:
+        reports = [control.call("plugins.reload", set=SCRATCH_SET, component=c["id"])["reports"][0]
+                   for c in line["components"] if c.get("id") in mine and c.get("changed")]
         bad = [r for r in reports if r.get("outcome") != "loaded"]
         if bad:
             raise NodeDevError("The reload was refused: " + json.dumps(bad)[:2000])
         outcome = {"reloaded": [r.get("component") for r in reports]}
     else:
-        report = control.call("plugins.load", roots=[str(ws.sets_root)])
-        if SCRATCH_SET not in report.get("loaded", []):
-            line = next((s for s in report.get("sets", []) if s.get("id") == SCRATCH_SET), {})
-            raise NodeDevError("The scratch set did not load: " + json.dumps(line.get("findings") or report)[:2000])
-        outcome = {"loaded": SCRATCH_SET}
-    kinds = control.call("graph.kinds")
-    names = {k.get("kind") or k.get("name") for k in (kinds.get("kinds") if isinstance(kinds, dict) else kinds)}
-    names |= {n.split(":")[-1] for n in names if n}
-    missing = [k for k in (kind, spec.reference_kind) if k not in names]
+        try:
+            control.call("plugins.unload", set=SCRATCH_SET)
+        except Exception as exc:  # a Weave without plugins.unload (before weave-control 1.1-draft had it)
+            raise NodeDevError(f"{kind} is new to the loaded scratch set, and this Weave cannot unload a set "
+                               f"({exc}); it loads with the next session.") from None
+        _load_scratch(control, ws)
+        outcome = {"loaded": SCRATCH_SET, "set_reloaded": True}
+    missing = [k for k in (kind, spec.reference_kind) if k not in _served(control)]
     if missing:
-        raise NodeDevError(f"Loaded, but Weave does not serve {missing} (a kind new to a loaded scratch set "
-                           f"loads with the next session).")
+        raise NodeDevError(f"Loaded, but Weave does not serve {missing}.")
     sources = {"kernel": (ws.crate_dir(kind) / "src" / "lib.rs").read_text(),
                "reference": ws.reference_path(kind).read_text()}
-    ws.update(kind, loaded=True, loaded_digest=state.get("digest"), loaded_sources=sources)
+    ws.update(kind, loaded=True, loaded_digest=(state.get("proof") or {}).get("digest") or state.get("digest"),
+              loaded_sources=sources)
     return {"kind": kind, "ok": True, **outcome, "unreviewed": True,
             "next": f"benchmark it ({OP_BENCH})"}
 
@@ -832,14 +891,27 @@ def signoff_detail(ws: Workspace, kind: str, target: str,
     return detail
 
 
+def _drop_component(set_dir: Path, component: str) -> None:
+    manifest = set_dir / "weave-plugin.toml"
+    if not manifest.is_file():
+        return
+    blocks = re.split(r"(?m)^(?=\[\[component\]\]\s*$)", manifest.read_text())
+    manifest.write_text("".join(b for b in blocks if f'id = "{component}"' not in b))
+
+
 def promote(ws: Workspace, kind: str, target_root: os.PathLike, set_id: str, *,
-            approved_by: str = "") -> Dict[str, Any]:
+            approved_by: str = "", control: Any = None) -> Dict[str, Any]:
     """Step 7 (after sign-off): the kind leaves ``scratch`` for the set
     *set_id* under *target_root* -- its crate (the source, without the
-    build), the built library, and the manifest entry; the scratch set
-    keeps its reference, not its kernel. The promoted set loads with the
-    next session (one set owns a kind, and the scratch set holds it until
-    then)."""
+    build), the build that was loaded and benchmarked, and the manifest
+    entry; the scratch set keeps its reference, not its kernel.
+
+    With *control* (a Weave that has the scratch set loaded and serves
+    ``plugins.unload``), the move happens now: the scratch set is unloaded,
+    the promoted set loads (it owns the kind from then on) and the scratch
+    set loads again with what is left; open nodes of the kind move to the
+    promoted build in place. Otherwise the promoted set loads with the next
+    session (one set owns a kind, and the scratch set holds it until then)."""
     from weave.sdk import rust
     missing = ready(ws, kind)
     if missing:
@@ -847,28 +919,47 @@ def promote(ws: Workspace, kind: str, target_root: os.PathLike, set_id: str, *,
     if not _NAME.match(set_id) or set_id == SCRATCH_SET:
         raise NodeDevError(f"Promote into a named set other than {SCRATCH_SET!r} (an identifier).")
     spec, state = ws.load(kind)
+    loaded = ws.scratch / "bin" / Path(state["artefact"]).name
+    if not loaded.is_file() or _digest(loaded) != state.get("loaded_digest"):
+        raise NodeDevError(f"The build in the scratch set is not the one loaded and benchmarked; load {kind} again.")
     dest = Path(target_root) / set_id
     crate_dest = dest / "crates" / kind
     if crate_dest.exists():
         shutil.rmtree(crate_dest)
     shutil.copytree(ws.crate_dir(kind), crate_dest, ignore=shutil.ignore_patterns("target", "*.new"))
     component = f"{set_id}.{component_id(kind).split('.', 1)[1]}"
-    rust.write_set(dest, set_id, Path(state["artefact"]), component=component,
-                   description=f"Kinds promoted from Silk's node-dev scratch set.")
-    # Out of scratch: its kernel entry and file go; the reference stays as the oracle.
-    manifest = ws.scratch / "weave-plugin.toml"
-    text = manifest.read_text()
-    blocks = re.split(r"(?m)^(?=\[\[component\]\]\s*$)", text)
-    keep = [b for b in blocks if f'id = "{component_id(kind)}"' not in b]
-    manifest.write_text("".join(keep))
+    rust.write_set(dest, set_id, loaded, component=component,
+                   description="Kinds promoted from Silk's node-dev scratch set.")
+    # Out of scratch: its kernel entry goes; the reference stays as the oracle.
+    for set_dir in (ws.scratch, ws.staging):
+        _drop_component(set_dir, component_id(kind))
     record = {"set": set_id, "path": str(dest), "component": component, "approved_by": approved_by,
-              "at": time.strftime("%Y-%m-%dT%H:%M:%S"), "digest": state.get("digest")}
+              "at": time.strftime("%Y-%m-%dT%H:%M:%S"), "digest": state.get("loaded_digest")}
     ws.update(kind, promoted=record)
     (dest / "PROVENANCE.json").write_text(json.dumps({kind: {**record, "spec": spec.to_dict(),
                                                              "proof": state.get("proof"),
                                                              "bench": state.get("bench")}}, indent=2))
-    return {"kind": kind, "ok": True, **record,
-            "next": "the promoted set loads with the next session"}
+    now = _move_now(control, ws, dest, set_id) if control is not None else None
+    return {"kind": kind, "ok": True, **record, **(now or {}),
+            "next": "it serves from the promoted set now" if now and now.get("moved")
+            else "the promoted set loads with the next session"}
+
+
+def _move_now(control: Any, ws: Workspace, dest: Path, set_id: str) -> Dict[str, Any]:
+    """Unload scratch, load the promoted set, load scratch again."""
+    try:
+        if _scratch_line(control) is None:
+            return {"moved": False}
+        unloaded = control.call("plugins.unload", set=SCRATCH_SET)
+    except Exception as exc:  # no plugins.unload: the next session does it
+        return {"moved": False, "why": str(exc)[:500]}
+    report = control.call("plugins.load", roots=[str(dest)])
+    _load_scratch(control, ws)
+    if set_id not in report.get("loaded", []):
+        line = next((s for s in report.get("sets", []) if s.get("id") == set_id), {})
+        raise NodeDevError(f"Promoted, but {set_id} did not load: "
+                           + json.dumps(line.get("findings") or report)[:2000])
+    return {"moved": True, "open_nodes": unloaded.get("open", 0)}
 
 
 def status(ws: Workspace, kind: Optional[str] = None) -> Dict[str, Any]:
