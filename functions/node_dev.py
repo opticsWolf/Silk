@@ -729,14 +729,19 @@ def _served(control: Any) -> set:
     return names | {n.split(":")[-1] for n in names if n}
 
 
+def _short(set_id: Any) -> str:
+    """A set's short id: Weave names sets ``publisher/id`` (D1); older ones by the id alone."""
+    return str(set_id or "").split("/")[-1]
+
+
 def _scratch_line(control: Any) -> Optional[Dict[str, Any]]:
-    return next((s for s in control.call("plugins.list").get("sets", []) if s.get("id") == SCRATCH_SET), None)
+    return next((s for s in control.call("plugins.list").get("sets", []) if _short(s.get("id")) == SCRATCH_SET), None)
 
 
 def _load_scratch(control: Any, ws: Workspace) -> None:
     report = control.call("plugins.load", roots=[str(ws.scratch)])
-    if SCRATCH_SET not in report.get("loaded", []):
-        line = next((s for s in report.get("sets", []) if s.get("id") == SCRATCH_SET), {})
+    if SCRATCH_SET not in {_short(i) for i in report.get("loaded", [])}:
+        line = next((s for s in report.get("sets", []) if _short(s.get("id")) == SCRATCH_SET), {})
         raise NodeDevError("The scratch set did not load: " + json.dumps(line.get("findings") or report)[:2000])
 
 
@@ -955,8 +960,8 @@ def _move_now(control: Any, ws: Workspace, dest: Path, set_id: str) -> Dict[str,
         return {"moved": False, "why": str(exc)[:500]}
     report = control.call("plugins.load", roots=[str(dest)])
     _load_scratch(control, ws)
-    if set_id not in report.get("loaded", []):
-        line = next((s for s in report.get("sets", []) if s.get("id") == set_id), {})
+    if set_id not in {_short(i) for i in report.get("loaded", [])}:
+        line = next((s for s in report.get("sets", []) if _short(s.get("id")) == set_id), {})
         raise NodeDevError(f"Promoted, but {set_id} did not load: "
                            + json.dumps(line.get("findings") or report)[:2000])
     return {"moved": True, "open_nodes": unloaded.get("open", 0)}

@@ -171,7 +171,7 @@ def test_from_a_spec_to_a_promoted_rust_node(box, weave, tmp_path):
     assert "self.x.to_f64()" in asked.detail["kernel"]["source"], "the person sees the code"
     assert "total += float(v)" in asked.detail["reference"]["source"]
     assert asked.detail["sandboxed"] is False
-    sets = {s["id"] for s in weave.call("plugins.list")["sets"]}
+    sets = {s["id"].split("/")[-1] for s in weave.call("plugins.list")["sets"]}
     assert nd.SCRATCH_SET in sets
 
     bench = call(box, nd.OP_BENCH, kind="SumSquares", runs=8)
@@ -204,15 +204,15 @@ def test_from_a_spec_to_a_promoted_rust_node(box, weave, tmp_path):
     # It moved in this session: the promoted set owns the kind now, and the
     # scratch set (its reference left) loaded again.
     assert promoted["result"]["moved"] is True, promoted
-    listed = {s["id"]: s for s in weave.call("plugins.list")["sets"]}
-    assert "fast_math:SumSquares" in listed["fast_math"]["kinds"] and not listed["fast_math"]["unreviewed"]
+    listed = {s["id"].split("/")[-1]: s for s in weave.call("plugins.list")["sets"]}
+    assert "local/fast_math:SumSquares" in listed["fast_math"]["kinds"] and not listed["fast_math"]["unreviewed"]
     assert listed[nd.SCRATCH_SET]["unreviewed"] and all("Reference" in k for k in listed[nd.SCRATCH_SET]["kinds"])
     decls = {d["kind"]: d for d in weave.call("graph.kinds")["kinds"]}
     assert "unreviewed" not in decls["SumSquares"]["meta"].get("tags", [])
     assert "unreviewed" in decls["SumSquaresReference"]["meta"]["tags"]
     # And in a new session (one set owns a kind).
     fresh = PluginHost(ask=grant_all)
-    assert fresh.load([tmp_path / "plugins"]).loaded == ["fast_math"]
+    assert fresh.load([tmp_path / "plugins"]).loaded == ["local/fast_math"]
 
 
 SUM_CUBES = dict(SPEC, kind="SumCubes", description="The sum of the cubes of a signal, scaled.",
@@ -284,7 +284,7 @@ def test_denied_or_unasked_nothing_loads_and_nothing_is_promoted(box, weave):
     denied = call(box, nd.OP_LOAD, kind="SumSquares")
     assert denied["applied"] is False and "frank" in denied["message"]
     assert not (box_root(box) / "sets" / "scratch").exists(), "nothing reached the set Weave loads"
-    assert nd.SCRATCH_SET not in {s["id"] for s in weave.call("plugins.list")["sets"]}
+    assert nd.SCRATCH_SET not in {s["id"].split("/")[-1] for s in weave.call("plugins.list")["sets"]}
     early = call(box, nd.OP_PROMOTE, kind="SumSquares", set_id="fast_math")
     assert early["applied"] is False and "bench" in early["message"], "not ready: nobody is asked"
     assert len(box.person.asked) == 1
