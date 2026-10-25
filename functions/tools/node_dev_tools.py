@@ -11,7 +11,9 @@ against a Python reference, hot-loads and benchmarks it in Weave, and asks
 for sign-off (Weave P6). The loop and its rules are in
 ``functions/node_dev.py``; this module mounts them as tools and installs
 the floor that asks a person before code loads into Weave and before a
-kind is promoted -- every time, with the code in the request (D77).
+kind is promoted, with the code in the request: every time for native and
+Python code (D77), once per build for a WASM kernel, which the person may
+pin as "always approve this build" (D3).
 
 The Weave the tools drive is the one :func:`bind_weave` names (anything
 with ``call(method, **params)``: ``LocalControl``, ``ControlClient``), or
@@ -31,8 +33,8 @@ from ..approval import _SEAM_ATTR, _refusal
 from ..decision_seam import KIND_APPROVAL, DecisionRequest, new_decision_id
 from ..hooks import HOOK_WRAP_TOOL_EXECUTE
 from ..node_dev import (
-    ASKS_EVERY_TIME, OP_BENCH, OP_BUILD, OP_DECLARE, OP_LOAD, OP_PROMOTE, OP_PROVE, OP_REFERENCE,
-    OP_SCAFFOLD, OP_STATUS, OP_WRITE_KERNEL, SCRATCH_SET, NodeDevError, Workspace, ready,
+    FLOOR_OPS, OP_BENCH, OP_BUILD, OP_DECLARE, OP_LOAD, OP_PROMOTE, OP_PROVE, OP_REFERENCE,
+    OP_SCAFFOLD, OP_STATUS, OP_WRITE_KERNEL, PIN_ANSWER, NodeDevError, Workspace, ready,
 )
 from .. import node_dev as nd
 
@@ -50,6 +52,21 @@ _WORKSPACE_ATTR = "_silk_node_dev_workspace"
 _ADVISOR_ATTR = "_silk_node_dev_advisor"
 _APPROVER_ATTR = "_silk_node_dev_approver"
 _FLOOR_ATTR = "_silk_node_dev_floor"
+_BUILDS_ATTR = "_silk_node_dev_approved_builds"
+
+#: The approver a load records when nobody was asked: every WASM build it
+#: starts was approved earlier in this run, or pinned (D3).
+APPROVED_BEFORE = "approved before"
+
+
+def approved_builds(toolbox: Any) -> set:
+    """``{(component, sha256)}`` a person approved in this run (D3: a WASM
+    build is asked about once)."""
+    builds = getattr(toolbox, _BUILDS_ATTR, None)
+    if builds is None:
+        builds = set()
+        setattr(toolbox, _BUILDS_ATTR, builds)
+    return builds
 
 
 def bind_weave(toolbox: Any, control: Any) -> None:
@@ -77,15 +94,26 @@ def _weave(toolbox: Any) -> Any:
     return getattr(seam, "control", None)
 
 
-# ── the floor: asked every time ──────────────────────────────────────────
+# ── the floor ────────────────────────────────────────────────────────────
 
 def attach_node_dev_floor(toolbox: Any, *, promote_root: Optional[os.PathLike] = None) -> Any:
-    """Ask a person before every :data:`ASKS_EVERY_TIME` call, with the code.
+    """Ask a person before node-dev loads code into Weave or promotes it,
+    with the code in the request.
 
-    No grant, preset or Role pre-authorises these, and ``remember`` is not
-    honoured: a "don't ask again" for loading a native library would be a
-    standing grant of the Weave process's authority. No seam, no load
-    (D36). Essential and outermost, like the load floor (D37)."""
+    * Native and Python code is asked about every time (D77): no grant,
+      preset or Role pre-authorises it, and ``remember`` is not honoured; a
+      "don't ask again" for loading a native library would be a standing
+      grant of the Weave process's authority. That covers loading a native
+      kernel with its reference, a WASM kernel's reference entering Weave
+      for the bench, and promotion.
+    * A WASM kernel is asked about once per build (D3): a build approved in
+      this run, or pinned in the Weave's project grants, loads without
+      asking. The request offers "always approve this build"; answered so
+      (``remember == "always"``), each build asked about is pinned by its
+      SHA-256 once it has loaded.
+
+    No seam, no load (D36). Essential and outermost, like the load floor
+    (D37)."""
     existing = getattr(toolbox, _FLOOR_ATTR, None)
     if existing is not None:
         return existing
@@ -96,6 +124,7 @@ def attach_node_dev_floor(toolbox: Any, *, promote_root: Optional[os.PathLike] =
         ws = node_dev_workspace(toolbox)
         if ws is None:
             return _refusal(target=kind, change_type=tool_name, text="node-dev has no workspace bound.")
+        to_pin: list = []
         try:
             if tool_name == OP_PROMOTE:
                 missing = ready(ws, kind)
@@ -108,15 +137,39 @@ def attach_node_dev_floor(toolbox: Any, *, promote_root: Optional[os.PathLike] =
                 detail = nd.signoff_detail(ws, kind, target, getattr(toolbox, _ADVISOR_ATTR, None))
                 prompt = (f"Promote {kind} from the scratch set into '{target}'? It was written by an agent; "
                           f"review the kernel, the proof and the bench.")
+            elif tool_name == OP_BENCH:
+                control = _weave(toolbox)
+                needed = None if control is None else nd.reference_needed(control, ws, kind)
+                if needed is None:
+                    return await handler()
+                detail = nd.reference_detail(ws, kind, needed["also"])
+                prompt = (f"Load the Python reference of {kind} into Weave's scratch set for the bench? It runs "
+                          f"with the full authority of the Weave process.")
             else:
                 spec, state = ws.load(kind)
                 if not state.get("proven"):
                     return _refusal(target=kind, change_type=tool_name,
                                     text=f"Prove the kernel first ({OP_PROVE}); an unproven build is not offered "
                                          f"to the user for loading.")
-                detail = nd.load_detail(ws, kind)
-                prompt = (f"Load {kind} (and its Python reference) into Weave's scratch set? Both run with the "
-                          f"full authority of the Weave process.")
+                if state.get("provider") == "wasm":
+                    control = _weave(toolbox)
+                    if control is None:
+                        return await handler()  # the tool says no Weave is bound
+                    plan = nd.load_plan(control, ws, kind)
+                    known = approved_builds(toolbox) | nd.pinned(control, plan["set"])
+                    to_pin = [b for b in plan["builds"] if (b["component"], b["sha256"]) not in known]
+                    if not to_pin:
+                        log.info("node-dev: %s loads without asking: %s", kind,
+                                 "each build was approved before" if plan["builds"] else "the same build")
+                        return await _run_as(handler, APPROVED_BEFORE)
+                    detail = nd.load_detail(ws, kind, to_pin)
+                    prompt = (f"Load {kind} into Weave's scratch_wasm set? It is a WASM component, sandboxed by "
+                              f"the set's grants (none). You are asked once for this build; you may also "
+                              f"always approve this build.")
+                else:
+                    detail = nd.load_detail(ws, kind)
+                    prompt = (f"Load {kind} (and its Python reference) into Weave's scratch set? Both run with "
+                              f"the full authority of the Weave process.")
         except NodeDevError as exc:
             return _refusal(target=kind, change_type=tool_name, text=str(exc))
         asker = getattr(toolbox, _SEAM_ATTR, None)
@@ -129,17 +182,38 @@ def attach_node_dev_floor(toolbox: Any, *, promote_root: Optional[os.PathLike] =
             tool_args=args, detail=detail))
         if not decision.approved:
             return _refusal(target=kind, change_type=tool_name, text=decision.refusal_text())
-        setattr(toolbox, _APPROVER_ATTR, decision.actor or "user")
+        if not to_pin:
+            return await _run_as(handler, decision.actor or "user")
+        # A WASM build: approved for this run, and pinned when asked to.
+        approved_builds(toolbox).update((b["component"], b["sha256"]) for b in to_pin)
+        result = await _run_as(handler, decision.actor or "user")
+        if decision.remember == PIN_ANSWER and _loaded(result):
+            try:
+                nd.pin(_weave(toolbox), detail["set"], to_pin)
+            except Exception as exc:  # noqa: BLE001 - loaded; the pin is asked for again next time
+                log.warning("node-dev: %s loaded, but its build was not pinned: %s", kind, exc)
+        return result
+
+    async def _run_as(handler: Any, approver: str) -> Any:
+        setattr(toolbox, _APPROVER_ATTR, approver)
         try:
             return await handler()
         finally:
             setattr(toolbox, _APPROVER_ATTR, None)
 
-    entry = toolbox.hooks.register_middleware(HOOK_WRAP_TOOL_EXECUTE, floor, tools=ASKS_EVERY_TIME,
+    entry = toolbox.hooks.register_middleware(HOOK_WRAP_TOOL_EXECUTE, floor, tools=FLOOR_OPS,
                                               essential=True)
     toolbox.hooks.make_outermost(HOOK_WRAP_TOOL_EXECUTE, entry)
     setattr(toolbox, _FLOOR_ATTR, entry)
     return entry
+
+
+def _loaded(result: Any) -> bool:
+    """Whether a tool result says the load went through."""
+    ok = getattr(result, "ok", None)
+    if ok is None and isinstance(result, dict):
+        ok = result.get("ok")
+    return bool(ok)
 
 
 # ── schemas ──────────────────────────────────────────────────────────────
@@ -193,6 +267,9 @@ class KernelArgs(KindArg):
 
 class BuildArgs(KindArg):
     clippy: bool = Field(True, description="Run Clippy in tier 3.")
+    provider: str = Field("native", description=(
+        "native (a library: runs with Weave's authority, asked about at every load) or wasm (a WASM "
+        "component: sandboxed, asked about once per build)."))
 
 
 class ProveArgs(KindArg):
@@ -305,10 +382,13 @@ def attach_node_dev_tools(toolbox: "ToolBox", sandbox: Optional["FileToolSandbox
         args_model=BuildArgs,
         procedure=(
             "Step 4.\n- A compile error comes back as a finding at its line.\n"
-            "- Tier 2 runs your examples on the build; tier 3 is Weave's Rust rules and Clippy."),
+            "- Tier 2 runs your examples on the build; tier 3 is Weave's Rust rules and Clippy.\n"
+            "- provider='wasm' builds a sandboxed WASM component: the user is asked once per build to load it, "
+            "not every time."),
     )
-    def _build(db_pool: Any, user_session: dict, kind: str, clippy: bool = True) -> NodeDevResult:
-        return run(OP_BUILD, lambda: nd.build(ws, kind, clippy=clippy))
+    def _build(db_pool: Any, user_session: dict, kind: str, clippy: bool = True,
+               provider: str = "native") -> NodeDevResult:
+        return run(OP_BUILD, lambda: nd.build(ws, kind, clippy=clippy, provider=provider))
 
     @toolbox.register(
         name=OP_PROVE, tags=("node-dev", "run"), category="node-dev", risk="high",
@@ -323,12 +403,13 @@ def attach_node_dev_tools(toolbox: "ToolBox", sandbox: Optional["FileToolSandbox
 
     @toolbox.register(
         name=OP_LOAD, tags=("node-dev", "plugins"), category="node-dev", risk="high",
-        description="Hot-load the scratch set (the kernel and its reference) into Weave; the user is asked "
-                    "every time, with the code.",
+        description="Hot-load the kernel into Weave's scratch set (a native one with its reference); the user "
+                    "is asked with the code, every time for native code, once per build for WASM.",
         args_model=KindArg,
         procedure=(
             "Step 6a.\n- Only a proven build is offered.\n"
-            "- Its kinds load as unreviewed, in the 'scratch' set; a second load reloads in place."),
+            "- Its kinds load as unreviewed, in the 'scratch' set ('scratch_wasm' for WASM); a second load "
+            "reloads in place."),
     )
     def _load(db_pool: Any, user_session: dict, kind: str) -> NodeDevResult:
         if getattr(toolbox, _APPROVER_ATTR, None) is None:
@@ -340,10 +421,13 @@ def attach_node_dev_tools(toolbox: "ToolBox", sandbox: Optional["FileToolSandbox
         description="Benchmark the loaded kernel against its reference in a test graph, with the engine's "
                     "per-node timing; says whether the speedup and the budget are met.",
         args_model=BenchArgs,
-        procedure="Step 6b. The test graph is taken down afterwards. Not met: improve, build, prove, load, bench.",
+        procedure=("Step 6b. The test graph is taken down afterwards. Not met: improve, build, prove, load, bench.\n"
+                   "- For a WASM kernel the user is asked before its Python reference enters Weave."),
     )
     def _bench(db_pool: Any, user_session: dict, kind: str, runs: int = 20) -> NodeDevResult:
-        return needs_weave(OP_BENCH, lambda control: nd.bench(control, ws, kind, runs))
+        # The floor sets an approver when it asked to bring the reference in.
+        approved = getattr(toolbox, _APPROVER_ATTR, None) is not None
+        return needs_weave(OP_BENCH, lambda control: nd.bench(control, ws, kind, runs, reference_approved=approved))
 
     @toolbox.register(
         name=OP_PROMOTE, tags=("node-dev", "plugins"), category="node-dev", risk="high",

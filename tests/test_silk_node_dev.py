@@ -76,15 +76,16 @@ UNWRITTEN = """    fn compute(&mut self, _ctx: &mut Ctx) -> Result<(), String> {
 class Person:
     """The human on the seam: approves or denies, and keeps what was asked."""
 
-    def __init__(self, answer: bool = True):
+    def __init__(self, answer: bool = True, remember: str = "run"):
         self.answer = answer
+        self.remember = remember
         self.asked = []
         self.seam = DecisionSeam(self._ask, timeout_s=30.0)
 
     def _ask(self, request):
         self.asked.append(request)
         if self.answer:
-            self.seam.approve(request.decision_id, actor="frank", remember="run")
+            self.seam.approve(request.decision_id, actor="frank", remember=self.remember)
         else:
             self.seam.deny(request.decision_id, actor="frank", reason="not today")
 
@@ -116,9 +117,16 @@ def target(tmp_path_factory):
     shutil.rmtree(d, ignore_errors=True)
 
 
-@pytest.fixture
-def box(tmp_path, weave, target, monkeypatch):
-    monkeypatch.setenv("WEAVE_NODE_DEV_TARGET", str(target))
+def spawn_weave(project):
+    import os
+    import weave as weave_pkg
+    root = os.path.dirname(os.path.dirname(weave_pkg.__file__))
+    env = dict(os.environ, PYTHONPATH=os.pathsep.join([root, os.environ.get("PYTHONPATH", "")]))
+    return ControlClient.spawn(project=str(project), grant_new=True, drafts=True, env=env, cwd=root)
+
+
+def new_box(tmp_path, weave):
+    """A run's toolbox on the workspace under *tmp_path*, driving *weave*."""
     toolbox = ToolBox()
     attach_node_dev_tools(toolbox, root=tmp_path / "node-dev", promote_root=tmp_path / "plugins")
     bind_weave(toolbox, weave)
@@ -128,12 +136,18 @@ def box(tmp_path, weave, target, monkeypatch):
     return toolbox
 
 
+@pytest.fixture
+def box(tmp_path, weave, target, monkeypatch):
+    monkeypatch.setenv("WEAVE_NODE_DEV_TARGET", str(target))
+    return new_box(tmp_path, weave)
+
+
 def box_root(box):
     from silk.functions.tools.node_dev_tools import node_dev_workspace
     return node_dev_workspace(box).root
 
 
-def _to_proven(box, spec=None, reference=REFERENCE, compute=COMPUTE):
+def _to_proven(box, spec=None, reference=REFERENCE, compute=COMPUTE, provider="native"):
     spec = spec or SPEC
     kind = spec["kind"]
     declared = call(box, nd.OP_DECLARE, **spec)
@@ -147,8 +161,9 @@ def _to_proven(box, spec=None, reference=REFERENCE, compute=COMPUTE):
     assert scaffold["ok"] and unwritten in scaffold["result"]["lib_rs"], scaffold
     source = scaffold["result"]["lib_rs"].replace(unwritten, compute)
     assert call(box, nd.OP_WRITE_KERNEL, kind=kind, source=source)["ok"]
-    built = call(box, nd.OP_BUILD, kind=kind)
+    built = call(box, nd.OP_BUILD, kind=kind, provider=provider)
     assert built["ok"], json.dumps(built, indent=1)
+    assert built["result"]["provider"] == provider
     assert built["result"]["errors"] == 0
     proven = call(box, nd.OP_PROVE, kind=kind)
     assert proven["ok"], json.dumps(proven, indent=1)
@@ -291,3 +306,136 @@ def test_denied_or_unasked_nothing_loads_and_nothing_is_promoted(box, weave):
     bind_run_seam(box, None)
     headless = call(box, nd.OP_LOAD, kind="SumSquares")
     assert headless["applied"] is False and "no way to ask" in headless["message"]
+
+
+# ── D3: a WASM kernel asks once per build ──────────────────────────────
+
+def _wasm_target():
+    import subprocess
+    out = subprocess.run(["rustc", "--print", "sysroot"], capture_output=True, text=True)
+    from pathlib import Path
+    return out.returncode == 0 and (Path(out.stdout.strip()) / "lib" / "rustlib" / "wasm32-wasip2").is_dir()
+
+
+needs_wasm = pytest.mark.skipif(not _wasm_target(), reason="no wasm32-wasip2 target")
+
+#: The same kernel, summed in another order: another build of it.
+COMPUTE_REVERSED = COMPUTE.replace(".iter().map(", ".iter().rev().map(")
+COMPUTE_PAIRS = COMPUTE.replace(".iter().map(|v| v * v).sum::<f64>()",
+                               ".chunks(2).map(|c| c.iter().map(|v| v * v).sum::<f64>()).sum::<f64>()")
+
+
+def _rebuild(box, compute):
+    lib = (box_root(box) / "crates" / "SumSquares" / "src" / "lib.rs").read_text()
+    for old in (COMPUTE, COMPUTE_REVERSED, COMPUTE_PAIRS):
+        lib = lib.replace(old, compute)
+    assert call(box, nd.OP_WRITE_KERNEL, kind="SumSquares", source=lib)["ok"]
+    built = call(box, nd.OP_BUILD, kind="SumSquares", provider="wasm", clippy=False)
+    assert built["ok"], json.dumps(built, indent=1)
+    assert call(box, nd.OP_PROVE, kind="SumSquares")["ok"]
+    return nd.Workspace(box_root(box)).load("SumSquares")[1]["digest"]
+
+
+@needs_wasm
+def test_a_wasm_kernel_asks_once_per_build_and_a_pinned_build_loads_in_a_new_session(box, weave, tmp_path):
+    """The D3 gate."""
+    _to_proven(box, provider="wasm")
+    person = box.person
+    digest = nd.Workspace(box_root(box)).load("SumSquares")[1]["digest"]
+    loaded = call(box, nd.OP_LOAD, kind="SumSquares")
+    assert loaded["ok"] and loaded["result"]["set"] == nd.SCRATCH_WASM_SET, loaded
+    (asked,) = person.asked
+    d = asked.detail
+    assert d["sandboxed"] is True and d["provider"] == "wasm"
+    assert "self.x.to_f64()" in d["kernel"]["source"], "the code is shown"
+    assert "reference" not in d, "the WASM kernel loads alone"
+    assert d["builds"] == [{"component": "scratch_wasm.sum_squares", "kind": "SumSquares", "provider": "wasm",
+                            "sha256": digest}]
+    assert d["pin"]["offered"] and d["pin"]["answer"] == nd.PIN_ANSWER
+    listed = {s["id"].split("/")[-1]: s for s in weave.call("plugins.list")["sets"]}
+    assert listed[nd.SCRATCH_WASM_SET]["unreviewed"] and nd.SCRATCH_SET not in listed
+    assert [c["provider"] for c in listed[nd.SCRATCH_WASM_SET]["components"]] == ["wasm"]
+    decls = {k["kind"]: k for k in weave.call("graph.kinds")["kinds"]}
+    assert "unreviewed" in decls["SumSquares"]["meta"]["tags"] and "SumSquaresReference" not in decls
+    assert weave.call("plugins.pins")["pins"] == [], "answered for this run only"
+
+    # The same build again: not asked.
+    again = call(box, nd.OP_LOAD, kind="SumSquares")
+    assert again["ok"] and len(person.asked) == 1, again
+
+    # The bench brings the Python reference in: asked, as D77 says, never pinned.
+    bench = call(box, nd.OP_BENCH, kind="SumSquares", runs=4)
+    assert bench["ok"], json.dumps(bench, indent=1)
+    ref = person.asked[1]
+    assert ref.tool_name == nd.OP_BENCH and ref.detail["sandboxed"] is False and not ref.detail["pin"]["offered"]
+    assert "total += float(v)" in ref.detail["reference"]["source"]
+    assert call(box, nd.OP_BENCH, kind="SumSquares", runs=4)["ok"] and len(person.asked) == 2, "served now"
+
+    # A rebuild asks again; "always approve this build" pins it.
+    second = _rebuild(box, COMPUTE_REVERSED)
+    assert second != digest
+    person.remember = nd.PIN_ANSWER
+    assert call(box, nd.OP_LOAD, kind="SumSquares")["ok"]
+    assert len(person.asked) == 3 and person.asked[2].detail["builds"][0]["sha256"] == second
+    (pin,) = weave.call("plugins.pins", set=nd.SCRATCH_WASM_SET)["pins"]
+    assert (pin["component"], pin["sha256"]) == ("scratch_wasm.sum_squares", second)
+    grants = json.loads((tmp_path / "project" / ".weave" / "grants.json").read_text())
+    assert grants["sets"]["local/scratch_wasm"]["pins"][0]["sha256"] == second, "kept with the project's grants"
+    weave.close()
+
+    # A new session (a new Weave on the same project, a new run): the
+    # pinned build loads without asking.
+    fresh = spawn_weave(tmp_path / "project")
+    try:
+        run2 = new_box(tmp_path, fresh)
+        assert call(run2, nd.OP_LOAD, kind="SumSquares")["ok"]
+        assert run2.person.asked == [], "pinned: not asked"
+        assert "SumSquares" in {k["kind"] for k in fresh.call("graph.kinds")["kinds"]}
+        # Another build is not covered by the pin.
+        third = _rebuild(run2, COMPUTE_PAIRS)
+        assert third not in (digest, second)
+        assert call(run2, nd.OP_LOAD, kind="SumSquares")["ok"] and len(run2.person.asked) == 1
+        # Revocable: the pin taken back, the pinned build asks again.
+        assert fresh.call("plugins.unpin", set=nd.SCRATCH_WASM_SET, sha256=second)["removed"] == 1
+        assert fresh.call("plugins.pins")["pins"] == []
+    finally:
+        fresh.close()
+
+
+@needs_wasm
+def test_native_code_asks_every_time_pinned_or_not(box, weave):
+    _to_proven(box, provider="wasm")
+    box.person.remember = nd.PIN_ANSWER
+    assert call(box, nd.OP_LOAD, kind="SumSquares")["ok"]
+    assert len(weave.call("plugins.pins")["pins"]) == 1
+    # The same kernel built native: asked every time, "always" or not, and
+    # moved out of the WASM set so one set owns the kind.
+    built = call(box, nd.OP_BUILD, kind="SumSquares", provider="native", clippy=False)
+    assert built["ok"] and call(box, nd.OP_PROVE, kind="SumSquares")["ok"]
+    for n in (2, 3):
+        loaded = call(box, nd.OP_LOAD, kind="SumSquares")
+        assert loaded["ok"] and loaded["result"]["set"] == nd.SCRATCH_SET, loaded
+        assert len(box.person.asked) == n
+        assert box.person.asked[-1].detail["sandboxed"] is False and "pin" not in box.person.asked[-1].detail
+    listed = {s["id"].split("/")[-1]: s for s in weave.call("plugins.list")["sets"]}
+    assert "local/scratch:SumSquares" in listed[nd.SCRATCH_SET]["kinds"]
+    assert weave.call("plugins.pins")["pins"][0]["component"] == "scratch_wasm.sum_squares", "nothing native pinned"
+    native = next(c for c in listed[nd.SCRATCH_SET]["components"] if c["provider"] == "native")
+    with pytest.raises(Exception, match="only a WASM build"):
+        weave.call("plugins.pin", set=nd.SCRATCH_SET, component=native["id"], sha256="0" * 64)
+
+
+@needs_wasm
+def test_a_wasm_kernel_is_benched_and_promoted_as_wasm(box, weave, tmp_path):
+    _to_proven(box, provider="wasm")
+    assert call(box, nd.OP_LOAD, kind="SumSquares")["ok"]
+    bench = call(box, nd.OP_BENCH, kind="SumSquares", runs=8)
+    assert bench["ok"] and bench["result"]["met"], json.dumps(bench, indent=1)
+    promoted = call(box, nd.OP_PROMOTE, kind="SumSquares", set_id="fast_math")
+    assert promoted["ok"] and promoted["result"]["moved"] and promoted["result"]["provider"] == "wasm", promoted
+    manifest = (tmp_path / "plugins" / "fast_math" / "weave-plugin.toml").read_text()
+    assert 'provider = "wasm"' in manifest
+    listed = {s["id"].split("/")[-1]: s for s in weave.call("plugins.list")["sets"]}
+    assert "local/fast_math:SumSquares" in listed["fast_math"]["kinds"] and not listed["fast_math"]["unreviewed"]
+    assert nd.SCRATCH_WASM_SET not in listed, "nothing left in it, so it is not loaded again"
+    assert listed[nd.SCRATCH_SET]["kinds"] == ["local/scratch:SumSquaresReference"], "the reference stays"

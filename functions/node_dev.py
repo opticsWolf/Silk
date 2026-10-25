@@ -48,12 +48,20 @@ What runs where, and who is asked (D77, the toolchain rule):
   the proof that loads both the kernel and the reference -- so they are
   ``risk="high"`` tools, gated by the Role and risk axis as ``run_python``
   and ``cargo`` are. Nothing they run enters this process or Weave's.
-* **Loading into Weave asks every time** (:data:`ASKS_EVERY_TIME`): a native
-  library or a Python reference runs with the full authority of the Weave
-  process, so this is D77's load floor, with the code in the request and
-  no "don't ask again". A set whose components are all WASM is sandboxed
-  by its grants and would not need it; this build environment has no
-  ``wasm32-wasip2`` target, so kernels build native.
+* **Loading native or Python code into Weave asks every time**
+  (:data:`ASKS_EVERY_TIME`): a native library or a Python reference runs
+  with the full authority of the Weave process, so this is D77's load
+  floor, with the code in the request and no "don't ask again".
+* **A WASM kernel asks once per build** (D3): built with ``provider="wasm"``
+  it goes into :data:`SCRATCH_WASM_SET`, a set whose components are all
+  WASM and run sandboxed by its grants (it asks for none). Loading it asks
+  once for each build digest, with the code shown; the same build again
+  does not ask. The request offers "always approve this build": a pin on
+  the build's SHA-256, kept with the project's grants in the Weave that
+  loads it (``plugins.pin``), revocable, and void for any other digest. It
+  is never offered for native code. The kernel's Python reference stays in
+  the scratch set and enters Weave when the bench needs it, asked about
+  as D77 says.
 * **Promotion asks every time** and is a human decision: a classifier may
   attach a suggestion to the request (:func:`signoff_detail`), never an
   answer.
@@ -98,11 +106,28 @@ OPS = (OP_DECLARE, OP_REFERENCE, OP_SCAFFOLD, OP_WRITE_KERNEL, OP_BUILD, OP_PROV
        OP_PROMOTE, OP_STATUS)
 
 #: Asked on the seam every time, whatever the policy or the grants (D77):
-#: loading code into Weave, and promoting it out of scratch.
+#: loading native or Python code into Weave, and promoting it out of
+#: scratch. (A WASM build asks once per build, D3.)
 ASKS_EVERY_TIME = (OP_LOAD, OP_PROMOTE)
 
-#: The project's scratch plugin set: where unreviewed kinds load.
+#: The calls the floor sees: the two above, and the bench, which may have to
+#: bring a WASM kernel's Python reference into Weave.
+FLOOR_OPS = (OP_LOAD, OP_BENCH, OP_PROMOTE)
+
+#: The project's scratch plugin set: where unreviewed kinds load (native
+#: kernels and every kind's Python reference).
 SCRATCH_SET = "scratch"
+
+#: The scratch set of WASM kernels (D3): all its components are WASM, so it
+#: runs sandboxed by its grants, and it asks for none.
+SCRATCH_WASM_SET = "scratch_wasm"
+
+#: What a kernel builds to: a native library, or a WASM component.
+PROVIDERS = ("native", "wasm")
+
+#: The answer on a load request that pins the builds asked about (the
+#: seam's "always": here it means this build, not this tool).
+PIN_ANSWER = "always"
 
 #: Datatypes a spec may name, and what they are in Python.
 DATATYPES = ("float", "int", "bool", "string", "ndarray")
@@ -239,6 +264,7 @@ class Workspace:
         ROOT/target/                cargo's (or a shared one)
         ROOT/staging/scratch/       builds being linted and proven (never loaded into Weave)
         ROOT/sets/scratch/          the scratch plugin set: only what a person let load
+        ROOT/sets/scratch_wasm/     its WASM kernels (D3), the same
     """
 
     def __init__(self, root: os.PathLike, *, target_dir: Optional[os.PathLike] = None) -> None:
@@ -273,6 +299,14 @@ class Workspace:
     def scratch(self) -> Path:
         """The scratch set Weave loads: only builds a person approved."""
         return self.sets_root / SCRATCH_SET
+
+    @property
+    def scratch_wasm(self) -> Path:
+        """The scratch set of WASM kernels (D3)."""
+        return self.sets_root / SCRATCH_WASM_SET
+
+    def set_dir(self, set_id: str) -> Path:
+        return self.sets_root / set_id
 
     @property
     def staging_root(self) -> Path:
@@ -573,8 +607,17 @@ def write_kernel(ws: Workspace, kind: str, source: str) -> Dict[str, Any]:
 
 # ── step 4: build and lint ───────────────────────────────────────────────
 
-def component_id(kind: str) -> str:
-    return f"{SCRATCH_SET}.{re.sub(r'(?<!^)(?=[A-Z])', '_', kind).lower()}"
+def component_id(kind: str, set_id: str = SCRATCH_SET) -> str:
+    return f"{set_id}.{re.sub(r'(?<!^)(?=[A-Z])', '_', kind).lower()}"
+
+
+def kernel_set(provider: str) -> str:
+    """The scratch set a kernel built for *provider* loads from."""
+    return SCRATCH_WASM_SET if provider == "wasm" else SCRATCH_SET
+
+
+def _provider(state: Mapping[str, Any]) -> str:
+    return str(state.get("provider") or "native")
 
 
 def _reference_entry(spec: Spec) -> str:
@@ -583,6 +626,12 @@ def _reference_entry(spec: Spec) -> str:
 
 
 _SCRATCH_DESCRIPTION = "Unreviewed kinds built by Silk's node-dev; promoted kinds leave it."
+_SCRATCH_WASM_DESCRIPTION = ("Unreviewed WASM kernels built by Silk's node-dev, sandboxed by this set's "
+                             "grants (none); promoted kinds leave it.")
+
+
+def _description(set_id: str) -> str:
+    return _SCRATCH_WASM_DESCRIPTION if set_id == SCRATCH_WASM_SET else _SCRATCH_DESCRIPTION
 
 
 def _write_reference_component(ws: Workspace, spec: Spec, set_dir: Path, source: Optional[Path] = None) -> None:
@@ -605,23 +654,29 @@ def _summary(findings: Sequence[Mapping[str, Any]], limit: int = 30) -> List[Dic
     return [{k: f.get(k) for k in keep if f.get(k)} for f in rows[:limit]]
 
 
-def build(ws: Workspace, kind: str, *, clippy: bool = True) -> Dict[str, Any]:
+def build(ws: Workspace, kind: str, *, clippy: bool = True, provider: str = "native") -> Dict[str, Any]:
     """Step 4: cargo, then lint tiers 1 to 3 on the build, staged (not in
-    the scratch set Weave loads: that takes a person's yes, at load)."""
+    the scratch set Weave loads: that takes a person's yes, at load).
+    *provider* ``wasm`` builds a WASM component (``wasm32-wasip2``), which
+    loads sandboxed and asks once per build (D3); ``native`` a library."""
     from weave.sdk import rust
+    if provider not in PROVIDERS:
+        raise NodeDevError(f"provider {provider!r}: one of {', '.join(PROVIDERS)}.")
     spec, state = ws.load(kind)
     crate = ws.crate_dir(kind)
     if not (crate / "Cargo.toml").is_file():
         raise NodeDevError(f"Scaffold the crate first ({OP_SCAFFOLD}).")
     started = time.monotonic()
-    built = rust.build(crate, "native", release=True, target_dir=ws.target_dir)
+    built = rust.build(crate, provider, release=True, target_dir=ws.target_dir)
     if not built.ok:
         ws.update(kind, built=False, linted=False)
-        return {"kind": kind, "ok": False, "stage": "build", "findings": _summary(built.findings),
-                "next": "fix the compile errors and build again"}
-    declared = rust.declarations_of(built.artefact)
+        hint = (" (a WASM build needs the wasm32-wasip2 target: rustup target add wasm32-wasip2)"
+                if provider == "wasm" else "")
+        return {"kind": kind, "ok": False, "stage": "build", "provider": provider,
+                "findings": _summary(built.findings), "next": "fix the compile errors and build again" + hint}
+    declared = rust.declarations_of(built.artefact, provider)
     mismatch = _declaration_mismatch(state["declaration"], declared, kind)
-    rust.write_set(ws.staging, SCRATCH_SET, built.artefact, component=component_id(kind),
+    rust.write_set(ws.staging, SCRATCH_SET, built.artefact, provider, component=component_id(kind),
                    description=_SCRATCH_DESCRIPTION)
     _write_reference_component(ws, spec, ws.staging)
     checked = rust.check(crate, built, ws.staging, plugin=SCRATCH_SET, component=component_id(kind),
@@ -631,8 +686,9 @@ def build(ws: Workspace, kind: str, *, clippy: bool = True) -> Dict[str, Any]:
     ok = checked["ok"] and not mismatch
     from weave.sdk.rust import _package  # the crate's name, for the record
     ws.update(kind, built=True, linted=ok, proven=False, artefact=str(built.artefact),
-              digest=_digest(built.artefact), crate=_package(crate))
-    return {"kind": kind, "ok": ok, "stage": "lint", "seconds": round(time.monotonic() - started, 1),
+              digest=_digest(built.artefact), crate=_package(crate), provider=provider)
+    return {"kind": kind, "ok": ok, "stage": "lint", "provider": provider,
+            "seconds": round(time.monotonic() - started, 1),
             "errors": checked["errors"] + len(mismatch), "warnings": checked["warnings"],
             "findings": _summary(every), "artefact": str(built.artefact),
             "next": f"prove it ({OP_PROVE})" if ok else "fix the findings (errors first) and build again"}
@@ -689,37 +745,69 @@ def _numbered(text: str) -> str:
     return "\n".join(shown) + more
 
 
-def load_detail(ws: Workspace, kind: str) -> Dict[str, Any]:
-    """What a person is shown before the scratch set loads: the code."""
+def _source_detail(path: Path, before: Optional[str], label: str) -> Dict[str, Any]:
+    """A file as a person reviews it: the diff since it last loaded, or the
+    numbered source."""
+    text = path.read_text() if path.is_file() else ""
+    key = "diff" if before is not None else "source"
+    shown = ("".join(difflib.unified_diff(before.splitlines(True), text.splitlines(True), f"{label} (loaded)",
+                                          f"{label} (now)"))[:40000] if before is not None else _numbered(text))
+    return {"path": str(path), "lines": len(text.splitlines()), key: shown}
+
+
+def load_detail(ws: Workspace, kind: str, builds: Optional[Sequence[Mapping[str, Any]]] = None) -> Dict[str, Any]:
+    """What a person is shown before a kernel loads: the code. A native
+    kernel loads with its Python reference, and both are shown; a WASM
+    kernel loads alone, sandboxed, and *builds* (from :func:`load_plan`) are
+    the builds asked about, each offered for "always approve this build"."""
     spec, state = ws.load(kind)
-    lib = ws.crate_dir(kind) / "src" / "lib.rs"
-    ref = ws.reference_path(kind)
+    provider = _provider(state)
     last = state.get("loaded_sources") or {}
-    detail: Dict[str, Any] = {"kind": kind, "set": SCRATCH_SET, "provider": "native",
-                              "sandboxed": False, "proof": state.get("proof"),
-                              "why": "A native library and a Python reference run with the full authority of the "
-                                     "Weave process; nothing sandboxes them."}
-    for label, path in (("kernel", lib), ("reference", ref)):
-        text = path.read_text() if path.is_file() else ""
-        before = last.get(label)
-        detail[label] = {"path": str(path), "lines": len(text.splitlines()),
-                         "diff" if before is not None else "source":
-                             "".join(difflib.unified_diff(before.splitlines(True), text.splitlines(True),
-                                                          f"{label} (loaded)", f"{label} (now)"))[:40000]
-                             if before is not None else _numbered(text)}
+    detail: Dict[str, Any] = {"kind": kind, "set": kernel_set(provider), "provider": provider,
+                              "proof": state.get("proof"), "digest": state.get("digest")}
+    detail["kernel"] = _source_detail(ws.crate_dir(kind) / "src" / "lib.rs", last.get("kernel"), "kernel")
+    if provider == "wasm":
+        detail.update(sandboxed=True, why=(
+            "A WASM component runs sandboxed by its set's grants, and the scratch_wasm set asks for none: no "
+            "files, network, credentials or processes. You are asked once for each build."))
+        detail["builds"] = [dict(b) for b in builds or []]
+        detail["pin"] = {"offered": True, "answer": PIN_ANSWER, "label": "Always approve this build",
+                         "note": "kept with the project's grants by its SHA-256; void for any other build; "
+                                 "revocable (plugins.unpin)"}
+    else:
+        detail.update(sandboxed=False, why="A native library and a Python reference run with the full authority "
+                                           "of the Weave process; nothing sandboxes them.")
+        detail["reference"] = _source_detail(ws.reference_path(kind), last.get("reference"), "reference")
     return detail
 
 
+def reference_detail(ws: Workspace, kind: str, also: Sequence[str] = ()) -> Dict[str, Any]:
+    """What a person is shown before a WASM kernel's Python reference enters
+    Weave for the bench (D77: every time, never pinned)."""
+    spec, state = ws.load(kind)
+    return {"kind": kind, "set": SCRATCH_SET, "provider": "process", "sandboxed": False,
+            "why": "The Python reference runs with the full authority of the Weave process; nothing sandboxes it.",
+            "reference": _source_detail(ws.reference_path(kind), (state.get("loaded_sources") or {}).get(
+                "reference"), "reference"),
+            "also": list(also), "pin": {"offered": False}}
+
+
 def _publish(ws: Workspace, spec: Spec, state: Mapping[str, Any]) -> None:
-    """Copy the proven build and its reference from staging into the
-    scratch set Weave loads (after the person said yes)."""
+    """Copy the proven build into its scratch set and its reference into the
+    scratch set (after the person said yes, or for a build already
+    approved). A kind that moved between native and WASM leaves the other
+    kernel set."""
     from weave.sdk import rust
     staged = ws.staging / "bin" / Path(state["artefact"]).name
     proven = (state.get("proof") or {}).get("digest") or state.get("digest")
     if not staged.is_file() or _digest(staged) != proven:
         raise NodeDevError(f"The staged build of {spec.kind} is not the one proven; build and prove it again.")
-    rust.write_set(ws.scratch, SCRATCH_SET, staged, component=component_id(spec.kind),
-                   description=_SCRATCH_DESCRIPTION)
+    provider = _provider(state)
+    set_id = kernel_set(provider)
+    other = SCRATCH_SET if set_id == SCRATCH_WASM_SET else SCRATCH_WASM_SET
+    _drop_component(ws.set_dir(other), component_id(spec.kind, other))
+    rust.write_set(ws.set_dir(set_id), set_id, staged, provider, component=component_id(spec.kind, set_id),
+                   description=_description(set_id))
     _write_reference_component(ws, spec, ws.scratch, source=ws.staging / "reference" / f"{spec.kind}.py")
 
 
@@ -734,55 +822,183 @@ def _short(set_id: Any) -> str:
     return str(set_id or "").split("/")[-1]
 
 
+def _set_line(control: Any, set_id: str) -> Optional[Dict[str, Any]]:
+    return next((s for s in control.call("plugins.list").get("sets", []) if _short(s.get("id")) == set_id), None)
+
+
 def _scratch_line(control: Any) -> Optional[Dict[str, Any]]:
-    return next((s for s in control.call("plugins.list").get("sets", []) if _short(s.get("id")) == SCRATCH_SET), None)
+    return _set_line(control, SCRATCH_SET)
+
+
+def _load_set(control: Any, ws: Workspace, set_id: str) -> None:
+    report = control.call("plugins.load", roots=[str(ws.set_dir(set_id))])
+    if set_id not in {_short(i) for i in report.get("loaded", [])}:
+        line = next((s for s in report.get("sets", []) if _short(s.get("id")) == set_id), {})
+        raise NodeDevError(f"The {set_id} set did not load: " + json.dumps(line.get("findings") or report)[:2000])
 
 
 def _load_scratch(control: Any, ws: Workspace) -> None:
-    report = control.call("plugins.load", roots=[str(ws.scratch)])
-    if SCRATCH_SET not in {_short(i) for i in report.get("loaded", [])}:
-        line = next((s for s in report.get("sets", []) if _short(s.get("id")) == SCRATCH_SET), {})
-        raise NodeDevError("The scratch set did not load: " + json.dumps(line.get("findings") or report)[:2000])
+    _load_set(control, ws, SCRATCH_SET)
 
 
-def load(control: Any, ws: Workspace, kind: str) -> Dict[str, Any]:
-    """Step 6a: the proven build into the scratch set, and the scratch set
-    into the Weave *control* serves (the floor has already asked). A kind
-    the loaded set has is reloaded in place; a kind new to it reloads the
-    set (``plugins.unload``, then ``plugins.load``), and the open nodes of
-    its other kinds move to their builds in place."""
-    spec, state = ws.load(kind)
-    _require(state, "proven", f"Prove the kernel first ({OP_PROVE}).")
-    _publish(ws, spec, state)
-    mine = {component_id(kind), component_id(kind) + "_reference"}
-    line = _scratch_line(control)
+def _components(set_dir: Path) -> List[Dict[str, Any]]:
+    """The ``[[component]]`` tables of the set at *set_dir* (none if it has
+    no manifest)."""
+    import tomllib
+    manifest = set_dir / "weave-plugin.toml"
+    if not manifest.is_file():
+        return []
+    return list(tomllib.loads(manifest.read_text()).get("component") or [])
+
+
+def _bring_in(control: Any, ws: Workspace, set_id: str, mine: set) -> Dict[str, Any]:
+    """Make the Weave serve set *set_id* as it is on disk, for the
+    components *mine*: load the set, reload *mine* in place where they
+    changed, or reload the set (``plugins.unload``, then ``plugins.load``)
+    when one of them is new to it; the open nodes of its other kinds move to
+    their builds in place."""
+    line = _set_line(control, set_id)
     if line is None:
-        _load_scratch(control, ws)
-        outcome: Dict[str, Any] = {"loaded": SCRATCH_SET}
-    elif mine <= {c.get("id") for c in line.get("components", [])}:
-        reports = [control.call("plugins.reload", set=SCRATCH_SET, component=c["id"])["reports"][0]
+        _load_set(control, ws, set_id)
+        return {"loaded": set_id}
+    if mine <= {c.get("id") for c in line.get("components", [])}:
+        reports = [control.call("plugins.reload", set=set_id, component=c["id"])["reports"][0]
                    for c in line["components"] if c.get("id") in mine and c.get("changed")]
         bad = [r for r in reports if r.get("outcome") != "loaded"]
         if bad:
             raise NodeDevError("The reload was refused: " + json.dumps(bad)[:2000])
-        outcome = {"reloaded": [r.get("component") for r in reports]}
-    else:
-        try:
-            control.call("plugins.unload", set=SCRATCH_SET)
-        except Exception as exc:  # a Weave without plugins.unload (before weave-control 1.1-draft had it)
-            raise NodeDevError(f"{kind} is new to the loaded scratch set, and this Weave cannot unload a set "
-                               f"({exc}); it loads with the next session.") from None
-        _load_scratch(control, ws)
-        outcome = {"loaded": SCRATCH_SET, "set_reloaded": True}
-    missing = [k for k in (kind, spec.reference_kind) if k not in _served(control)]
+        return {"reloaded": [r.get("component") for r in reports]}
+    try:
+        control.call("plugins.unload", set=set_id)
+    except Exception as exc:  # a Weave without plugins.unload (before weave-control 1.1-draft had it)
+        raise NodeDevError(f"{sorted(mine)} are new to the loaded {set_id} set, and this Weave cannot unload a "
+                           f"set ({exc}); they load with the next session.") from None
+    _load_set(control, ws, set_id)
+    return {"loaded": set_id, "set_reloaded": True}
+
+
+def _leave_other_set(control: Any, ws: Workspace, kind: str, provider: str) -> None:
+    """A kind rebuilt for the other provider: the kernel set that served it
+    before is loaded again without it, so one set owns the kind."""
+    other = SCRATCH_SET if provider == "wasm" else SCRATCH_WASM_SET
+    line = _set_line(control, other)
+    if line is None or component_id(kind, other) not in {c.get("id") for c in line.get("components", [])}:
+        return
+    control.call("plugins.unload", set=other)
+    if _components(ws.set_dir(other)):
+        _load_set(control, ws, other)
+
+
+def _running(line: Optional[Mapping[str, Any]], set_dir: Path) -> Dict[str, str]:
+    """``{component: sha256}`` of the builds *line*'s set runs, as far as
+    they are known: an unchanged component runs the artefact on disk."""
+    if line is None:
+        return {}
+    paths = {c.get("id"): c.get("path") for c in _components(set_dir)}
+    out = {}
+    for c in line.get("components", []):
+        path = paths.get(c.get("id"))
+        if not c.get("changed") and path and (set_dir / path).is_file():
+            out[c["id"]] = _digest(set_dir / path)
+    return out
+
+
+def load_plan(control: Any, ws: Workspace, kind: str) -> Dict[str, Any]:
+    """What loading *kind* would start in Weave that is not running there
+    yet, before anything is published: ``{"provider", "set", "builds":
+    [{component, kind, provider, sha256}]}``. A build the Weave already
+    runs is not in it (loading the same build again asks nothing, D3)."""
+    spec, state = ws.load(kind)
+    provider = _provider(state)
+    set_id = kernel_set(provider)
+    set_dir = ws.set_dir(set_id)
+    mine = component_id(kind, set_id)
+    staged = (state.get("proof") or {}).get("digest") or state.get("digest")
+    line = _set_line(control, set_id)
+    running = _running(line, set_dir)
+    loaded_ids = {c.get("id") for c in (line or {}).get("components", [])}
+    builds = []
+    if running.get(mine) != staged:
+        builds.append({"component": mine, "kind": kind, "provider": provider, "sha256": staged})
+    if line is None or mine not in loaded_ids:
+        # The whole set starts (or starts again): its other components too.
+        for c in _components(set_dir):
+            cid, path = c.get("id"), c.get("path")
+            if cid == mine or not path or not (set_dir / path).is_file():
+                continue
+            digest = _digest(set_dir / path)
+            if running.get(cid) != digest:
+                builds.append({"component": cid, "kind": ", ".join(c.get("nodes") or []),
+                               "provider": c.get("provider"), "sha256": digest})
+    return {"provider": provider, "set": set_id, "builds": builds}
+
+
+def pinned(control: Any, set_id: str) -> set:
+    """``{(component, sha256)}`` pinned for *set_id* in the Weave's project
+    grants (none from a Weave without ``plugins.pins``)."""
+    try:
+        pins = control.call("plugins.pins", set=set_id).get("pins", [])
+    except Exception:  # noqa: BLE001 - an older Weave keeps no pins: everything is asked
+        return set()
+    return {(p.get("component"), p.get("sha256")) for p in pins}
+
+
+def pin(control: Any, set_id: str, builds: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]]:
+    """Pin *builds* of the loaded set *set_id* ("always approve this build").
+    Weave refuses any but a WASM build that is on disk with that digest."""
+    return [control.call("plugins.pin", set=set_id, component=b["component"], sha256=b["sha256"]) for b in builds]
+
+
+def load(control: Any, ws: Workspace, kind: str) -> Dict[str, Any]:
+    """Step 6a: the proven build into its scratch set, and the set into the
+    Weave *control* serves (the floor has already asked, or the build was
+    approved before). A native kernel loads with its Python reference, in
+    the scratch set; a WASM kernel loads alone, in the scratch_wasm set (its
+    reference enters Weave for the bench). A kind the loaded set has is
+    reloaded in place; a kind new to it reloads the set
+    (``plugins.unload``, then ``plugins.load``), and the open nodes of its
+    other kinds move to their builds in place."""
+    spec, state = ws.load(kind)
+    _require(state, "proven", f"Prove the kernel first ({OP_PROVE}).")
+    provider = _provider(state)
+    set_id = kernel_set(provider)
+    _publish(ws, spec, state)
+    _leave_other_set(control, ws, kind, provider)
+    mine = {component_id(kind, set_id)}
+    if provider == "native":
+        mine.add(component_id(kind) + "_reference")
+    outcome = _bring_in(control, ws, set_id, mine)
+    wanted = [kind] if provider == "wasm" else [kind, spec.reference_kind]
+    missing = [k for k in wanted if k not in _served(control)]
     if missing:
         raise NodeDevError(f"Loaded, but Weave does not serve {missing}.")
-    sources = {"kernel": (ws.crate_dir(kind) / "src" / "lib.rs").read_text(),
-               "reference": ws.reference_path(kind).read_text()}
+    sources = dict(state.get("loaded_sources") or {})
+    sources["kernel"] = (ws.crate_dir(kind) / "src" / "lib.rs").read_text()
+    if provider == "native":
+        sources["reference"] = ws.reference_path(kind).read_text()
     ws.update(kind, loaded=True, loaded_digest=(state.get("proof") or {}).get("digest") or state.get("digest"),
-              loaded_sources=sources)
-    return {"kind": kind, "ok": True, **outcome, "unreviewed": True,
+              loaded_provider=provider, loaded_sources=sources)
+    return {"kind": kind, "ok": True, **outcome, "set": set_id, "provider": provider, "unreviewed": True,
             "next": f"benchmark it ({OP_BENCH})"}
+
+
+def reference_needed(control: Any, ws: Workspace, kind: str) -> Optional[Dict[str, Any]]:
+    """Whether the bench of a loaded WASM kernel must first bring its
+    Python reference into Weave: ``None`` when the Weave serves the
+    reference as published, else what loading it starts (``{"also": [the
+    scratch set's other components that start with it]}``). Always ``None``
+    for a native kernel: its reference loaded with it."""
+    spec, state = ws.load(kind)
+    if _provider(state) != "wasm":
+        return None
+    ref = component_id(kind) + "_reference"
+    line = _scratch_line(control)
+    comps = {c.get("id"): c for c in (line or {}).get("components", [])}
+    if ref in comps and not comps[ref].get("changed") and spec.reference_kind in _served(control):
+        return None
+    also = [] if line is not None and ref in comps else [
+        c.get("id") for c in _components(ws.scratch) if c.get("id") != ref and c.get("id") not in comps]
+    return {"also": also}
 
 
 def _bench_inputs(spec: Spec, seed: int = 1) -> Dict[str, Any]:
@@ -809,15 +1025,30 @@ def _bench_inputs(spec: Spec, seed: int = 1) -> Dict[str, Any]:
     return out
 
 
-def bench(control: Any, ws: Workspace, kind: str, runs: int = DEFAULT_RUNS) -> Dict[str, Any]:
+def bench(control: Any, ws: Workspace, kind: str, runs: int = DEFAULT_RUNS, *,
+          reference_approved: bool = False) -> Dict[str, Any]:
     """Step 6b: a test graph -- one constant per input feeding the kernel
     and the reference -- built through the control API; each node is run
     *runs* times (``node.trigger``) and timed by the engine (``node.timing``,
-    the compute alone). The graph is taken down afterwards."""
+    the compute alone). The graph is taken down afterwards.
+
+    A WASM kernel's reference enters Weave here (the scratch set) when the
+    Weave does not serve it as published: that needs the person's yes
+    (*reference_approved*, given by the floor; D77)."""
     spec, state = ws.load(kind)
     _require(state, "loaded", f"Hot-load it first ({OP_LOAD}).")
     if state.get("loaded_digest") != state.get("digest"):
         raise NodeDevError(f"The loaded build is not the latest one: hot-load it again ({OP_LOAD}).")
+    if reference_needed(control, ws, kind) is not None:
+        if not reference_approved:
+            raise NodeDevError("The bench needs the Python reference in Weave, and loading it needs the user's "
+                               "approval.")
+        _bring_in(control, ws, SCRATCH_SET, {component_id(kind) + "_reference"})
+        if spec.reference_kind not in _served(control):
+            raise NodeDevError(f"Loaded, but Weave does not serve {spec.reference_kind}.")
+        sources = dict(state.get("loaded_sources") or {})
+        sources["reference"] = ws.reference_path(kind).read_text()
+        state = ws.update(kind, loaded_sources=sources)
     values = _bench_inputs(spec)
     placed: List[str] = []
     try:
@@ -924,42 +1155,49 @@ def promote(ws: Workspace, kind: str, target_root: os.PathLike, set_id: str, *,
     if not _NAME.match(set_id) or set_id == SCRATCH_SET:
         raise NodeDevError(f"Promote into a named set other than {SCRATCH_SET!r} (an identifier).")
     spec, state = ws.load(kind)
-    loaded = ws.scratch / "bin" / Path(state["artefact"]).name
+    provider = _provider(state)
+    from_set = kernel_set(provider)
+    loaded = ws.set_dir(from_set) / "bin" / Path(state["artefact"]).name
     if not loaded.is_file() or _digest(loaded) != state.get("loaded_digest"):
-        raise NodeDevError(f"The build in the scratch set is not the one loaded and benchmarked; load {kind} again.")
+        raise NodeDevError(f"The build in the {from_set} set is not the one loaded and benchmarked; "
+                           f"load {kind} again.")
     dest = Path(target_root) / set_id
     crate_dest = dest / "crates" / kind
     if crate_dest.exists():
         shutil.rmtree(crate_dest)
     shutil.copytree(ws.crate_dir(kind), crate_dest, ignore=shutil.ignore_patterns("target", "*.new"))
     component = f"{set_id}.{component_id(kind).split('.', 1)[1]}"
-    rust.write_set(dest, set_id, loaded, component=component,
+    rust.write_set(dest, set_id, loaded, provider, component=component,
                    description="Kinds promoted from Silk's node-dev scratch set.")
     # Out of scratch: its kernel entry goes; the reference stays as the oracle.
-    for set_dir in (ws.scratch, ws.staging):
-        _drop_component(set_dir, component_id(kind))
+    _drop_component(ws.set_dir(from_set), component_id(kind, from_set))
+    _drop_component(ws.staging, component_id(kind))
     record = {"set": set_id, "path": str(dest), "component": component, "approved_by": approved_by,
-              "at": time.strftime("%Y-%m-%dT%H:%M:%S"), "digest": state.get("loaded_digest")}
+              "at": time.strftime("%Y-%m-%dT%H:%M:%S"), "digest": state.get("loaded_digest"),
+              "provider": provider}
     ws.update(kind, promoted=record)
     (dest / "PROVENANCE.json").write_text(json.dumps({kind: {**record, "spec": spec.to_dict(),
                                                              "proof": state.get("proof"),
                                                              "bench": state.get("bench")}}, indent=2))
-    now = _move_now(control, ws, dest, set_id) if control is not None else None
+    now = _move_now(control, ws, dest, set_id, from_set) if control is not None else None
     return {"kind": kind, "ok": True, **record, **(now or {}),
             "next": "it serves from the promoted set now" if now and now.get("moved")
             else "the promoted set loads with the next session"}
 
 
-def _move_now(control: Any, ws: Workspace, dest: Path, set_id: str) -> Dict[str, Any]:
-    """Unload scratch, load the promoted set, load scratch again."""
+def _move_now(control: Any, ws: Workspace, dest: Path, set_id: str,
+              from_set: str = SCRATCH_SET) -> Dict[str, Any]:
+    """Unload the scratch set the kind was in, load the promoted set, load
+    the scratch set again (if anything is left in it)."""
     try:
-        if _scratch_line(control) is None:
+        if _set_line(control, from_set) is None:
             return {"moved": False}
-        unloaded = control.call("plugins.unload", set=SCRATCH_SET)
+        unloaded = control.call("plugins.unload", set=from_set)
     except Exception as exc:  # no plugins.unload: the next session does it
         return {"moved": False, "why": str(exc)[:500]}
     report = control.call("plugins.load", roots=[str(dest)])
-    _load_scratch(control, ws)
+    if _components(ws.set_dir(from_set)):
+        _load_set(control, ws, from_set)
     if set_id not in {_short(i) for i in report.get("loaded", [])}:
         line = next((s for s in report.get("sets", []) if _short(s.get("id")) == set_id), {})
         raise NodeDevError(f"Promoted, but {set_id} did not load: "
@@ -974,6 +1212,7 @@ def status(ws: Workspace, kind: Optional[str] = None) -> Dict[str, Any]:
         spec, state = ws.load(k)
         steps = {s: bool(state.get(s)) for s in ("declared", "referenced", "built", "linted", "proven",
                                                     "loaded", "benched")}
-        rows.append({"kind": k, "steps": steps, "bench": state.get("bench"), "promoted": state.get("promoted"),
+        rows.append({"kind": k, "provider": _provider(state), "steps": steps, "bench": state.get("bench"),
+                     "promoted": state.get("promoted"),
                      "missing": ready(ws, k), "unreviewed": not state.get("promoted")})
     return {"kinds": rows, "workspace": str(ws.root)}
