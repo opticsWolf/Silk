@@ -178,6 +178,8 @@ class SilkClassifierNode(ActiveNode):
             "bands", self.bands_table, role=PortRole.INTERNAL, datatype="dict",
             default={}, add_to_layout=False)
 
+        self.set_content_widget(self._widget_core)
+
         self._handle: Optional[ClassifierHandle] = None
         self._handle_key: Optional[str] = None
 
