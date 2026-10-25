@@ -1,13 +1,17 @@
-# Silk as a Weave plugin set (weave-plugin 1.0, Weave manifest P2).
+# Silk as a Weave plugin set (weave-plugin 1.1, Weave manifest P2 and D1).
 #
 # Weave reads this file to load Silk: it checks the Weave range, asks the
 # project once for the capabilities below, imports the `silk` package as
 # `weave.plugins.silk`, lints every node's declaration and registers the
-# nodes in the `silk` namespace. Silk's nodes carry live objects (model
-# handles, toolboxes), so they stay on the in-process Python provider.
-format = "weave-plugin 1.0"
+# nodes in the `weave/silk` namespace. The publisher `weave` marks Silk as
+# first-party: Weave accepts it only from its first-party roots (its own
+# plugins folder, or a checkout named in WEAVE_FIRST_PARTY_ROOTS). Silk's
+# nodes carry live objects (model handles, toolboxes), so they stay on the
+# in-process Python provider.
+format = "weave-plugin 1.1"
 
 [plugin]
+publisher = "weave"
 id = "silk"
 version = "0.1.0"
 weave = ">=0.1, <0.2"
