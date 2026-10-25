@@ -553,7 +553,7 @@ def _harness(ws: Workspace, spec: Spec, *, sets: Optional[List[str]], cases: int
         out = subprocess.run([sys.executable, "-I", "-c", _HARNESS, json.dumps(args)], capture_output=True,
                              text=True, timeout=PROVE_TIMEOUT_S, env=env, cwd=str(ws.root))
     except subprocess.TimeoutExpired:
-        raise NodeDevError(f"The proof took longer than {PROVE_TIMEOUT_S:.0f} s and was stopped.")
+        raise NodeDevError(f"The proof took longer than {PROVE_TIMEOUT_S:.0f} s and was stopped.") from None
     line = next((l for l in reversed(out.stdout.splitlines()) if l.startswith("{")), None)
     if out.returncode != 0 or line is None:
         raise NodeDevError("The proof did not run: " + (out.stderr.strip()[-2000:] or "no output"))
