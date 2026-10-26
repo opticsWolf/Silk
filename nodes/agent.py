@@ -47,6 +47,7 @@ from weave.widgetcore.binding_policy import debounced
 from weave.node.threaded import ThreadedManualNode
 from weave.node import VerticalSizePolicy
 from weave.registry import register_node
+from weave.canvas.rust_control import served_control
 from weave.logger import get_logger
 
 from weave.widgets.markdown_widget import MarkdownWidget
@@ -60,6 +61,7 @@ from ..functions.event_sink import RunSink, sink_for
 from ..functions.approval import bind_run_seam, headless_refusals
 from ..functions.classifier_binding import begin_classifier_run, end_classifier_run
 from ..functions.graph_author import CanvasBinding, RunScope, bind_canvas
+from ..functions.tools.node_dev_tools import bind_weave
 from ..functions.self_modify import (
     ALWAYS_APPROVE, ChangeSet, attach_change_tracking, bind_changes,
 )
@@ -680,6 +682,8 @@ class SilkAgentNode(ThreadedManualNode):
         outcome = OUTCOME_COMPLETED
         # The write-watching middleware, when this run has the load verbs.
         change_entry = None
+        # The canvas's control server, when this run bound it for node-dev.
+        served_weave = None
         try:
             if toolset is not None:
                 try:
@@ -794,6 +798,12 @@ class SilkAgentNode(ThreadedManualNode):
                     seam=self._canvas_seam, scope=RunScope(),
                     agent_uid=str(getattr(self, "unique_id", "")),
                 ))
+
+                # Node-dev loads into and benches on a Weave through its
+                # control API (P6): this canvas's, when it serves one.
+                served_weave = served_control(self)
+                if served_weave is not None:
+                    bind_weave(toolset, served_weave)
 
                 # What this run writes, so a load approval can show the
                 # diff rather than a suite name (D77). Costs one dict
@@ -1097,6 +1107,8 @@ class SilkAgentNode(ThreadedManualNode):
                 for notice in end_classifier_run(toolset):
                     self.status_changed.emit(notice)
                 bind_canvas(toolset, None)
+                if served_weave is not None:
+                    bind_weave(toolset, None)
                 # The change record is this run's, like the run scope: the
                 # next run's approval must not show diffs this one wrote.
                 bind_changes(toolset, None)
