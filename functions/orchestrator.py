@@ -66,7 +66,9 @@ from pydantic import BaseModel, Field, field_validator
 
 from weave.logger import get_logger
 
+from .approval import _SEAM_ATTR
 from .classifier_binding import inherit_run_classifier, restore_run_classifier
+from .decision_seam import RelaySeam
 from .messaging import AgentMessage
 from .subagent import WorkerSpec, run_subagent
 
@@ -299,6 +301,16 @@ def _run_one(
     # same push/restore as depth and chain, and for the same reason.
     classifier_saved = (inherit_run_classifier(toolbox, child_toolset)
                         if child_toolset is not None else None)
+    # A worker asks the human its parent asks, through a relay labelled with
+    # the chain, instead of refusing every gated call for want of a UI
+    # (D48 revised). Only when the parent has a seam and the worker none.
+    parent_seam = getattr(toolbox, _SEAM_ATTR, None)
+    had_seam = hasattr(child_toolset, _SEAM_ATTR) if child_toolset is not None else False
+    prev_seam = getattr(child_toolset, _SEAM_ATTR, None)
+    relayed = (child_toolset is not None and parent_seam is not None
+               and (prev_seam is None or isinstance(prev_seam, RelaySeam)))
+    if relayed:
+        setattr(child_toolset, _SEAM_ATTR, RelaySeam(parent_seam, chain + [worker]))
 
     on_event = getattr(toolbox, _ON_EVENT_ATTR, None)
     should_stop = getattr(toolbox, _SHOULD_STOP_ATTR, None)
@@ -314,6 +326,8 @@ def _run_one(
         if child_toolset is not None:
             _restore(child_toolset, _DEPTH_ATTR, had_depth, prev_depth)
             _restore(child_toolset, _CHAIN_ATTR, had_chain, prev_chain)
+            if relayed:
+                _restore(child_toolset, _SEAM_ATTR, had_seam, prev_seam)
             if classifier_saved is not None:
                 restore_run_classifier(child_toolset, classifier_saved)
 
