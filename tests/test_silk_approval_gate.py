@@ -638,3 +638,55 @@ def test_tool_approval_alone_needs_no_task_store():
         assert _call(box, "write_file") == "wrote"
         assert _call(box, "peek") == "peeked"
     assert answerer.tools_asked_about == ["write_file"] and len(ran) == 2
+
+
+# -- a ToolSet derived from a gated ToolBox --------------------------------
+
+
+def _gated_source():
+    """A ToolBox whose recipe registers its tools and gates ``write_file``,
+    the way the ToolBox node builds one, plus the gate installed live."""
+    tmp = tempfile.mkdtemp()
+    ran: list[str] = []
+
+    def tools(box, _sandbox):
+        @box.register("peek", "reads a file", risk="low")
+        def _peek(_pool, _session, **_kw):
+            ran.append("peek")
+            return "peeked"
+
+        @box.register("write_file", "writes a file", risk="high")
+        def _write(_pool, _session, **_kw):
+            ran.append("write_file")
+            return "wrote"
+
+    def hooks(box, sandbox):
+        attach_catalog_hooks(box, sandbox, names=("tool_approval",),
+                             configs={"tool_approval": {"tools": "write_file",
+                                                        "durable_grants": False}})
+
+    sandbox = SimpleNamespace(root_dir=tmp)
+    source = ToolBox(None, {"agent_id": "ag"})
+    tools(source, sandbox)
+    hooks(source, sandbox)
+    source.build_recipe = (("tools", tools), ("hooks", hooks))
+    source.base_sandbox = sandbox
+    return source, ran
+
+
+def test_a_derived_toolset_asks_through_the_seam_its_run_bound():
+    """The Agent binds the seam on the ToolSet wired to it, never on the
+    ToolBox the set was built from. The gate the recipe replayed and the
+    essential one carried over (I7) must both find it there: a gate that
+    looks on the source finds nothing and refuses a run that can ask."""
+    from silk.functions.toolset_build import build_toolset
+
+    source, ran = _gated_source()
+    toolset = build_toolset(source, ["peek", "write_file"])
+    seam, answerer = _seam()
+    with run_seam(toolset, seam):
+        assert _call(toolset, "write_file") == "wrote"
+        assert _call(toolset, "peek") == "peeked"
+    assert answerer.tools_asked_about == ["write_file"], "asked once, not twice"
+    assert ran == ["write_file", "peek"]
+    assert headless_refusals(source) == 0

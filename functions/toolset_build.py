@@ -19,7 +19,7 @@ attacher callable as ``attacher(toolbox, sandbox)``) and
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Callable, Iterable, Optional
 
 from .file_grants import MODE_ORDER, FileGrants
 from .hooks import is_middleware_event
@@ -185,6 +185,15 @@ def sandbox_from_permissions(
     )
 
 
+def _same_hook(a: Callable, b: Callable) -> bool:
+    """Whether *a* and *b* are one hook: the same callable, or two closures
+    of the same function -- what a recipe replay makes of an attacher."""
+    if a is b:
+        return True
+    code = getattr(a, "__code__", None)
+    return code is not None and code is getattr(b, "__code__", None)
+
+
 def carry_essential_hooks(source: Any, derived: Any) -> int:
     """Copy *source*'s essential hooks onto *derived*; returns how many (D14).
 
@@ -196,8 +205,14 @@ def carry_essential_hooks(source: Any, derived: Any) -> int:
     and without this it would not, because nothing in the recipe knows it
     exists.
 
-    Skips anything the replay already produced -- same event, same callable
-    -- so a recipe hook is not installed twice.
+    Skips anything the replay already produced, so a recipe hook is not
+    installed twice. "Already produced" means the same event and the same
+    function, not the same object: a gate is a closure over the toolbox it
+    was attached to, so the replay builds a fresh one for *derived*, and
+    the source's copy would sit beside it reading the source's state --
+    its run seam above all, which the Agent binds on the ToolSet wired to
+    it and never on the ToolBox behind it. That copy refused every gated
+    call with "no way to ask" in a run that could ask.
     """
     registry = getattr(source, "hooks", None)
     target = getattr(derived, "hooks", None)
@@ -210,7 +225,7 @@ def carry_essential_hooks(source: Any, derived: Any) -> int:
             target.middleware_entries(event) if is_middleware_event(event)
             else target.entries(event)
         )
-        if any(e.callback is entry.callback for e in existing):
+        if any(_same_hook(e.callback, entry.callback) for e in existing):
             continue
         if is_middleware_event(event):
             target.register_middleware(event, entry)
