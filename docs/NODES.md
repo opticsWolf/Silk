@@ -73,6 +73,40 @@ always wins, because you can see a proxy in the way that a catalogue
 cannot. LM Studio and llama.cpp quote no price, which the status line
 says plainly rather than implying the run is free.
 
+### OpenCode Zen / OpenCode Go — `nodes/opencode_endpoint.py` (`SilkOpenCodeZenNode`, `SilkOpenCodeGoNode`)
+The Model Endpoint, specialised for OpenCode's two plans: Zen
+(`https://opencode.ai/zen/v1`, pay as you go) and Go
+(`https://opencode.ai/zen/go/v1`, subscription). Same `model_handle` out.
+
+| Direction | Port | Type |
+|---|---|---|
+| in | `model` | `string` (dropdown, editable) |
+| in | `context_length` | `int` (slider; 0 = unknown) |
+| in | `credential` | `string` (default `OPENCODE_API_KEY`) |
+| in | `supports_tools` | `bool` (auto-on when the catalogue says so) |
+| out | `model_obj` | `model_handle` |
+
+**The model list is a file.** `~/.weave/silk/model_catalogs/opencode.json`
+and `opencode-go.json`, read when the node opens. The refresh button
+rewrites it off the GUI thread; the first node of a kind on a machine with
+no file refreshes once by itself. OpenCode's `/v1/models` names the models
+(it is the authority on what your key reaches) but carries no context
+window, so the windows come from [models.dev](https://models.dev), the
+catalogue OpenCode itself is built on. If models.dev is unreachable the
+list still loads with every window *unknown*; if the endpoint is, the
+models.dev list is used, so the dropdown works before a key is set. If
+neither answers, the file is left as it was.
+
+**The context slider tops out at the model's window** and starts there.
+Holding it lower stores that value for the model in the same file
+(`context_overrides`), so it survives a refresh and is the default next
+time anyone picks that model; dragging it back to the maximum forgets the
+override. A model OpenCode documents on `/messages` or `/responses`
+rather than `/chat/completions` (Claude and GPT on Zen, MiniMax on Go) is
+listed but flagged in the status line, since Silk speaks chat completions
+only. Zen's per-token price from models.dev goes on the handle; Go is a
+subscription and quotes none.
+
 **Native tool calling** is a checkbox, and it is off. On, the agent's
 tools go in the request's `tools` field; off, they go in a text fence.
 The two failure modes are not symmetric — a server that does not accept

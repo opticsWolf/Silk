@@ -41,6 +41,7 @@ nodes = [
     "AgentInferenceSettingsNode", "ChatDisplayNode", "GGUFLNode", "PoolMonitorNode",
     "SilkAgentNode", "SilkClassifierNode", "SilkHookMonitorNode", "SilkMCPAggregatorNode",
     "SilkMCPServerNode", "SilkModelEndpointNode", "SilkModelFallbackNode",
-    "SilkOrchestratorNode", "SilkPlanViewerNode", "SilkRoleNode", "SilkTaskHubNode",
+    "SilkOpenCodeGoNode", "SilkOpenCodeZenNode", "SilkOrchestratorNode",
+    "SilkPlanViewerNode", "SilkRoleNode", "SilkTaskHubNode",
     "SilkTaskNode", "SilkToolBoxNode", "SilkToolSetNode", "SilkWorkerNode", "ToolchainNode",
 ]

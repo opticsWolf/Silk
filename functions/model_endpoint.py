@@ -112,6 +112,14 @@ PROVIDERS: Tuple[Provider, ...] = (
              "OPENROUTER_API_KEY",
              "Hosted, many models, one key. Requests cost money, so the "
              "model name is worth reading twice."),
+    Provider("opencode", "OpenCode Zen", "https://opencode.ai/zen/v1",
+             "OPENCODE_API_KEY",
+             "OpenCode's pay-as-you-go gateway. The OpenCode Zen node adds "
+             "a model dropdown and context lengths from a cached catalogue."),
+    Provider("opencode-go", "OpenCode Go", "https://opencode.ai/zen/go/v1",
+             "OPENCODE_API_KEY",
+             "OpenCode's subscription plan. The OpenCode Go node adds a "
+             "model dropdown and context lengths from a cached catalogue."),
 )
 
 _BY_KEY: Dict[str, Provider] = {p.key: p for p in PROVIDERS}
