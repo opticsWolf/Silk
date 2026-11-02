@@ -27,7 +27,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from PySide6.QtCore import QObject, Qt, Signal
+from PySide6.QtCore import QCoreApplication, QObject, Qt, Signal
 
 from weave.logger import get_logger
 
@@ -47,10 +47,14 @@ log = get_logger("SilkGraphCanvas")
 class CanvasAuthor(QObject):
     """Performs graph edits on the main thread, on behalf of a worker.
 
-    Constructed by the Agent node (main thread), so its queued slot runs
-    on the main thread no matter which thread emitted the signal. The
-    seam it serves is the agent's; when the run ends the node closes the
-    seam and every outstanding call refuses rather than hanging.
+    The Agent node constructs it inside ``compute``, which is a pool
+    worker, and a QObject's queued slots run on the thread it *lives* on:
+    left there, every request would queue to the worker that is blocked
+    waiting for the answer, and each call would time out with "the canvas
+    did not respond in time". So it moves itself to the main thread on
+    construction, wherever that happens. The seam it serves is the
+    agent's; when the run ends the node closes the seam and every
+    outstanding call refuses rather than hanging.
     """
 
     #: Worker -> main. Queued explicitly: the default would be a direct
@@ -60,6 +64,11 @@ class CanvasAuthor(QObject):
 
     def __init__(self, node: Any, seam: MainThreadCall) -> None:
         super().__init__()
+        app = QCoreApplication.instance()
+        if app is not None and self.thread() is not app.thread():
+            # Pushing an object away from the current thread is allowed
+            # from that thread; it has no parent, so nothing holds it back.
+            self.moveToThread(app.thread())
         self._node = node
         self._seam = seam
         self._requested.connect(self._serve, Qt.ConnectionType.QueuedConnection)

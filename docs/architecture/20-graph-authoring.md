@@ -55,7 +55,11 @@ would take out the event loop and leave the worker to time out for no reason.
 
 `CanvasAuthor(QObject)` is the only piece that touches the scene. The seam
 delivers into a `Signal(object)` with `Qt.QueuedConnection`, so the request
-crosses to the main thread by Qt's own rules, and the six ops dispatch to
+crosses to the main thread by Qt's own rules — which hold only because the
+author moves itself to the main thread when built: the Agent node builds it
+inside `compute`, on a worker, and a queued slot runs where its object lives,
+so an author left there queued every request to the thread blocked waiting
+for it. The six ops dispatch to
 methods that go through the canvas's **own undo commands** — never raw scene
 manipulation:
 
