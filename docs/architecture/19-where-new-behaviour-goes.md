@@ -12,7 +12,7 @@
 | Keep the prompt small with a large tool suite | `DeferredCapability` + the `load_capability` tool (backed by `ToolSearch`) |
 | Swap the model backend | implement the `AgentEngine` protocol (reference: `GraphEngine`) — the loop is unchanged |
 | Add a tool-call transport | a transport beside `FenceTransport` / `NativeTransport` in `functions/tool_transport.py` |
-| Keep a long run inside the context window | the spill hook first (prefix-preserving, `functions/spill.py`), then a `Compactor` on the `AgentLoop` (`functions/compaction.py`) — in that order, because compaction costs two prefills (D41) |
+| Keep a long run inside the context window | the spill hook first (prefix-preserving, `functions/spill.py`), then a `Compactor` on the `AgentLoop` (`functions/compaction.py`) — in that order, because compaction costs two prefills (D41). Tune it on the ToolBox's `auto_compact` hook; let the model ask for one with the `compact_context` tool |
 | Rewrite what the model sees | `GraphEngine.replace_history_prefix` — the one non-appending history operation, and it refuses cuts that orphan a tool result (I9) |
 | Cap or shape a run | `UsageLimits` caps, `ReflectionConfig` retries, or an `OutputSchema` + validator on the final answer |
 | Add planning / audit behaviour | `SqliteTaskStore` operations + a `signoff` policy; surface it via the Plan Viewer node |
@@ -40,6 +40,7 @@
 | Cap what a run may cost | the Agent/Orchestrator node's **Budget** field (`requests=20, output=8k`); a worker's own share goes on its Worker node and nests inside it (D26) |
 | Stop one worker eating the fan-out's budget | give its `WorkerSpec` a `usage_limits`; `run_subagent` nests it inside the orchestrator's shared cap rather than replacing it (D26) |
 | Require a human before a tool runs | the `tool_approval` catalog hook (risk band or tool names) — the same middleware the `signoff` policy uses |
+| Make one role stricter, or compact differently, than the ToolBox | tick `tool_approval`, `signoff` or `auto_compact` on the Role: the gates only ever ask more than the box's (a role gate just inside the box's, asking only where it is stricter), and compaction takes the Role's settings. `spill`, `remember` and `run_log` are the box's alone and are greyed out on a Role |
 | Let a user say "don't ask again" | a `remember` scope on the decision: run-scoped in the gate closure, or a durable grant in `~/.weave/silk/grants.json` |
 | Give agents the tools of an MCP server | a `Silk MCP Server` node per server (it owns the session), optionally a `Silk MCP Aggregator` to switch individual tools off, into the ToolBox node's `mcp` input (D19–D22) |
 | Delegate work across agents | `Silk Worker` nodes feeding the `Silk Orchestrator` (`delegate` / `delegate_parallel`) |

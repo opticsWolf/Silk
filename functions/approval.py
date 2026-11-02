@@ -106,6 +106,11 @@ LEVELS = (LEVEL_AGENT, LEVEL_TRIAGE, LEVEL_HUMAN)
 #: name always wins over its risk band -- the specific beats the general.
 RISK_KEYS = ("low", "medium", "high")
 
+#: Where the ToolBox's own (base) gate leaves its policy and its entry, so
+#: a Role's gate can tighten it without asking twice (``beneath``).
+APPROVAL_POLICY_ATTR = "_approval_policy"
+APPROVAL_GATE_ATTR = "_approval_gate_entry"
+
 #: Ready-made tool policies for the node UI.
 TOOL_PRESETS: dict[str, dict] = {
     "off": {},
@@ -212,8 +217,17 @@ def attach_approval_gate(
     grants: Optional[GrantStore] = None,
     run_grants: Optional[RunGrants] = None,
     project_root: Optional[str] = None,
+    beneath: Optional[dict] = None,
 ) -> Optional[Any]:
     """Register the unified approval gate; returns its :class:`HookEntry`.
+
+    *beneath* makes this a **role gate**: a second gate whose policy may
+    only *tighten* the one the ToolBox installed. It is the base gate's
+    ``{"tools": ..., "tasks": ...}`` policy (``None`` entries mean "no base
+    gate"), and the role gate asks only where its own level for a call is
+    stricter than the base's -- so nothing is asked twice for the same
+    reason, and nothing the base gates is ever let through by it. A role
+    gate is not essential: the binding that installed it removes it.
 
     Every argument is captured **here, once**, and never re-read mid-run:
     editing a Role or a hook config while a run is in flight affects the
@@ -234,10 +248,14 @@ def attach_approval_gate(
         return None
 
     # Told to the run's start, which says once when nothing can triage (C3).
+    # A role gate only ever adds to the base gate's answer.
     try:
-        setattr(toolbox, GATE_USES_TRIAGE_ATTR, uses_triage)
+        if beneath is None or uses_triage:
+            setattr(toolbox, GATE_USES_TRIAGE_ATTR, uses_triage)
     except AttributeError:
         pass
+    base_tools = normalize_tool_policy((beneath or {}).get("tools"))
+    base_tasks = dict((beneath or {}).get("tasks") or {})
 
     run_scoped = run_grants if run_grants is not None else RunGrants()
     durable = grants
@@ -274,16 +292,17 @@ def attach_approval_gate(
             return "complete_final"
         return ctype
 
-    def _level_for_tool(tool_name: str) -> str:
+    def _level_for_tool(tool_name: str, policy: Optional[dict] = None) -> str:
         """Policy level for a tool call: the name beats the risk band.
 
         Except downwards into ``triage``: naming a tool ``triage`` can lift
         it from ``agent`` but never lower it from a band gated ``human``.
         """
+        policy = tools if policy is None else policy
         risk = str((toolbox.tools.get(tool_name) or {}).get("risk", "low"))
-        band = tools.get(risk, LEVEL_AGENT)
-        if tool_name in tools:
-            named = tools[tool_name]
+        band = policy.get(risk, LEVEL_AGENT)
+        if tool_name in policy:
+            named = policy[tool_name]
             return stricter(named, band) if named == LEVEL_TRIAGE else named
         return band
 
@@ -350,6 +369,15 @@ def attach_approval_gate(
         levels = {_level_for_tool(tool_name) if tools else LEVEL_AGENT}
         if ctype is not None:
             levels.add(tasks.get(ctype, LEVEL_AGENT))
+        if beneath is not None:
+            # A role gate asks only where it is stricter than the base gate,
+            # which has already asked (it is outermost) for everything else.
+            base = {_level_for_tool(tool_name, base_tools) if base_tools
+                    else LEVEL_AGENT}
+            if ctype is not None:
+                base.add(base_tasks.get(ctype, LEVEL_AGENT))
+            if LEVELS.index(stricter(*levels)) <= LEVELS.index(stricter(*base)):
+                return await handler()
         classifier = run_classifier(toolbox)
         # `triage` with nothing to triage with is `human` (C3).
         level = effective_level(stricter(*levels), classifier)
@@ -449,12 +477,25 @@ def attach_approval_gate(
     entry = toolbox.hooks.register_middleware(
         HOOK_WRAP_TOOL_EXECUTE, gate,
         tools=bound if bound is not None else (),
-        essential=True,   # D11/I7: a Role cannot drop the gate
+        # D11/I7: a Role cannot drop the base gate. Its own role gate is
+        # the binding's to remove, and only ever adds questions.
+        essential=beneath is None,
     )
     # D37: forced outermost, not merely registered early. A middleware
     # may return without calling handler(), so anything ahead of the gate
-    # could answer a call the gate never sees.
+    # could answer a call the gate never sees. A role gate goes first,
+    # then the base gate is put back in front of it.
     toolbox.hooks.make_outermost(HOOK_WRAP_TOOL_EXECUTE, entry)
+    if beneath is None:
+        try:
+            setattr(toolbox, APPROVAL_POLICY_ATTR, {"tools": tools, "tasks": tasks})
+            setattr(toolbox, APPROVAL_GATE_ATTR, entry)
+        except AttributeError:
+            pass
+    else:
+        base_entry = getattr(toolbox, APPROVAL_GATE_ATTR, None)
+        if base_entry is not None:
+            toolbox.hooks.make_outermost(HOOK_WRAP_TOOL_EXECUTE, base_entry)
     return entry
 
 

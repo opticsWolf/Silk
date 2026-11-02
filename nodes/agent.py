@@ -34,7 +34,6 @@ from typing import Any, ClassVar, Dict, List, Optional, cast
 from PySide6.QtCore import Qt, QEvent, Signal, Slot
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import (
-    QCheckBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -57,7 +56,7 @@ from .silk_ports import (  # noqa: F401
     MODEL_HANDLE_TYPE, SILK_CLASSIFIER_TYPE, SILK_ROLE_TYPE, SILK_TOOLSET_TYPE,
 )
 from ..functions.agent_loop import AgentLoop, DEFAULT_MAX_ROUNDS
-from ..functions.event_sink import RunSink
+from ..functions.event_sink import RunSink, sink_for
 from ..functions.approval import bind_run_seam, headless_refusals
 from ..functions.classifier_binding import begin_classifier_run, end_classifier_run
 from ..functions.graph_author import CanvasBinding, RunScope, bind_canvas
@@ -68,7 +67,7 @@ from ..functions.main_thread_call import (
     DEFAULT_TIMEOUT_S as CANVAS_TIMEOUT_S, MainThreadCall,
 )
 from .graph_canvas import CanvasAuthor
-from ..functions.compaction import Compactor
+from ..functions.compaction import compactor_for
 from ..functions.file_grants import resolve_grants
 from ..functions.decision_registry import REGISTRY as DECISIONS
 from ..functions.decision_seam import (
@@ -130,7 +129,9 @@ class SilkAgentNode(ThreadedManualNode):
     # 2: the `event_log` port (T7, D85). Same `node_state_api`: an older
     # state simply has no entry for it and restores with the box off,
     # which is also the default.
-    node_version = 2
+    # 3: the port and box are gone -- the run log is the ToolBox's
+    # `run_log` hook. A saved `event_log` is ignored, and said so once.
+    node_version = 3
 
     # Weave declares `_widget_core` as `WidgetCoreLike` -- the subset the
     # *dataflow engine* relies on. A node uses the widget-facing whole
@@ -210,10 +211,6 @@ class SilkAgentNode(ThreadedManualNode):
         # anything is the default and someone has to be able to say
         # otherwise without writing Python (D26). Wired input wins.
         self.add_input("budget", datatype="string")
-        # The run log switch, wirable like every other setting: a graph
-        # that turns recording on for a batch of runs should not need
-        # someone to tick a box first (T7, D85).
-        self.add_input("event_log", datatype="bool")
         # The classifier resource (D-S8), next to the model: approval triage,
         # classifier hooks and the classify tool read it for one run at a
         # time. Unwired, `triage` levels ask the human (C3).
@@ -310,24 +307,6 @@ class SilkAgentNode(ThreadedManualNode):
             add_to_layout=False,
         )
 
-        # A durable account of the run (T7, D85). Off by default: a run
-        # log is a file this node writes on the user's disk, and the
-        # honest default for that is "only when asked". What it records
-        # is shape and size, never text -- see `functions/event_sink.py`.
-        self.check_event_log = QCheckBox("Record run log (metadata only)")
-        self.check_event_log.setToolTip(
-            "Write one JSONL file per run to ~/.weave/silk/runs/: which "
-            "events happened, in what order, how big. No prompts, no "
-            "completions, no tool arguments -- only their names and "
-            "lengths. Compaction drops turns permanently, so this is the "
-            "only account of a long run's middle."
-        )
-        form.addWidget(self.check_event_log)
-        self._widget_core.register_widget(
-            "event_log", self.check_event_log, role=PortRole.INPUT,
-            datatype="bool", default=False, add_to_layout=False,
-        )
-
         # The run's ceiling. Empty means uncapped, which is what every
         # run did before this field existed; anything unreadable stops
         # the run rather than quietly running without the cap.
@@ -416,6 +395,13 @@ class SilkAgentNode(ThreadedManualNode):
             super().restore_state(state)
             saved = state.get("silk_agent", {})
             self._history = copy.deepcopy(saved.get("history", []))
+        values = state.get("widget_data")
+        if isinstance(values, dict) and values.get("event_log"):
+            log.warning(
+                f"'{getattr(self, 'title', 'Silk Agent')}' had its run log "
+                "switched on. The run log is now the ToolBox's 'run_log' "
+                "hook: tick it there to keep recording."
+            )
 
     # ── UI slots ─────────────────────────────────────────────────────
 
@@ -722,7 +708,8 @@ class SilkAgentNode(ThreadedManualNode):
 
                 # One file per run, opened by its first event and closed
                 # in the finally below (T7, D85).
-                sink = RunSink() if bool(inputs.get("event_log")) else None
+                # Switched and configured by the ToolBox's run_log hook.
+                sink = sink_for(toolset)
                 self._run_sink = sink
 
                 def _emit_event(event: Any, **extra: Any) -> None:
@@ -907,7 +894,10 @@ class SilkAgentNode(ThreadedManualNode):
                 # and stays inert when the backend does not report a
                 # context window, because there is then no pressure to
                 # measure and compacting on a hunch costs two prefills.
-                compactor=Compactor(),
+                # Configured by the ToolBox's auto_compact hook, adjusted
+                # by the Role's; without either, only the compact_context
+                # tool compacts.
+                compactor=compactor_for(toolset, role),
             )
 
             # Build gen_params from internal defaults (no limit on tokens).

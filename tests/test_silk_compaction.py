@@ -478,3 +478,386 @@ def test_a_compactor_that_raises_does_not_kill_the_run():
     engine = LoopEngine(_history(8), context=1000, tokens=900)
     events = _events(AgentLoop(engine, compactor=_Broken()))
     assert isinstance(events[-1], EventRunResult)
+
+
+# -- carrying a run across several compactions (lessons from pi) -------------
+
+
+def _summary_entry(body: str) -> dict[str, Any]:
+    return {"role": "user", "content": SUMMARY_MARKER + body}
+
+
+def test_a_previous_summary_is_carried_forward_whole_not_clipped():
+    """The second compaction updates the first summary; it never re-summarizes
+    it as one more turn, which clipped it to max_turn_chars and lost its
+    middle."""
+    middle = "the measured gap is 41.7 nm"
+    previous = "## Task\n" + "x" * 3000 + f"\n{middle}\n" + "y" * 3000
+    engine = FakeEngine([_summary_entry(previous)] + _history(6))
+    Compactor(keep_recent=8, min_dropped=4).maybe_compact(engine, force=True)
+
+    prompt = engine.summarized[0]
+    assert middle in prompt, "the old summary's middle reached the summarizer"
+    assert "previous summary begins" in prompt and "PRESERVE" in prompt
+    transcript = prompt.split("--- transcript begins ---")[1]
+    assert SUMMARY_MARKER.strip() not in transcript, (
+        "the old summary is not also rendered as a turn"
+    )
+    assert engine.history[0]["content"].count(SUMMARY_MARKER) == 1
+
+
+def test_a_first_compaction_uses_the_structured_template():
+    engine = FakeEngine(_history(6))
+    Compactor(keep_recent=8, min_dropped=4).maybe_compact(engine, force=True)
+    prompt = engine.summarized[0]
+    for section in ("## Task", "## Progress", "### Done", "## Key decisions",
+                    "## Facts discovered", "## Next steps"):
+        assert section in prompt
+    assert "previous summary" not in prompt
+    assert "Preserve exact file paths" in prompt
+
+
+def test_the_focus_reaches_the_prompt():
+    engine = FakeEngine(_history(6))
+    Compactor(keep_recent=8, min_dropped=4,
+              focus="keep every layer thickness").maybe_compact(engine, force=True)
+    assert "Additional focus: keep every layer thickness" in engine.summarized[0]
+
+
+def test_compact_now_skips_the_threshold_and_takes_a_one_off_focus():
+    engine = FakeEngine(_history(6), context=100_000, tokens=10)
+    compactor = Compactor(keep_recent=8, min_dropped=4, focus="standing")
+    assert compactor.should_compact(engine) is False
+    event = compactor.compact_now(engine, focus="just this once")
+    assert event is not None
+    assert "Additional focus: just this once" in engine.summarized[0]
+    assert "standing" not in engine.summarized[0]
+
+
+def test_compact_now_still_respects_the_minimum_worth_dropping():
+    engine = FakeEngine(_history(1))
+    assert Compactor().compact_now(engine) is None
+    assert engine.summarized == []
+
+
+# -- what the summarizer is shown ---------------------------------------------
+
+
+def test_native_tool_calls_are_rendered_with_their_arguments():
+    entries = [
+        {"role": "user", "content": "fix it"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "c1", "type": "function", "function": {
+                "name": "read_file", "arguments": '{"path": "src/stack.py"}'}},
+        ]},
+        {"role": "tool", "name": "read_file", "content": "def stack(): ..."},
+    ]
+    text = render_transcript(entries)
+    assert 'read_file({"path": "src/stack.py"})' in text
+    assert "assistant tool calls:" in text
+
+
+def test_fenced_calls_are_lifted_out_so_clipping_cannot_split_them():
+    fence = '```tool_call\n{"name": "edit_file", "arguments": {"path": "a.py"}}\n```'
+    content = "A" * 3000 + "\n" + fence + "\n" + "B" * 3000
+    text = render_transcript([{"role": "assistant", "content": content}],
+                             max_turn_chars=200)
+    assert 'edit_file({"path": "a.py"})' in text
+    assert "```tool_call" not in text
+
+
+def test_a_huge_call_argument_is_clipped():
+    entries = [{"role": "assistant", "content": "", "tool_calls": [
+        {"function": {"name": "write_file",
+                      "arguments": '{"path": "big.txt", "content": "' + "z" * 5000 + '"}'}},
+    ]}]
+    text = render_transcript(entries, max_arg_chars=100)
+    assert "big.txt" in text and "characters omitted" in text
+    assert len(text) < 400
+
+
+# -- files touched, recorded by code ------------------------------------------
+
+
+def _file_round() -> list[dict[str, Any]]:
+    def call(name, **args):
+        import json
+        return {"function": {"name": name, "arguments": json.dumps(args)}}
+    return [
+        {"role": "user", "content": "refactor"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            call("read_file", path="a.py"), call("read_file", path="b.py"),
+            call("edit_file", path="b.py", old="x", new="y"),
+            call("move_file", source="c.py", destination="d.py"),
+        ]},
+        {"role": "tool", "name": "read_file", "content": "..."},
+        {"role": "tool", "name": "read_file", "content": "..."},
+        {"role": "tool", "name": "edit_file", "content": "ok"},
+        {"role": "tool", "name": "move_file", "content": "ok"},
+    ]
+
+
+def test_the_files_a_dropped_turn_touched_are_appended_to_the_summary():
+    engine = FakeEngine(_file_round() + _history(3))
+    Compactor(keep_recent=8, min_dropped=4).maybe_compact(engine, force=True)
+    head = engine.history[0]["content"]
+    assert "<read-files>\na.py\n</read-files>" in head, (
+        "b.py was modified, so it is listed once, as modified"
+    )
+    assert "<modified-files>\nb.py\nc.py\nd.py\n</modified-files>" in head
+
+
+def test_file_lists_accumulate_across_compactions():
+    previous = "## Task\nold work\n\n<read-files>\nold.py\n</read-files>"
+    engine = FakeEngine([_summary_entry(previous)] + _file_round() + _history(3))
+    Compactor(keep_recent=8, min_dropped=4).maybe_compact(engine, force=True)
+    head = engine.history[0]["content"]
+    assert "old.py" in head and "a.py" in head
+    assert "<read-files>" not in engine.summarized[0].split(
+        "--- previous summary ends ---")[0], (
+        "the lists are the code's, so the model is not asked to keep them"
+    )
+
+
+def test_file_lists_a_model_writes_itself_are_replaced_by_the_records():
+    engine = FakeEngine(_file_round() + _history(3))
+    engine.summary_reply = "notes\n\n<modified-files>\ninvented.py\n</modified-files>"
+    Compactor(keep_recent=8, min_dropped=4).maybe_compact(engine, force=True)
+    head = engine.history[0]["content"]
+    assert "invented.py" not in head and "b.py" in head
+
+
+# -- a truncated summary is no summary ----------------------------------------
+
+
+@pytest.mark.parametrize("stats", [
+    {"finish_reason": "length", "tokens": 512},
+    {"finish_reason": None, "truncated": True},
+])
+def test_a_cut_off_summary_leaves_the_history_untouched(stats):
+    engine = FakeEngine(_history(6))
+    original = list(engine.history)
+    real_sibling = engine.sibling
+
+    def sibling(**kw):
+        sib = real_sibling(**kw)
+        inner = sib.stream_response
+
+        def stream(params):
+            yield from inner(params)
+            sib.last_stats = dict(stats)
+        sib.stream_response = stream
+        return sib
+
+    engine.sibling = sibling
+    assert Compactor(keep_recent=8, min_dropped=4).maybe_compact(
+        engine, force=True) is None
+    assert engine.history == original
+
+
+# -- the tail is sized in tokens ----------------------------------------------
+
+
+def test_the_tail_is_sized_by_tokens_when_the_window_is_known():
+    """Eight huge tool results would fill the window by themselves."""
+    big = [{"role": "user", "content": "q"},
+           {"role": "assistant", "content": "reading"}] + [
+        {"role": "tool", "name": "read_file", "content": "r" * 4000}
+        for _ in range(2)]
+    history = big * 6                                  # 24 turns, ~12k tokens
+    cut = plan_cut(history, keep_tokens=2500, min_dropped=2)
+    kept = history[cut:]
+    assert sum(len(e["content"]) for e in kept) // 4 <= 2500 + 2000, (
+        "the tail fits the budget, give or take the snap to a round"
+    )
+    assert len(kept) < 8, "fewer turns than the old fixed count"
+
+
+def test_small_turns_keep_more_than_eight_when_they_fit():
+    history = _history(12)                             # 48 short turns
+    cut = plan_cut(history, keep_tokens=40, min_dropped=2)
+    assert len(history) - cut > 8
+
+
+def test_the_default_compactor_uses_the_window_share():
+    compactor = Compactor()
+    assert compactor.keep_tokens(10_000) == 3000
+    assert compactor.keep_tokens(None) is None, "unknown window: count turns"
+    assert Compactor(keep_recent=8).keep_tokens(10_000) is None, (
+        "an explicit turn count wins"
+    )
+
+
+def test_the_newest_turn_is_always_kept():
+    history = _history(3) + [{"role": "user", "content": "u" * 40_000}]
+    cut = plan_cut(history, keep_tokens=10, min_dropped=1)
+    assert cut is not None and cut <= len(history) - 1
+
+
+# -- an early length stop is an overflow --------------------------------------
+
+
+class LengthEngine(LoopEngine):
+    """Replies are ``(text, stats)``; plain strings finish with ``stop``."""
+
+    def stream_response(self, params):
+        self.requests += 1
+        reply = self.replies.pop(0) if self.replies else "done"
+        text, stats = reply if isinstance(reply, tuple) else (
+            reply, {"finish_reason": "stop", "tokens": 1})
+        self.last_stats = dict(stats)
+        yield text
+
+
+def test_a_length_stop_short_of_the_cap_compacts_and_retries():
+    engine = LengthEngine(
+        _history(8), context=1000, tokens=500,
+        replies=[("half an ans", {"finish_reason": "length", "tokens": 3}),
+                 "whole answer"],
+    )
+    loop = AgentLoop(engine, compactor=Compactor(keep_recent=8, min_dropped=4))
+    events = list(loop.run("go", gen_params={"max_tokens": 1024}))
+
+    assert [type(e).__name__ for e in events].count("EventCompaction") == 1
+    assert engine.requests == 2
+    assert events[-1].text == "whole answer"
+    assert not any(e.get("content") == "half an ans" for e in engine.history), (
+        "the cut-off answer is dropped, not persisted"
+    )
+
+
+def test_a_length_stop_with_no_cap_is_an_overflow_too():
+    engine = LengthEngine(
+        _history(8), context=1000, tokens=500,
+        replies=[("half", {"finish_reason": "length", "tokens": 3}), "whole"],
+    )
+    events = _events(AgentLoop(engine, compactor=Compactor(keep_recent=8,
+                                                           min_dropped=4)))
+    assert engine.requests == 2 and events[-1].text == "whole"
+
+
+def test_a_length_stop_at_the_cap_is_the_callers_choice_not_an_overflow():
+    engine = LengthEngine(
+        _history(8), context=1000, tokens=500,
+        replies=[("capped answer", {"finish_reason": "length", "tokens": 64})],
+    )
+    loop = AgentLoop(engine, compactor=Compactor(keep_recent=8, min_dropped=4))
+    events = list(loop.run("go", gen_params={"max_tokens": 64}))
+    assert not any(isinstance(e, EventCompaction) for e in events)
+    assert engine.requests == 1 and events[-1].text == "capped answer"
+
+
+def test_a_length_stop_without_a_compactor_is_kept_as_before():
+    engine = LengthEngine(
+        _history(8), context=1000, tokens=500,
+        replies=[("half", {"finish_reason": "length", "tokens": 3})],
+    )
+    events = _events(AgentLoop(engine))
+    assert engine.requests == 1 and events[-1].text == "half"
+
+
+# -- configured on the ToolBox: the auto_compact hook and the tool -----------
+
+
+def _box(hooks=(), configs=None, tools=False):
+    from silk.functions.hook_catalog import attach_catalog_hooks
+    from silk.functions.tool_box import ToolBox
+    from silk.functions.tools.context_tools import attach_context_tools
+
+    box = ToolBox()
+    if tools:
+        attach_context_tools(box, None)
+    if hooks:
+        attach_catalog_hooks(box, None, names=hooks, configs=configs or {})
+    return box
+
+
+def test_auto_compact_is_a_default_hook_and_not_a_gate():
+    from silk.functions.hook_catalog import DEFAULT_HOOKS, GATING_HOOKS
+
+    assert "auto_compact" in DEFAULT_HOOKS and "auto_compact" not in GATING_HOOKS
+
+
+def test_no_toolbox_compacts_automatically_with_the_defaults():
+    from silk.functions.compaction import compactor_for
+
+    c = compactor_for(None)
+    assert c.auto and c.keep_recent_ratio == 0.30
+
+
+def test_the_hook_settings_reach_the_compactor():
+    from silk.functions.compaction import compactor_for
+
+    box = _box(["auto_compact"], {"auto_compact": {
+        "keep_recent_pct": 40, "reserve_pct": 20, "hysteresis_pct": 5,
+        "min_dropped": 2, "focus": "keep every thickness"}})
+    c = compactor_for(box)
+    assert c.auto
+    assert (c.keep_recent_ratio, c.reserve_ratio, c.hysteresis, c.min_dropped) == (
+        0.40, 0.20, 0.05, 2)
+    assert c.focus == "keep every thickness"
+
+
+def test_an_invalid_hook_config_falls_back_to_the_defaults():
+    from silk.functions.compaction import compactor_for
+
+    c = compactor_for(_box(["auto_compact"], {"auto_compact": {"keep_recent_pct": 99}}))
+    assert c.auto and c.keep_recent_ratio == 0.30
+
+
+def test_a_toolbox_without_the_hook_never_compacts_on_its_own():
+    from silk.functions.compaction import compactor_for
+
+    c = compactor_for(_box(["timing"]))
+    assert c.auto is False
+    engine = FakeEngine(_history(8), context=8000, tokens=7900)
+    assert c.maybe_compact(engine) is None, "no pressure trigger"
+    assert c.maybe_compact(engine, reason="overflow", force=True) is None, (
+        "no overflow trigger either"
+    )
+    c.keep_recent = 4                    # the doubles' turns are tiny
+    assert c.compact_now(engine) is not None, "an explicit request still works"
+
+
+def test_the_tool_records_a_request_the_loop_then_takes():
+    from silk.functions.compaction import take_compaction_request
+
+    box = _box(tools=True)
+    assert take_compaction_request(box) is None
+    out = box.tools["compact_context"]["executable"](focus="  the failing tests ")
+    assert out.ok
+    box.tools["compact_context"]["executable"](focus="")
+    assert take_compaction_request(box) == "the failing tests", (
+        "two calls are one compaction; the last non-empty focus wins"
+    )
+    assert take_compaction_request(box) is None, "taken once"
+
+
+def test_the_loop_compacts_before_the_next_request_when_the_tool_asked():
+    box = _box(tools=True)               # no auto_compact: only the tool
+    from silk.functions.compaction import compactor_for
+
+    engine = LoopEngine(
+        _history(8), context=100_000, tokens=100,
+        replies=['```tool_call\n{"name": "compact_context", '
+                 '"arguments": {"focus": "keep the ids"}}\n```', "done"],
+    )
+    loop = AgentLoop(engine, box, compactor=compactor_for(box))
+    loop.compactor.keep_recent = 4
+    events = _events(loop)
+
+    compactions = [e for e in events if isinstance(e, EventCompaction)]
+    assert len(compactions) == 1
+    assert "Additional focus: keep the ids" in engine.summarized[0]
+    assert engine.requests == 2 and isinstance(events[-1], EventRunResult)
+
+
+def test_an_old_toolbox_keeps_compacting_after_migration():
+    from silk.nodes.toolbox import SilkToolBoxNode
+
+    state = {"widget_data": {"hooks_config": {"names": ["timing"], "configs": {}}},
+             "seen_tools": ["read_file"]}
+    out = SilkToolBoxNode.migrate_state(state, 3)
+    assert out["widget_data"]["hooks_config"]["names"] == ["timing", "auto_compact"]
+    assert "compact_context" in out["seen_tools"], "offered, so not auto-ticked"
+    assert SilkToolBoxNode.node_state_api == 4

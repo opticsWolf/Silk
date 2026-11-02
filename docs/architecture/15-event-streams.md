@@ -33,7 +33,8 @@ back to plain text — a missing optional dependency never breaks the graph.
 ### The durable sink (T7, D85)
 
 `functions/event_sink.py` is the second consumer of that one stream. When
-the Agent node's **Record run log** box is ticked, every wire event is
+the ToolBox's **`run_log`** hook is ticked (opt-in; it sets how many run
+files are kept and how many lines one may hold), every wire event is
 also appended to `~/.weave/silk/runs/<stamp>-<run>.jsonl`, one JSON
 object per line. It exists because compaction (§12) drops turns
 permanently: after a long run, this file is the only account of its

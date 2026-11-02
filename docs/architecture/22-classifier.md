@@ -35,8 +35,10 @@ arguments — never from the transcript — and:
 
 The classifier never denies. A `complete_final` at `triage` also needs the
 completion check to accept; a rejected check only adds `suggestion: deny` and
-the unmet criteria to the card. A worker without a seam can pass a triage-level
-call this way; every other gated call it makes is still refused (D36).
+the unmet criteria to the card. A delegated worker asks on its parent run's seam
+through a `RelaySeam` (see `11-task-system-signoff.md`); with no parent seam it can
+still pass a triage-level call this way, and every other gated call it makes is
+refused (D36).
 
 ### `functions/classifier.py` — one question format, a chain of backends
 

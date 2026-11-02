@@ -532,6 +532,29 @@ precondition for telling a compacted run from a clean one (G14(e)).
 as the record of what was missing and why; the checklist now carries where
 each piece landed.
 
+**Revised 2026-11-02** after a read of pi's compaction
+(`earendil-works/pi`, `packages/coding-agent/src/core/compaction/`). Two
+defects fixed: a run's second compaction re-summarized the first summary as
+an ordinary turn, clipped to 2,000 characters (head and tail kept, middle
+lost), and native `tool_calls` were never rendered, so the summarizer saw
+results without the calls that produced them. Adopted alongside: a summary
+in fixed sections with an update prompt for later compactions; a tail sized
+as a share of the window (30 %) instead of 8 turns; read/modified file
+lists recorded from tool calls by code; a summary cut off by `length` or a
+missing finish reason is rejected; a `length` finish short of the token cap
+counts as an overflow (once per run, like D40's retry); `compact_now()`
+with a one-off focus. Configuration lives on the ToolBox, beside its peers:
+the `auto_compact` catalog hook (on by default; tail share, reserve,
+hysteresis, minimum drop, standing focus) decides whether the context may
+trigger compaction, and the `compact_context` tool (T8 option B, now built)
+lets the model ask for one, with a focus, whether or not the hook is
+ticked -- the same split as `remember` / `recall`. ToolBox state api 4
+ticks the hook in older saves, so they keep compacting. Kept where Silk was already ahead:
+hysteresis, the minimum worth dropping, the window-relative reserve, no
+compaction on an unknown window, and D41's prefill accounting. Not built:
+a canvas button for `compact_now()` (the Agent node has no seam for an
+out-of-run request yet).
+
 The declaration here was the requirement, not the code — unlike G1–G13
 (machinery declared, implementation missing), compaction was not declared
 anywhere in the codebase; it was entirely absent. The requirement is on
@@ -1242,7 +1265,8 @@ What is deliberately unsettled:
 
 **Resolved** by spec §12: option C (loop-policy auto-compaction) in full,
 with option A (the spill hook) alongside — and per **G15** / spec D41, A
-carries the load first because it is prefix-preserving. Option B (an agent-invoked
+carries the load first because it is prefix-preserving. **Option B built
+2026-11-02** as the `compact_context` tool (tool group `context`). Option B (an agent-invoked
 `compact_context` tool) stays deferred as an escape hatch, only if the model
 itself needs to ask for a reset. Stub kept for inbound links; the
 implementation checklist and the interim `UsageLimits.input_tokens`
@@ -1261,7 +1285,7 @@ scratch.
 | Durable session runtime (write-once entry tree, mutable registers, usage ledger, crash-position recovery) | Silk runs are atomic and graph-pulsed; a dead run is re-pulsed. The product shape excludes the problem. D30 makes a run *block* on a human without making it resumable: a run that dies while waiting loses the prompt and is re-pulsed like any other. |
 | Mid-run steering / follow-up queues | Runs stay atomic. D30 does put a human decision inside a run, but an approval gate is not a steering channel: it answers one yes/no about one specific call and accepts no new instructions. Revisit only if users need to redirect a run in flight. |
 | Multiple interception generations (callbacks → events → durable hooks) | One audience (graph authors), one surface. Revisit only if third-party Python extension packs become a real demand. |
-| Lanes / continuable subagents | Need a session substrate; one-shot delegation with depth/cycle guards and a shared budget covers the current fan-out (T3 aside). The subagent question this row used to leave open — who answers an approval prompt raised inside a subagent — is now closed: a subagent has no node UI of its own (spec D48), so under D36 it denies, and gated tools reach it only through a durable grant. |
+| Lanes / continuable subagents | Need a session substrate; one-shot delegation with depth/cycle guards and a shared budget covers the current fan-out (T3 aside). The subagent question this row used to leave open — who answers an approval prompt raised inside a subagent — was closed as "a subagent has no node UI of its own (spec D48), so under D36 it denies". **Revised 2026-11-02:** a delegated worker now asks the human its parent run asks, through `RelaySeam` (`functions/decision_seam.py`), labelled with the delegation chain; the parent seam's timeout, Stop and failure paths decide, so D36 holds. With no parent seam a worker still denies, and a durable grant is still the headless route. |
 | Token metering (per-session replay folds, revisioned measurements) | Unnecessary at stock bounds. (Compaction was on this list until 2026-07-25; it is now a required mechanism, specified in spec §12 and tracked as [G14](#g14-compaction-is-not-implemented-required-mechanism).) |
 | ~~KV-cache management~~ | **Removed 2026-08-30.** Held to be unnecessary because Silk was thought not to depend on cross-request prompt caching. It does — locally the dependency is paid in latency rather than money. Now [G15](#g15-prompt-prefix-reuse-is-unconfigured-and-unmeasured) / spec D41, D44, I11. |
 | ~~Single model backend~~ | **Removed 2026-08-30.** `GGUFModelPool` assumes one spawned local server; the pool is to hold N named backends, local or remote (litellm and similar). Now [G11](#g11-openaiclientmock-is-the-production-client) / spec D45. |

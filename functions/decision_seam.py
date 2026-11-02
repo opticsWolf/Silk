@@ -67,7 +67,8 @@ __all__ = [
     "CAUSE_ANSWERED", "CAUSE_CANCELLED", "CAUSE_NO_ANSWERER",
     "CAUSE_TIMEOUT", "CAUSE_TRANSPORT", "DEFAULT_TIMEOUT_S", "KINDS",
     "KIND_ACKNOWLEDGE", "KIND_APPROVAL", "KIND_RELEASE", "Decision",
-    "DecisionRequest", "DecisionSeam", "DriveGate", "new_decision_id",
+    "DecisionRequest", "DecisionSeam", "DriveGate", "RelaySeam",
+    "new_decision_id",
 ]
 
 #: The questions one seam serves (D50). All three are the same block, the
@@ -218,6 +219,43 @@ class DecisionSeam(BlockingSeam):
             decision_id=request.decision_id, kind=request.kind,
             approved=False, cause=cause, reason=reason,
         )
+
+
+class RelaySeam:
+    """A delegated worker's seam: it asks the human its parent run asks.
+
+    A worker has no node UI of its own (D48), so with no seam every gated
+    call it made was refused with ``no_answerer``. The relay forwards the
+    request to the parent run's seam instead, with the delegation chain in
+    the prompt and in ``detail["delegation_chain"]``, so the card says who
+    is asking. The answer, the timeout, Stop and every failure path are the
+    parent seam's: the relay adds no waiting of its own, so D36 and D49 hold
+    unchanged. Nested delegation relays to the top run's seam once, never
+    through a relay of a relay.
+    """
+
+    def __init__(self, parent: Any, chain: list[str]) -> None:
+        while isinstance(parent, RelaySeam):
+            parent = parent.parent
+        self.parent = parent
+        self.chain = list(chain)
+
+    def await_decision(
+        self,
+        request: DecisionRequest,
+        timeout: Optional[float] = None,
+    ) -> Decision:
+        """Forward *request* to the parent seam, labelled. **Worker thread.**"""
+        label = " > ".join(self.chain)
+        relayed = DecisionRequest(
+            decision_id=request.decision_id,
+            kind=request.kind,
+            prompt=f"[{label}] {request.prompt}" if label else request.prompt,
+            tool_name=request.tool_name,
+            tool_args=dict(request.tool_args),
+            detail={**request.detail, "delegation_chain": list(self.chain)},
+        )
+        return self.parent.await_decision(relayed, timeout=timeout)
 
 
 def new_decision_id() -> str:

@@ -38,7 +38,12 @@ from .hooks import (
     HOOK_ON_OUTPUT_PROCESS_ERROR,
     HOOK_ON_OUTPUT_VALIDATE_ERROR,
 )
-from .compaction import REASON_OVERFLOW, REASON_PRESSURE
+from .compaction import (
+    REASON_MANUAL,
+    REASON_OVERFLOW,
+    REASON_PRESSURE,
+    take_compaction_request,
+)
 from weave.logger import get_logger
 
 from .model_errors import OVERFLOW, RETRYABLE, classify_model_error
@@ -320,7 +325,7 @@ class AgentLoop:
         )
 
     def _maybe_compact(
-        self, *, reason: str, force: bool = False,
+        self, *, reason: str, force: bool = False, focus: Optional[str] = None,
     ) -> Generator[AgentEvent, None, bool]:
         """Compact if the compactor agrees; yield the event if it happened.
 
@@ -335,7 +340,7 @@ class AgentLoop:
         try:
             event = self.compactor.maybe_compact(
                 self.engine, reason=reason, force=force,
-                context_length=self.context_length(),
+                context_length=self.context_length(), focus=focus,
             )
         except Exception:      # noqa: BLE001 - compaction never kills a run
             return False
@@ -545,7 +550,16 @@ class AgentLoop:
             #    fails: the seam below used to be where a full context
             #    ended the run, and D24 makes it the place where the run
             #    makes room and carries on. A no-op without a compactor.
-            yield from self._maybe_compact(reason=REASON_PRESSURE)
+            #    The model may also have asked for it last round, through
+            #    the compact_context tool; that request stands in for the
+            #    pressure check, since it compacts whatever the pressure.
+            requested = take_compaction_request(self.toolbox)
+            if requested is not None:
+                yield from self._maybe_compact(
+                    reason=REASON_MANUAL, force=True, focus=requested or None,
+                )
+            else:
+                yield from self._maybe_compact(reason=REASON_PRESSURE)
 
             # 1. Usage gates before each request. Separately, because a
             #    shared `try` made both breaches report limit_type
@@ -668,6 +682,24 @@ class AgentLoop:
                     truncated=True,
                 )
                 return
+
+            if (
+                not self._overflow_compacted
+                and _stopped_early_by_length(stats, gen_params)
+                and (yield from self._maybe_compact(
+                    reason=REASON_OVERFLOW, force=True,
+                ))
+            ):
+                # The answer ran into the context window rather than into
+                # the token cap it was given: the same verdict as a
+                # classified overflow, reached by the server finishing
+                # instead of refusing. Half an answer is dropped, not
+                # persisted, and the round is asked again on the room the
+                # compaction just made -- once per run, like the overflow
+                # retry, so a model that always rambles cannot loop here.
+                self._overflow_compacted = True
+                full_text = ""
+                continue
 
             self._final_text = full_text
             self._emit(
@@ -876,3 +908,30 @@ def _correct_schema(body: str) -> Optional[str]:
     if isinstance(data, dict) and "correct_schema" in data:
         return json.dumps(data["correct_schema"], indent=2)
     return None
+
+
+def _stopped_early_by_length(
+    stats: dict[str, Any], gen_params: dict[str, Any],
+) -> bool:
+    """Whether a ``length`` finish means the context ran out, not the cap.
+
+    A ``length`` finish is ambiguous: the answer hit the ``max_tokens`` it
+    was given (the caller's choice, and a complete request), or the prompt
+    plus the answer hit the context window (an overflow that arrived as a
+    finish). It is the second only when the answer stopped short of a cap
+    that was set, or when no cap was set at all. Unknown output size with
+    a cap set reads as the first -- compacting on a guess costs two
+    prefills.
+    """
+    if stats.get("finish_reason") != "length":
+        return False
+    cap = gen_params.get("max_tokens") if gen_params else None
+    if not cap:
+        return True
+    produced = stats.get("tokens")
+    if produced is None:
+        return False
+    try:
+        return int(produced) < int(cap)
+    except (TypeError, ValueError):
+        return False

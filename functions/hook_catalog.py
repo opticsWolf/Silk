@@ -55,6 +55,7 @@ from .classifier_hooks import (
 )
 from .grants import GrantStore
 from .ledger import HistoryLedger, available as ledger_available
+from .event_sink import DEFAULT_KEEP_RUNS, DEFAULT_MAX_LINES
 from .remember import attach_remember_hook
 from .spill import (
     DEFAULT_HEAD,
@@ -592,6 +593,84 @@ class RememberConfig(BaseModel):
     )
 
 
+class AutoCompactConfig(BaseModel):
+    """When the context window triggers a compaction, and what it keeps.
+
+    Ticked, a run summarizes its older turns when the prompt nears the
+    window (spec §12) instead of ending there. Unticked, only the model's
+    own ``compact_context`` tool compacts.
+    """
+
+    keep_recent_pct: int = Field(
+        30, ge=5, le=60,
+        description=(
+            "Share of the context window kept word for word, newest turns "
+            "first. The rest is summarized."
+        ),
+    )
+    reserve_pct: int = Field(
+        25, ge=5, le=50,
+        description=(
+            "Compact once the prompt fills all but this share of the window. "
+            "The answer and the next tool results still have to fit."
+        ),
+    )
+    hysteresis_pct: int = Field(
+        10, ge=0, le=50,
+        description=(
+            "How far, as a share of the window, the prompt must grow after a "
+            "compaction before the next one. Each costs two full prefills."
+        ),
+    )
+    min_dropped: int = Field(
+        4, ge=1, le=64,
+        description="Skip a compaction that would drop fewer turns than this.",
+    )
+    focus: str = Field(
+        "",
+        description=(
+            "What every summary should be sure to keep, e.g. 'every measured "
+            "value'. Empty for none."
+        ),
+    )
+
+
+def _make_auto_compact(_config: Optional[BaseModel] = None) -> HookMap:
+    """Inert: compaction is the loop's, not an event's, so the hook leaves
+    its settings on the toolbox in :func:`attach_catalog_hooks` and the
+    Agent node builds the run's compactor from them."""
+    return {}
+
+
+class RunLogConfig(BaseModel):
+    """A durable, metadata-only record of every run (T7, D85).
+
+    One JSONL file per run in ``~/.weave/silk/runs/``: which events
+    happened, in what order, how big -- never prompts, completions or tool
+    arguments. Compaction drops turns permanently, so this is the only
+    account of a long run's middle.
+    """
+
+    keep_runs: int = Field(
+        DEFAULT_KEEP_RUNS, ge=1, le=10_000,
+        description="Keep the newest this many run files; older ones go.",
+    )
+    max_lines: int = Field(
+        DEFAULT_MAX_LINES, ge=100, le=1_000_000,
+        description=(
+            "Stop writing a run's file after this many events, so one "
+            "runaway loop cannot fill a disk."
+        ),
+    )
+
+
+def _make_run_log(_config: Optional[BaseModel] = None) -> HookMap:
+    """Inert: the log records the Agent's event stream, which no hook event
+    carries whole, so the hook leaves its settings on the toolbox in
+    :func:`attach_catalog_hooks` and the Agent node opens the sink."""
+    return {}
+
+
 def _make_remember(_config: Optional[BaseModel] = None) -> HookMap:
     """Inert: the remember hook needs the history ledger, so it is wired by
     :func:`attach_catalog_hooks` rather than the factory path."""
@@ -747,6 +826,26 @@ HOOK_CATALOG: dict[str, HookSpec] = {
             config_model=SpillConfig,
         ),
         HookSpec(
+            name="auto_compact",
+            description=(
+                "Summarize older turns when the context nears the model's "
+                "window, instead of ending the run there. Unticked, only "
+                "the compact_context tool compacts."
+            ),
+            factory=_make_auto_compact,
+            config_model=AutoCompactConfig,
+        ),
+        HookSpec(
+            name="run_log",
+            description=(
+                "Write one metadata-only JSONL file per run to "
+                "~/.weave/silk/runs/: which events, in what order, how big. "
+                "No prompts, completions or tool arguments."
+            ),
+            factory=_make_run_log,
+            config_model=RunLogConfig,
+        ),
+        HookSpec(
             name="remember",
             description=(
                 "Write this run's turns into the history ledger, so recall "
@@ -807,14 +906,20 @@ GATING_HOOKS: frozenset[str] = frozenset({
     "tool_approval", "signoff", "tool_budget", "task_audit",
 })
 
-#: What a fresh ToolBox starts with: the whole catalog minus the gates.
+#: Hooks that write a file on the user's disk nobody asked for. Not gates,
+#: but not on by default either: the honest default for a file outside the
+#: project is "only when asked" (D85).
+OPT_IN_HOOKS: frozenset[str] = frozenset({"run_log"})
+
+#: What a fresh ToolBox starts with: the whole catalog minus the gates
+#: and the opt-ins.
 #: Observation is the thing people regret not having *after* a run, and
 #: a hook that was never ticked leaves no trace to go back to. Each of
 #: these degrades on its own when its dependency is missing -- `remember`
 #: without the ledger extra logs that it did not attach rather than
 #: failing the build.
 DEFAULT_HOOKS: tuple[str, ...] = tuple(
-    sorted(set(HOOK_CATALOG) - GATING_HOOKS)
+    sorted(set(HOOK_CATALOG) - GATING_HOOKS - OPT_IN_HOOKS)
 )
 
 
@@ -870,6 +975,61 @@ def build_hooks(
         for event, callbacks in hook_map.items():
             merged.setdefault(event, []).extend(callbacks)
     return merged
+
+
+# ── what a Role may say about the ToolBox-wired hooks ──────────────────────
+
+#: Hooks a Role's tick can *tighten* or *adjust*. The ToolBox owns them
+#: (they need the box to be wired); a Role layers on top for its own runs:
+#: the two gates only ever ask more (:func:`attach_role_gate`), and
+#: compaction takes the Role's settings in place of the box's.
+ROLE_OVERLAY_HOOKS: frozenset[str] = frozenset({
+    "tool_approval", "signoff", "auto_compact",
+})
+
+#: Hooks that only the ToolBox can wire and a Role cannot change: what they
+#: do is a property of the box (its folder, its memory, its disk), not of
+#: who is using it. Shown greyed out on a Role, and ignored there.
+TOOLBOX_ONLY_HOOKS: frozenset[str] = frozenset({"spill", "remember", "run_log"})
+
+
+def attach_role_gate(
+    toolbox: "ToolBox",
+    names: Iterable[str],
+    configs: Optional[Mapping[str, Mapping[str, Any]]] = None,
+) -> Optional[Any]:
+    """Install a Role's approval gate on *toolbox*; returns its entry.
+
+    Only ever stricter than the box: it sits just inside the box's own gate
+    and asks only where the Role's level for a call beats the box's (see
+    ``attach_approval_gate(beneath=...)``). ``None`` when the Role ticks
+    neither gate, or its policies gate nothing. The caller removes the
+    entry when the Role's run ends.
+    """
+    names = {str(n) for n in names}
+    if not names & {"signoff", "tool_approval"}:
+        return None
+    from .approval import APPROVAL_POLICY_ATTR
+
+    task_policy = None
+    if "signoff" in names:
+        cfg = resolve_config(HOOK_CATALOG["signoff"], (configs or {}).get("signoff"))
+        task_policy = signoff_policy_from_config(cfg)  # type: ignore[arg-type]
+    tool_policy = None
+    durable = None
+    if "tool_approval" in names:
+        tcfg = resolve_config(HOOK_CATALOG["tool_approval"],
+                              (configs or {}).get("tool_approval"))
+        tool_policy = tool_policy_from_config(tcfg)  # type: ignore[arg-type]
+        if getattr(tcfg, "durable_grants", False):
+            durable = GrantStore()
+    sandbox = getattr(toolbox, "base_sandbox", None)
+    root = str(getattr(sandbox, "root_dir", "") or "")
+    beneath = getattr(toolbox, APPROVAL_POLICY_ATTR, None) or {}
+    return attach_approval_gate(
+        toolbox, sandbox, task_policy=task_policy, tool_policy=tool_policy,
+        grants=durable, project_root=root, beneath=dict(beneath),
+    )
 
 
 def _memory_for(toolbox: "ToolBox", sandbox: "Optional[FileToolSandbox]") -> Any:
@@ -932,6 +1092,17 @@ def attach_catalog_hooks(
                 n.strip() for n in str(scfg.tools or "").split(",") if n.strip()  # type: ignore[union-attr]
             ),
         )
+
+    if "auto_compact" in names:
+        from .compaction import COMPACTION_CONFIG_ATTR
+        ccfg = resolve_config(HOOK_CATALOG["auto_compact"],
+                              (configs or {}).get("auto_compact"))
+        setattr(toolbox, COMPACTION_CONFIG_ATTR, ccfg.model_dump())  # type: ignore[union-attr]
+
+    if "run_log" in names:
+        lcfg = resolve_config(HOOK_CATALOG["run_log"],
+                              (configs or {}).get("run_log"))
+        toolbox.run_log_config = lcfg.model_dump()  # type: ignore[attr-defined,union-attr]
 
     if "remember" in names:
         rcfg = resolve_config(HOOK_CATALOG["remember"],

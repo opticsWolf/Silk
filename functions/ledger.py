@@ -817,14 +817,50 @@ def _now_dt():
 
 
 def _put(db: Any, concept_id: str, title: str, payload: dict) -> None:
-    """Upsert one concept. Doctrine III: this supersedes, never rewrites."""
+    """Upsert one concept. Doctrine III: this supersedes, never rewrites.
+
+    Since macrame 0.19.2 (D-291) a concept may hold only one open valid
+    interval, so a new version no longer closes the old one implicitly. The
+    open version is closed at the new version's start first, with its own
+    title and content, then the new one is opened. Two writes, not one
+    stamp: macrame has no mixed atomic batch yet, and a crash between them
+    leaves the concept closed, which the next write reopens.
+    """
     import json
 
+    content = json.dumps(payload, ensure_ascii=False)
+    start = _now_dt()
+    try:
+        db.upsert_concept(_macrame.ConceptUpsert(
+            id=concept_id, title=title or concept_id,
+            content=content, valid_from=start,
+        ))
+        return
+    except Exception as exc:                 # noqa: BLE001 - narrowed below
+        single_open = getattr(_macrame, "ConceptSingleOpenError", None)
+        if single_open is None or not isinstance(exc, single_open):
+            raise
+    live = _open_version(db, concept_id)
+    if live is None:                          # pragma: no cover - raced away
+        raise RuntimeError(f"{concept_id}: refused as single-open, but no open version found")
+    if start <= live.valid_from:
+        from datetime import timedelta
+        start = live.valid_from + timedelta(microseconds=1)
+    db.upsert_concept(_macrame.ConceptUpsert(
+        id=concept_id, title=live.title, content=live.content or "",
+        valid_from=live.valid_from, valid_to=start,
+        embedding_model=live.embedding_model,
+    ))
     db.upsert_concept(_macrame.ConceptUpsert(
         id=concept_id, title=title or concept_id,
-        content=json.dumps(payload, ensure_ascii=False),
-        valid_from=_now_dt(),
+        content=content, valid_from=start,
     ))
+
+
+def _open_version(db: Any, concept_id: str) -> Any:
+    """The concept's open version, with its interval and content."""
+    sub = db.load_subgraph(concept_id, 0, 1 << 20, content=True)
+    return sub.node(concept_id)
 
 
 def _ensure_agent(db: Any, actor: str) -> None:

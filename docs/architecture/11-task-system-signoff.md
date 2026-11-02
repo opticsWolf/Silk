@@ -404,6 +404,15 @@ rather than with sleeps. The property it exists to pin is **zero effects
 while parked** — a held tool call that ran anyway would satisfy every
 assertion about the decision and still be a disaster.
 
+`RelaySeam` is a delegated worker's seam. The orchestrator binds one on the
+worker's toolset for the length of a delegation when the parent run has a
+seam and the worker has none, and restores the worker's own value after,
+next to depth and chain. It forwards each request to the parent seam with
+`[lead > worker]` in the prompt and the chain in `detail["delegation_chain"]`,
+so the human the parent is already talking to answers it. It has no waiting
+of its own: the answer, the timeout, Stop and every failure are the parent
+seam's. Nested delegation relays to the top seam once.
+
 ### `functions/decision_registry.py` + the Decision Inbox dock (D59)
 
 The seam above is per node, which is right — the question is asked from
