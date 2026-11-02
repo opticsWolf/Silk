@@ -543,8 +543,13 @@ as a share of the window (30 %) instead of 8 turns; read/modified file
 lists recorded from tool calls by code; a summary cut off by `length` or a
 missing finish reason is rejected; a `length` finish short of the token cap
 counts as an overflow (once per run, like D40's retry); `compact_now()`
-with a one-off focus; and Role settings for on/off, the tail share and a
-standing focus (Role node version 2). Kept where Silk was already ahead:
+with a one-off focus. Configuration lives on the ToolBox, beside its peers:
+the `auto_compact` catalog hook (on by default; tail share, reserve,
+hysteresis, minimum drop, standing focus) decides whether the context may
+trigger compaction, and the `compact_context` tool (T8 option B, now built)
+lets the model ask for one, with a focus, whether or not the hook is
+ticked -- the same split as `remember` / `recall`. ToolBox state api 4
+ticks the hook in older saves, so they keep compacting. Kept where Silk was already ahead:
 hysteresis, the minimum worth dropping, the window-relative reserve, no
 compaction on an unknown window, and D41's prefill accounting. Not built:
 a canvas button for `compact_now()` (the Agent node has no seam for an
@@ -1260,7 +1265,8 @@ What is deliberately unsettled:
 
 **Resolved** by spec §12: option C (loop-policy auto-compaction) in full,
 with option A (the spill hook) alongside — and per **G15** / spec D41, A
-carries the load first because it is prefix-preserving. Option B (an agent-invoked
+carries the load first because it is prefix-preserving. **Option B built
+2026-11-02** as the `compact_context` tool (tool group `context`). Option B (an agent-invoked
 `compact_context` tool) stays deferred as an escape hatch, only if the model
 itself needs to ask for a reset. Stub kept for inbound links; the
 implementation checklist and the interim `UsageLimits.input_tokens`

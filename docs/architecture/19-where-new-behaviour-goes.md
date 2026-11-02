@@ -12,7 +12,7 @@
 | Keep the prompt small with a large tool suite | `DeferredCapability` + the `load_capability` tool (backed by `ToolSearch`) |
 | Swap the model backend | implement the `AgentEngine` protocol (reference: `GraphEngine`) — the loop is unchanged |
 | Add a tool-call transport | a transport beside `FenceTransport` / `NativeTransport` in `functions/tool_transport.py` |
-| Keep a long run inside the context window | the spill hook first (prefix-preserving, `functions/spill.py`), then a `Compactor` on the `AgentLoop` (`functions/compaction.py`) — in that order, because compaction costs two prefills (D41) |
+| Keep a long run inside the context window | the spill hook first (prefix-preserving, `functions/spill.py`), then a `Compactor` on the `AgentLoop` (`functions/compaction.py`) — in that order, because compaction costs two prefills (D41). Tune it on the ToolBox's `auto_compact` hook; let the model ask for one with the `compact_context` tool |
 | Rewrite what the model sees | `GraphEngine.replace_history_prefix` — the one non-appending history operation, and it refuses cuts that orphan a tool result (I9) |
 | Cap or shape a run | `UsageLimits` caps, `ReflectionConfig` retries, or an `OutputSchema` + validator on the final answer |
 | Add planning / audit behaviour | `SqliteTaskStore` operations + a `signoff` policy; surface it via the Plan Viewer node |

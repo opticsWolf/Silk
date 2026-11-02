@@ -35,6 +35,7 @@ from .tools.file_read import attach_file_read_tools
 from .tools.file_write import attach_file_write_tools
 from .tools.graph_authoring import attach_graph_tools
 from .tools.node_dev_tools import attach_node_dev_tools
+from .tools.context_tools import attach_context_tools
 from .tools.recall_tool import attach_recall_tool
 from .tools.ripgrep_tool import attach_ripgrep_tools
 from .tools.suite_tools import attach_suite_tools
@@ -57,6 +58,9 @@ GROUP_ATTACHERS: Dict[str, Callable[..., None]] = {
     # signed off; its floor asks before code loads into Weave, every time.
     "node_dev": attach_node_dev_tools,
     "recall": attach_recall_tool,
+    # The model's own request for a compaction (spec §12, T8 option B);
+    # the automatic kind is the ToolBox's auto_compact hook.
+    "context": attach_context_tools,
 }
 
 #: Groups whose tools modify the filesystem. The sandbox's write flag is

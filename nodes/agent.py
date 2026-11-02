@@ -68,7 +68,7 @@ from ..functions.main_thread_call import (
     DEFAULT_TIMEOUT_S as CANVAS_TIMEOUT_S, MainThreadCall,
 )
 from .graph_canvas import CanvasAuthor
-from ..functions.compaction import Compactor
+from ..functions.compaction import compactor_for
 from ..functions.file_grants import resolve_grants
 from ..functions.decision_registry import REGISTRY as DECISIONS
 from ..functions.decision_seam import (
@@ -907,9 +907,9 @@ class SilkAgentNode(ThreadedManualNode):
                 # and stays inert when the backend does not report a
                 # context window, because there is then no pressure to
                 # measure and compacting on a hunch costs two prefills.
-                # The role may turn it off or steer it; a role that says
-                # nothing gets the defaults.
-                compactor=_compactor_for(role),
+                # Configured by the ToolBox's auto_compact hook; without
+                # it, only the compact_context tool compacts.
+                compactor=compactor_for(toolset),
             )
 
             # Build gen_params from internal defaults (no limit on tokens).
@@ -1169,15 +1169,3 @@ class SilkAgentNode(ThreadedManualNode):
         """
         return compose_system_prompt(base, role, toolset,
                                      native_tools=native_tools)
-
-
-def _compactor_for(role: Any) -> Optional[Compactor]:
-    """The role's compactor; the defaults for a role that predates the field."""
-    make = getattr(role, "make_compactor", None)
-    if make is None:
-        return Compactor()
-    try:
-        return make()
-    except Exception as exc:      # noqa: BLE001 - a bad setting is not a dead run
-        log.warning(f"Compaction settings ignored ({exc}); using the defaults.")
-        return Compactor()

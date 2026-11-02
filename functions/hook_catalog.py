@@ -592,6 +592,55 @@ class RememberConfig(BaseModel):
     )
 
 
+class AutoCompactConfig(BaseModel):
+    """When the context window triggers a compaction, and what it keeps.
+
+    Ticked, a run summarizes its older turns when the prompt nears the
+    window (spec §12) instead of ending there. Unticked, only the model's
+    own ``compact_context`` tool compacts.
+    """
+
+    keep_recent_pct: int = Field(
+        30, ge=5, le=60,
+        description=(
+            "Share of the context window kept word for word, newest turns "
+            "first. The rest is summarized."
+        ),
+    )
+    reserve_pct: int = Field(
+        25, ge=5, le=50,
+        description=(
+            "Compact once the prompt fills all but this share of the window. "
+            "The answer and the next tool results still have to fit."
+        ),
+    )
+    hysteresis_pct: int = Field(
+        10, ge=0, le=50,
+        description=(
+            "How far, as a share of the window, the prompt must grow after a "
+            "compaction before the next one. Each costs two full prefills."
+        ),
+    )
+    min_dropped: int = Field(
+        4, ge=1, le=64,
+        description="Skip a compaction that would drop fewer turns than this.",
+    )
+    focus: str = Field(
+        "",
+        description=(
+            "What every summary should be sure to keep, e.g. 'every measured "
+            "value'. Empty for none."
+        ),
+    )
+
+
+def _make_auto_compact(_config: Optional[BaseModel] = None) -> HookMap:
+    """Inert: compaction is the loop's, not an event's, so the hook leaves
+    its settings on the toolbox in :func:`attach_catalog_hooks` and the
+    Agent node builds the run's compactor from them."""
+    return {}
+
+
 def _make_remember(_config: Optional[BaseModel] = None) -> HookMap:
     """Inert: the remember hook needs the history ledger, so it is wired by
     :func:`attach_catalog_hooks` rather than the factory path."""
@@ -745,6 +794,16 @@ HOOK_CATALOG: dict[str, HookSpec] = {
             ),
             factory=_make_spill,
             config_model=SpillConfig,
+        ),
+        HookSpec(
+            name="auto_compact",
+            description=(
+                "Summarize older turns when the context nears the model's "
+                "window, instead of ending the run there. Unticked, only "
+                "the compact_context tool compacts."
+            ),
+            factory=_make_auto_compact,
+            config_model=AutoCompactConfig,
         ),
         HookSpec(
             name="remember",
@@ -932,6 +991,12 @@ def attach_catalog_hooks(
                 n.strip() for n in str(scfg.tools or "").split(",") if n.strip()  # type: ignore[union-attr]
             ),
         )
+
+    if "auto_compact" in names:
+        from .compaction import COMPACTION_CONFIG_ATTR
+        ccfg = resolve_config(HOOK_CATALOG["auto_compact"],
+                              (configs or {}).get("auto_compact"))
+        setattr(toolbox, COMPACTION_CONFIG_ATTR, ccfg.model_dump())  # type: ignore[union-attr]
 
     if "remember" in names:
         rcfg = resolve_config(HOOK_CATALOG["remember"],

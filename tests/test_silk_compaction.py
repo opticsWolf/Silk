@@ -756,34 +756,108 @@ def test_a_length_stop_without_a_compactor_is_kept_as_before():
     assert engine.requests == 1 and events[-1].text == "half"
 
 
-# -- the role carries the settings --------------------------------------------
+# -- configured on the ToolBox: the auto_compact hook and the tool -----------
 
 
-def test_a_role_can_turn_compaction_off_and_steer_it():
-    from silk.functions.role import Role
+def _box(hooks=(), configs=None, tools=False):
+    from silk.functions.hook_catalog import attach_catalog_hooks
+    from silk.functions.tool_box import ToolBox
+    from silk.functions.tools.context_tools import attach_context_tools
 
-    assert Role(id="r").make_compactor() is not None, "on by default"
-    assert Role(id="r", compaction={"enabled": False}).make_compactor() is None
-    c = Role(id="r", compaction={"keep_recent_ratio": 0.4,
-                                 "focus": "keep values"}).make_compactor()
-    assert c.keep_recent_ratio == 0.4 and c.focus == "keep values"
-    assert Role(id="r", compaction={"keep_recent_ratio": 5}).make_compactor(
-        ).keep_recent_ratio == 0.60, "clamped so something is left to drop"
-
-
-def test_role_compaction_settings_round_trip():
-    from silk.functions.role import Role
-
-    role = Role(id="r", compaction={"enabled": False, "focus": "f"})
-    assert Role.from_dict(role.to_dict()).compaction == role.compaction
-    assert Role.from_dict({"id": "old"}).compaction == {}, "pre-field roles"
+    box = ToolBox()
+    if tools:
+        attach_context_tools(box, None)
+    if hooks:
+        attach_catalog_hooks(box, None, names=hooks, configs=configs or {})
+    return box
 
 
-def test_role_node_inputs_map_to_settings_with_old_graphs_on_defaults():
-    from silk.functions.role import compaction_settings
+def test_auto_compact_is_a_default_hook_and_not_a_gate():
+    from silk.functions.hook_catalog import DEFAULT_HOOKS, GATING_HOOKS
 
-    assert compaction_settings({}) == {
-        "enabled": True, "keep_recent_ratio": 0.30, "focus": ""}
-    assert compaction_settings({"auto_compact": False, "keep_recent_pct": 45,
-                                "compaction_focus": " keep ids "}) == {
-        "enabled": False, "keep_recent_ratio": 0.45, "focus": "keep ids"}
+    assert "auto_compact" in DEFAULT_HOOKS and "auto_compact" not in GATING_HOOKS
+
+
+def test_no_toolbox_compacts_automatically_with_the_defaults():
+    from silk.functions.compaction import compactor_for
+
+    c = compactor_for(None)
+    assert c.auto and c.keep_recent_ratio == 0.30
+
+
+def test_the_hook_settings_reach_the_compactor():
+    from silk.functions.compaction import compactor_for
+
+    box = _box(["auto_compact"], {"auto_compact": {
+        "keep_recent_pct": 40, "reserve_pct": 20, "hysteresis_pct": 5,
+        "min_dropped": 2, "focus": "keep every thickness"}})
+    c = compactor_for(box)
+    assert c.auto
+    assert (c.keep_recent_ratio, c.reserve_ratio, c.hysteresis, c.min_dropped) == (
+        0.40, 0.20, 0.05, 2)
+    assert c.focus == "keep every thickness"
+
+
+def test_an_invalid_hook_config_falls_back_to_the_defaults():
+    from silk.functions.compaction import compactor_for
+
+    c = compactor_for(_box(["auto_compact"], {"auto_compact": {"keep_recent_pct": 99}}))
+    assert c.auto and c.keep_recent_ratio == 0.30
+
+
+def test_a_toolbox_without_the_hook_never_compacts_on_its_own():
+    from silk.functions.compaction import compactor_for
+
+    c = compactor_for(_box(["timing"]))
+    assert c.auto is False
+    engine = FakeEngine(_history(8), context=8000, tokens=7900)
+    assert c.maybe_compact(engine) is None, "no pressure trigger"
+    assert c.maybe_compact(engine, reason="overflow", force=True) is None, (
+        "no overflow trigger either"
+    )
+    c.keep_recent = 4                    # the doubles' turns are tiny
+    assert c.compact_now(engine) is not None, "an explicit request still works"
+
+
+def test_the_tool_records_a_request_the_loop_then_takes():
+    from silk.functions.compaction import take_compaction_request
+
+    box = _box(tools=True)
+    assert take_compaction_request(box) is None
+    out = box.tools["compact_context"]["executable"](focus="  the failing tests ")
+    assert out.ok
+    box.tools["compact_context"]["executable"](focus="")
+    assert take_compaction_request(box) == "the failing tests", (
+        "two calls are one compaction; the last non-empty focus wins"
+    )
+    assert take_compaction_request(box) is None, "taken once"
+
+
+def test_the_loop_compacts_before_the_next_request_when_the_tool_asked():
+    box = _box(tools=True)               # no auto_compact: only the tool
+    from silk.functions.compaction import compactor_for
+
+    engine = LoopEngine(
+        _history(8), context=100_000, tokens=100,
+        replies=['```tool_call\n{"name": "compact_context", '
+                 '"arguments": {"focus": "keep the ids"}}\n```', "done"],
+    )
+    loop = AgentLoop(engine, box, compactor=compactor_for(box))
+    loop.compactor.keep_recent = 4
+    events = _events(loop)
+
+    compactions = [e for e in events if isinstance(e, EventCompaction)]
+    assert len(compactions) == 1
+    assert "Additional focus: keep the ids" in engine.summarized[0]
+    assert engine.requests == 2 and isinstance(events[-1], EventRunResult)
+
+
+def test_an_old_toolbox_keeps_compacting_after_migration():
+    from silk.nodes.toolbox import SilkToolBoxNode
+
+    state = {"widget_data": {"hooks_config": {"names": ["timing"], "configs": {}}},
+             "seen_tools": ["read_file"]}
+    out = SilkToolBoxNode.migrate_state(state, 3)
+    assert out["widget_data"]["hooks_config"]["names"] == ["timing", "auto_compact"]
+    assert "compact_context" in out["seen_tools"], "offered, so not auto-ticked"
+    assert SilkToolBoxNode.node_state_api == 4

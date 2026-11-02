@@ -30,7 +30,7 @@ from ..functions.file_grants import FileGrants
 from ..functions.hook_catalog import build_hooks
 from ..functions.port_text import text_input
 from ..functions.presets import PresetStore, RolePreset
-from ..functions.role import Role, ToolSelector, compaction_settings
+from ..functions.role import Role, ToolSelector
 from ..functions.toolset_build import tool_catalog, with_port_tools
 from ..widgets.hook_select import HookSelectWidget
 from ..widgets.preset_bar import PresetBarWidget
@@ -60,7 +60,7 @@ class SilkRoleNode(ActiveNode):
     node_icon: ClassVar[Optional[str]] = "text-recognition"
     vertical_size_policy: ClassVar[VerticalSizePolicy] = VerticalSizePolicy.FIT
     node_state_api = 1   # owns a hand-written state dict
-    node_version = 2     # bump on any state-shape change (G20); 2: compaction
+    node_version = 1     # bump on any state-shape change (G20)
 
     def __init__(self, title: str = "Silk Role", **kwargs: Any) -> None:
         super().__init__(title=title, **kwargs)
@@ -153,45 +153,6 @@ class SilkRoleNode(ActiveNode):
             datatype="int", default=16, add_to_layout=False,
         )
 
-        # History compaction (spec §12): on by default, as before. Saved
-        # graphs from node_version 1 carry none of these keys and restore
-        # to the defaults, which is exactly how they behaved.
-        self.chk_auto_compact = QCheckBox()
-        self.chk_auto_compact.setChecked(True)
-        self.chk_auto_compact.setToolTip(
-            "Summarize older turns when the context nears the model's window, "
-            "instead of ending the run there."
-        )
-        form.addRow("Auto-compact:", self.chk_auto_compact)
-        self._widget_core.register_widget(
-            "auto_compact", self.chk_auto_compact, role=PortRole.INTERNAL,
-            datatype="bool", default=True, add_to_layout=False,
-        )
-
-        self.spin_keep_recent = QSpinBox()
-        self.spin_keep_recent.setRange(5, 60)
-        self.spin_keep_recent.setValue(30)
-        self.spin_keep_recent.setSuffix(" %")
-        self.spin_keep_recent.setToolTip(
-            "Share of the context window kept word for word when compacting."
-        )
-        form.addRow("Keep Recent:", self.spin_keep_recent)
-        self._widget_core.register_widget(
-            "keep_recent_pct", self.spin_keep_recent, role=PortRole.INTERNAL,
-            datatype="int", default=30, add_to_layout=False,
-        )
-
-        self._edit_compaction_focus = QLineEdit()
-        self._edit_compaction_focus.setPlaceholderText(
-            "optional, e.g. keep every measured value"
-        )
-        form.addRow("Compaction Focus:", self._edit_compaction_focus)
-        self._widget_core.register_widget(
-            "compaction_focus", self._edit_compaction_focus,
-            role=PortRole.INTERNAL, datatype="string", default="",
-            policy=debounced(300), add_to_layout=False,
-        )
-
         # Behavioral hooks: installed by the RoleBinding on activation,
         # removed on deactivation — scoped to this role's runs only.
         # Value shape: {"names": [...], "configs": {name: {...}}}.
@@ -207,10 +168,6 @@ class SilkRoleNode(ActiveNode):
         self._widget_core.bind_visibility(
             trigger_port="allow_all",
             mapping={False: ["checked_tools", "max_risk"]},
-        )
-        self._widget_core.bind_visibility(
-            trigger_port="auto_compact",
-            mapping={True: ["keep_recent_pct", "compaction_focus"]},
         )
 
         # ── Mount ──
@@ -234,11 +191,6 @@ class SilkRoleNode(ActiveNode):
             "hook_configs": dict(
                 (self._widget_core.get_port_value("hooks_config") or {}).get("configs") or {}
             ),
-            "auto_compact": bool(self._widget_core.get_port_value("auto_compact")),
-            "keep_recent_pct": int(
-                self._widget_core.get_port_value("keep_recent_pct") or 30),
-            "compaction_focus": str(
-                self._widget_core.get_port_value("compaction_focus") or ""),
         }
 
     def _apply_preset(self, preset: RolePreset) -> None:
@@ -252,9 +204,6 @@ class SilkRoleNode(ActiveNode):
             "hooks_config",
             {"names": list(preset.hooks), "configs": dict(preset.hook_configs)},
         )
-        self._widget_core.apply_port_value("auto_compact", preset.auto_compact)
-        self._widget_core.apply_port_value("keep_recent_pct", preset.keep_recent_pct)
-        self._widget_core.apply_port_value("compaction_focus", preset.compaction_focus)
 
     # ── Worker thread ─────────────────────────────────────────────────
 
@@ -313,7 +262,6 @@ class SilkRoleNode(ActiveNode):
                 (inputs.get("hooks_config") or {}).get("configs") or {},
             ),
             file_grants=grants,
-            compaction=compaction_settings(inputs),
         )
         return {"role": role, "permissions": grants}
 

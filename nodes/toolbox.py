@@ -96,8 +96,8 @@ class SilkToolBoxNode(ActiveNode):
     node_tags: ClassVar[Optional[List[str]]] = ["silk", "agent", "tools", "sandbox", "llm"]
     node_icon: ClassVar[Optional[str]] = "grid-dots"
     vertical_size_policy: ClassVar[VerticalSizePolicy] = VerticalSizePolicy.FIT
-    node_state_api = 3   # owns a hand-written state dict
-    node_version = 3     # bump on any state-shape change (G20)
+    node_state_api = 4   # owns a hand-written state dict
+    node_version = 4     # bump on any state-shape change (G20)
 
     def __init__(self, title: str = "Silk ToolBox", **kwargs: Any) -> None:
         super().__init__(title=title, **kwargs)
@@ -248,7 +248,15 @@ class SilkToolBoxNode(ActiveNode):
 
     @staticmethod
     def migrate_state(state: Dict[str, Any], from_version: int) -> Dict[str, Any]:
-        """api 1 → 3.
+        """api 1 → 4.
+
+        3 → 4: compaction moved onto the ToolBox. Before it, every run
+        compacted with the defaults whatever the box said; now the
+        ``auto_compact`` hook decides, so it is ticked in a saved box that
+        predates it -- an old graph keeps compacting as it did. The new
+        ``compact_context`` tool is marked as already offered and left
+        unticked, so loading a graph does not hand its agent a tool
+        nobody chose.
 
         1 → 2: the root picker's history is gone, seen_tools is new.
         2 → 3: the group checkboxes are gone. Their values are dropped
@@ -272,6 +280,17 @@ class SilkToolBoxNode(ActiveNode):
         if isinstance(values, dict):
             for key in SilkToolBoxNode._RETIRED_GROUP_KEYS:
                 values.pop(key, None)
+            hooks = values.get("hooks_config")
+            if isinstance(hooks, dict):
+                names = list(hooks.get("names") or ())
+                if "auto_compact" not in names:
+                    hooks["names"] = names + ["auto_compact"]
+        if "seen_tools" in state:
+            # Only when the tree had offered tools at all: an absent list
+            # means "offer everything fresh", which the first build does.
+            seen = list(state.get("seen_tools") or ())
+            if "compact_context" not in seen:
+                state["seen_tools"] = seen + ["compact_context"]
         return state
 
     def get_state(self) -> Dict[str, Any]:

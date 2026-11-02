@@ -21,8 +21,11 @@ finished with ``length`` short of its token cap, which is the same overflow
 arriving as a finish instead of a refusal. Never a generic stream error,
 because a dead ``llama_cpp.server`` produces one of those too, and
 answering that by spending a summarization request against the same dead
-server is the failure mode the classifier exists to prevent. A caller may
-also ask (:meth:`Compactor.compact_now`), which skips only the threshold.
+server is the failure mode the classifier exists to prevent. These are the
+*automatic* triggers, and the ToolBox's ``auto_compact`` hook switches them
+(:func:`compactor_for`). A caller may also ask -- :meth:`Compactor.compact_now`,
+or the model through the ``compact_context`` tool -- which skips only the
+threshold and works whether or not the hook is ticked.
 
 **What it keeps.** A tail sized in tokens (a share of the window), snapped
 to a round; a summary in fixed sections, so the next compaction can update
@@ -475,6 +478,11 @@ class Compactor:
     reserve_ratio: float = DEFAULT_RESERVE_RATIO
     hysteresis: float = DEFAULT_HYSTERESIS
     max_turn_chars: int = DEFAULT_MAX_TURN_CHARS
+    #: Whether the context itself may trigger a compaction: pressure at the
+    #: pre-request seam, an overflow error, an early ``length`` finish. Off,
+    #: only an explicit request (:meth:`compact_now`, the ``compact_context``
+    #: tool) compacts -- that is the ToolBox's ``auto_compact`` hook unticked.
+    auto: bool = True
     #: Steers what the summary keeps ("Additional focus: ..."), for every
     #: compaction of this run. :meth:`compact_now` can pass a one-off focus.
     focus: str = ""
@@ -556,6 +564,8 @@ class Compactor:
         the boundary rule, the summary, the atomic swap -- is identical,
         because an overflow is not a licence to cut carelessly.
         """
+        if not self.auto and reason != REASON_MANUAL:
+            return None
         if not force and not self.should_compact(
             engine, context_length=context_length
         ):
@@ -751,3 +761,53 @@ def _tokens(engine: Any) -> Optional[int]:
 def _estimate_chars(text: str) -> int:
     """The usual four-characters-a-token approximation, for a custom summarizer."""
     return max(1, len(text) // 4)
+
+
+# -- where the settings come from -------------------------------------------
+
+#: Where the ToolBox's ``auto_compact`` hook leaves its settings, and where
+#: the ``compact_context`` tool leaves its requests. Both on the toolbox,
+#: because that is what a derived ToolSet rebuilds from its recipe and
+#: what the Agent node is handed.
+COMPACTION_CONFIG_ATTR = "compaction_config"
+COMPACTION_REQUESTS_ATTR = "compaction_requests"
+
+
+def compactor_for(toolbox: Any) -> Compactor:
+    """The run's compactor, configured from its toolbox.
+
+    No toolbox at all: the defaults, compacting automatically -- an agent
+    without tools still runs into its context window. A toolbox without
+    the ``auto_compact`` hook: the defaults with ``auto`` off, so only an
+    explicit request (the ``compact_context`` tool) compacts. With it: the
+    hook's settings.
+    """
+    if toolbox is None:
+        return Compactor()
+    cfg = getattr(toolbox, COMPACTION_CONFIG_ATTR, None)
+    if not isinstance(cfg, dict):
+        return Compactor(auto=False)
+    out = Compactor(auto=True)
+    try:
+        out.keep_recent_ratio = min(max(float(cfg.get("keep_recent_pct", 30)), 5), 60) / 100
+        out.reserve_ratio = min(max(float(cfg.get("reserve_pct", 25)), 5), 50) / 100
+        out.hysteresis = min(max(float(cfg.get("hysteresis_pct", 10)), 0), 50) / 100
+        out.min_dropped = max(int(cfg.get("min_dropped", DEFAULT_MIN_DROPPED)), 1)
+    except (TypeError, ValueError) as exc:
+        log.warning(f"Compaction settings partly ignored ({exc}).")
+    out.focus = str(cfg.get("focus") or "")
+    return out
+
+
+def take_compaction_request(toolbox: Any) -> Optional[str]:
+    """Pop what ``compact_context`` asked for: its focus, or ``None``.
+
+    Several calls in one round are one compaction; the last non-empty
+    focus wins, because it is the model's latest word on what matters.
+    """
+    pending = getattr(toolbox, COMPACTION_REQUESTS_ATTR, None)
+    if not pending:
+        return None
+    focus = next((f for f in reversed(pending) if f), "")
+    pending.clear()
+    return focus

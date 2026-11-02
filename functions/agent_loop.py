@@ -38,7 +38,12 @@ from .hooks import (
     HOOK_ON_OUTPUT_PROCESS_ERROR,
     HOOK_ON_OUTPUT_VALIDATE_ERROR,
 )
-from .compaction import REASON_OVERFLOW, REASON_PRESSURE
+from .compaction import (
+    REASON_MANUAL,
+    REASON_OVERFLOW,
+    REASON_PRESSURE,
+    take_compaction_request,
+)
 from weave.logger import get_logger
 
 from .model_errors import OVERFLOW, RETRYABLE, classify_model_error
@@ -320,7 +325,7 @@ class AgentLoop:
         )
 
     def _maybe_compact(
-        self, *, reason: str, force: bool = False,
+        self, *, reason: str, force: bool = False, focus: Optional[str] = None,
     ) -> Generator[AgentEvent, None, bool]:
         """Compact if the compactor agrees; yield the event if it happened.
 
@@ -335,7 +340,7 @@ class AgentLoop:
         try:
             event = self.compactor.maybe_compact(
                 self.engine, reason=reason, force=force,
-                context_length=self.context_length(),
+                context_length=self.context_length(), focus=focus,
             )
         except Exception:      # noqa: BLE001 - compaction never kills a run
             return False
@@ -545,7 +550,16 @@ class AgentLoop:
             #    fails: the seam below used to be where a full context
             #    ended the run, and D24 makes it the place where the run
             #    makes room and carries on. A no-op without a compactor.
-            yield from self._maybe_compact(reason=REASON_PRESSURE)
+            #    The model may also have asked for it last round, through
+            #    the compact_context tool; that request stands in for the
+            #    pressure check, since it compacts whatever the pressure.
+            requested = take_compaction_request(self.toolbox)
+            if requested is not None:
+                yield from self._maybe_compact(
+                    reason=REASON_MANUAL, force=True, focus=requested or None,
+                )
+            else:
+                yield from self._maybe_compact(reason=REASON_PRESSURE)
 
             # 1. Usage gates before each request. Separately, because a
             #    shared `try` made both breaches report limit_type
