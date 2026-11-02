@@ -27,10 +27,15 @@ level rather than folded into the same silence.
 
 ``highlighting_mode="Attribute"`` is deliberate: mordant then inlines ``style=``
 rather than emitting CSS classes, which Qt's ``QTextEdit``/``QTextBrowser`` (a
-limited HTML subset) will not resolve.
+limited HTML subset) will not resolve. The same subset has no form controls:
+a GFM task item comes out as ``<input type="checkbox">``, which Qt drops
+without a trace, so each one is swapped for a ballot-box glyph it can draw.
+GFM itself has to be asked for -- mordant leaves it off by default, and
+without it ``- [x]`` stays the literal text ``[x]``.
 """
 from __future__ import annotations
 
+import re
 from typing import Optional
 
 from weave.logger import get_logger
@@ -48,6 +53,18 @@ log = get_logger("SilkPlanRender")
 #: Said once per process, not once per render: a plan viewer re-renders on
 #: every plan event, and a notice repeated at that rate is noise.
 _NOTIFIED: dict[str, bool] = {"missing": False, "failed": False}
+
+#: A rendered task-list checkbox, whatever order its attributes come in.
+_CHECKBOX = re.compile(r'<input\b[^>]*\btype="checkbox"[^>]*>', re.IGNORECASE)
+_CHECKED = re.compile(r'\bchecked\b', re.IGNORECASE)
+BOX_CHECKED = "☑"      # ☑
+BOX_OPEN = "☐"         # ☐
+
+
+def checkboxes_as_glyphs(html: str) -> str:
+    """Swap each ``<input type="checkbox">`` for ☑ / ☐, which Qt can draw."""
+    return _CHECKBOX.sub(
+        lambda m: BOX_CHECKED if _CHECKED.search(m.group(0)) else BOX_OPEN, html)
 
 
 def renderer_notice() -> str:
@@ -68,8 +85,10 @@ def markdown_to_html(
 ) -> Optional[str]:
     """Render *markdown_text* to HTML via mordant, or ``None`` if unavailable.
 
-    GFM task lists become checkboxes, ``:emoji:`` shortcodes expand, and
+    GFM task lists become ☑ / ☐, ``:emoji:`` shortcodes expand, and
     ```` ```mermaid ```` blocks render — see the plan's markdown renderer.
+    Raw HTML in the source is omitted (mordant's default), which matters
+    because task titles and goals are written by an agent.
     """
     if mordant is None:
         if not _NOTIFIED["missing"]:
@@ -80,11 +99,12 @@ def markdown_to_html(
             log.warning(renderer_notice())
         return None
     try:
-        return mordant.markdown_to_html(
+        return checkboxes_as_glyphs(mordant.markdown_to_html(
             markdown_text,
+            gfm_opts=mordant.GfmOptions(),
             highlighting_mode="Attribute",
             highlighting_theme=theme,
-        )
+        ))
     except Exception as exc:  # noqa: BLE001 - never let a render error break the node
         # An *installed* renderer that raises is a bug somewhere, not a
         # missing extra: the fallback is the same but the silence is not

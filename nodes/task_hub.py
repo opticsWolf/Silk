@@ -41,6 +41,7 @@ from weave.logger import get_logger
 from weave.widgets.markdown_widget import MarkdownWidget
 from weave.widgets.sync_button import SyncButton
 
+from ..functions.plan_render import markdown_to_html
 from ..functions.task_board import PendingDecisions, board, render_board, scan_roots
 
 log = get_logger("SilkTaskHub")
@@ -75,7 +76,7 @@ class SilkTaskHubNode(ThreadedNode):
 
         self._pending = PendingDecisions()
         self._roots: List[str] = []
-        self._pending_md: Optional[str] = None
+        self._pending_board: Optional[str] = None
         self._pending_summary: Optional[str] = None
         self._last_board: Dict[str, Any] = {}
 
@@ -187,15 +188,20 @@ class SilkTaskHubNode(ThreadedNode):
             return {"plans_json": None, "pending": self._pending.count}
 
         self._last_board = data
-        self._pending_md = render_board(data)
+        # The lane glyphs are emoji shortcodes, which Weave's own converter
+        # leaves as text: the board goes through the Plan Viewer's renderer,
+        # and the display widget takes its HTML as is. Plain markdown is
+        # still the floor when mordant is not installed.
+        md = render_board(data)
+        self._pending_board = markdown_to_html(md) or md
         self._pending_summary = self._summary_text(data)
         return {"plans_json": data, "pending": self._pending.count}
 
     def on_evaluate_finished(self) -> None:
         super().on_evaluate_finished()
-        if self._pending_md is not None:
-            self._widget_core.push_display("board", self._pending_md)
-            self._pending_md = None
+        if self._pending_board is not None:
+            self._widget_core.push_display("board", self._pending_board)
+            self._pending_board = None
         if self._pending_summary is not None:
             self._widget_core.push_display("summary", self._pending_summary)
             self._pending_summary = None
