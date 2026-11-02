@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     from .file_sandbox import FileToolSandbox
 
 
-# Ã¢â€â‚¬Ã¢â€â‚¬ Pydantic schemas Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+# ── Pydantic schemas ────────────────────────────────────────────────────
 
 class WriteFileArgs(BaseModel):
     path: str = Field(..., description="Path to write to (relative to sandbox root). Parent directories are created automatically.")
@@ -48,7 +48,7 @@ class EditFileArgs(BaseModel):
         description=(
             "Exact text to find and replace. Must match a unique, non-overlapping "
             "region of the file unless replace_all is true. Include enough surrounding "
-            "context (indentation, neighbouring lines) to disambiguate Ã¢â‚¬â€ a bare keyword "
+            "context (indentation, neighbouring lines) to disambiguate — a bare keyword "
             "or short phrase will likely match multiple times."
         ),
     )
@@ -69,7 +69,7 @@ class InsertTextArgs(BaseModel):
     text: str = Field(..., description="Text to insert. A trailing newline is added if missing.")
 
 
-# Ã¢â€â‚¬Ã¢â€â‚¬ Pydantic response schemas Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+# ── Pydantic response schemas ───────────────────────────────────────────
 
 class EditFileResponse(BaseModel):
     """Structured reply from edit_file."""
@@ -97,7 +97,7 @@ class InsertTextResponse(BaseModel):
     error: str | None = Field(None, description="Error message if the insert failed.")
 
 
-# Ã¢â€â‚¬Ã¢â€â‚¬ Internal helpers Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+# ── Internal helpers ─────────────────────────────────────────────────────
 
 def _atomic_write(target: "Path", data: str) -> None:
     """
@@ -152,7 +152,7 @@ def _too_big(sandbox: "FileToolSandbox", data: str) -> str | None:
     return None
 
 
-# Ã¢â€â‚¬Ã¢â€â‚¬ Tool implementations Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+# ── Tool implementations ────────────────────────────────────────────────
 
 #: What ``expected_sha256`` means when the file should not exist yet.
 ABSENT = "absent"
@@ -306,7 +306,7 @@ def _edit_file_impl(
         if old_str == "":
             return EditFileResponse(
                 path=rel, matches_found=len(content) + 1, replaced=False,
-                error="old_str is empty Ã¢â‚¬â€ would match at every position.",
+                error="old_str is empty — would match at every position.",
             )
 
         # Normalise line endings so \r\n / \n / \r all behave identically.
@@ -329,7 +329,7 @@ def _edit_file_impl(
             return EditFileResponse(
                 path=rel, matches_found=len(matches), replaced=False,
                 error=(
-                    f"old_str matches {len(matches)} times Ã¢â‚¬â€ replacement would be ambiguous. "
+                    f"old_str matches {len(matches)} times — replacement would be ambiguous. "
                     f"Provide more surrounding context so old_str matches once, or set replace_all=true."
                 ),
                 match_lines=line_nums[:20],
@@ -422,7 +422,7 @@ def _insert_text_impl(sandbox: "FileToolSandbox", path: str, after_line: int, te
                                   lines_inserted=len(block.splitlines()))
 
 
-# Ã¢â€â‚¬Ã¢â€â‚¬ Registration Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+# ── Registration ────────────────────────────────────────────────────────
 
 def attach_file_write_tools(toolbox: "ToolBox", sandbox: "FileToolSandbox") -> None:
     """Mount all write file tools onto a ToolBox instance."""
@@ -437,9 +437,9 @@ def attach_file_write_tools(toolbox: "ToolBox", sandbox: "FileToolSandbox") -> N
         args_model=WriteFileArgs,
         replaces=[
             BashHint("touch", "write_file(path=..., content='')"),
-            BashHint("nano", "write_file(path=..., content=...) Ã¢â‚¬â€ nano is interactive and blocks the shell"),
-            BashHint("vi", "write_file(path=..., content=...) Ã¢â‚¬â€ vi is interactive and blocks the shell"),
-            BashHint("vim", "write_file(path=..., content=...) Ã¢â‚¬â€ vim is interactive and blocks the shell"),
+            BashHint("nano", "write_file(path=..., content=...) — nano is interactive and blocks the shell"),
+            BashHint("vi", "write_file(path=..., content=...) — vi is interactive and blocks the shell"),
+            BashHint("vim", "write_file(path=..., content=...) — vim is interactive and blocks the shell"),
             BashHint(REDIRECT, "write_file(path=..., content=...) instead of `>` redirection"),
         ],
         procedure=(
@@ -497,25 +497,25 @@ def attach_file_write_tools(toolbox: "ToolBox", sandbox: "FileToolSandbox") -> N
         name="edit_file",
         tags=("file", "write"), category="file", risk="medium",
         description=(
-            "Replace an exact text match in a file (atomic). old_str must match exactly once Ã¢â‚¬â€ "
-            "include enough surrounding context to disambiguate Ã¢â‚¬â€ unless replace_all is set. "
+            "Replace an exact text match in a file (atomic). old_str must match exactly once — "
+            "include enough surrounding context to disambiguate — unless replace_all is set. "
             "Returns structured JSON with match count, replacement status, and error details."
         ),
         args_model=EditFileArgs,
         replaces=[
             BashHint("sed", "edit_file(path=..., old_str=..., new_str=...) for exact replacements"),
             BashHint("awk", "edit_file(path=..., old_str=..., new_str=...) to modify in place"),
-            BashHint("nano", "edit_file(path=..., old_str=..., new_str=...) Ã¢â‚¬â€ nano blocks the shell"),
-            BashHint("vi", "edit_file(path=..., old_str=..., new_str=...) Ã¢â‚¬â€ vi blocks the shell"),
-            BashHint("vim", "edit_file(path=..., old_str=..., new_str=...) Ã¢â‚¬â€ vim blocks the shell"),
-            BashHint("sed", "edit_file(path=..., old_str=..., new_str=...) Ã¢â‚¬â€ reliable, drift-free in-place edit", in_place=True),
-            BashHint("awk", "edit_file(path=..., old_str=..., new_str=...) Ã¢â‚¬â€ reliable, drift-free in-place edit", in_place=True),
+            BashHint("nano", "edit_file(path=..., old_str=..., new_str=...) — nano blocks the shell"),
+            BashHint("vi", "edit_file(path=..., old_str=..., new_str=...) — vi blocks the shell"),
+            BashHint("vim", "edit_file(path=..., old_str=..., new_str=...) — vim blocks the shell"),
+            BashHint("sed", "edit_file(path=..., old_str=..., new_str=...) — reliable, drift-free in-place edit", in_place=True),
+            BashHint("awk", "edit_file(path=..., old_str=..., new_str=...) — reliable, drift-free in-place edit", in_place=True),
         ],
         procedure=(
             "Surgical text replacement in a file.\n"
             "- old_str must match a unique region of the file (or set replace_all=true).\n"
             "- Include surrounding lines and exact indentation to disambiguate.\n"
-            "- If old_str matches 0 times: error + preview of first 5 lines Ã¢â‚¬â€ view_file for exact text.\n"
+            "- If old_str matches 0 times: error + preview of first 5 lines — view_file for exact text.\n"
             "- If old_str matches 2+ times and replace_all is false: error + match line numbers.\n"
             "- Reply fields: path, matches_found, replaced, replacements, error, match_lines, preview.\n"
             "- Safer than line-number edits because it never drifts; the write is atomic.\n"

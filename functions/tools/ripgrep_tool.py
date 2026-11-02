@@ -1,7 +1,7 @@
 """
 Ripgrep-backed search tools using the in-process `pyripgrep` native binding
-(pip install ripgrep-python). No `rg` binary or subprocess is required Ã¢â‚¬â€ the
-engine is linked into the wheel Ã¢â‚¬â€ so there is no shell/argv surface: the
+(pip install ripgrep-python). No `rg` binary or subprocess is required — the
+engine is linked into the wheel — so there is no shell/argv surface: the
 pattern and paths are passed as plain function arguments.
 
 Exposes one tool, `ripgrep_search`, mirroring ripgrep's three output modes
@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     from .file_sandbox import FileToolSandbox
 
 # Guarded import so a deploy target without the native wheel doesn't break the
-# whole tools package Ã¢â‚¬â€ the tool still registers and reports a clear error.
+# whole tools package — the tool still registers and reports a clear error.
 try:
     import pyripgrep
 
@@ -39,7 +39,7 @@ except Exception as e:  # pragma: no cover - exercised via the unit test's monke
 _CONTENT_RE = re.compile(r"^(?P<file>.*?):(?P<no>\d+):(?P<text>.*)$", re.DOTALL)
 
 
-# Ã¢â€â‚¬Ã¢â€â‚¬ Schemas Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+# ── Schemas ──────────────────────────────────────────────────────────────
 
 class RipgrepSearchArgs(BaseModel):
     pattern: str = Field(..., description="Regular expression to search for (Rust regex syntax).")
@@ -87,7 +87,7 @@ class RipgrepSearchResponse(BaseModel):
     error: str | None = Field(None, description="Error message if the search failed.")
 
 
-# Ã¢â€â‚¬Ã¢â€â‚¬ Implementation Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+# ── Implementation ───────────────────────────────────────────────────────
 
 def _rel_or_none(sandbox: "FileToolSandbox", abspath: str) -> str | None:
     """Absolute result path -> path relative to the sandbox root, or None if outside."""
@@ -125,7 +125,7 @@ def _allowed_search_roots(sandbox: "FileToolSandbox", target: "Path") -> list:
     individual allowed files surfaced directly.
 
     Fast path: when nothing under *target* is denied (the common case), returns
-    ``[target]`` Ã¢â‚¬â€ identical to a single plain search, no overhead.
+    ``[target]`` — identical to a single plain search, no overhead.
     """
     if not getattr(sandbox, "enabled", True):
         return [target]
@@ -136,7 +136,7 @@ def _allowed_search_roots(sandbox: "FileToolSandbox", target: "Path") -> list:
 
     def _visit(directory: "Path") -> None:
         if not _denied_under(sandbox, directory):
-            roots.append(directory)  # clean subtree Ã¢â‚¬â€ search it whole
+            roots.append(directory)  # clean subtree — search it whole
             return
         try:
             children = sorted(directory.iterdir())
@@ -144,7 +144,7 @@ def _allowed_search_roots(sandbox: "FileToolSandbox", target: "Path") -> list:
             return
         for child in children:
             if not sandbox.is_allowed(child):
-                continue  # denied/invisible Ã¢â‚¬â€ skip entirely (never scanned)
+                continue  # denied/invisible — skip entirely (never scanned)
             if child.is_dir():
                 _visit(child)
             else:
@@ -268,7 +268,7 @@ def _search_ripgrep_impl(
     return base
 
 
-# Ã¢â€â‚¬Ã¢â€â‚¬ Registration Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+# ── Registration ─────────────────────────────────────────────────────────
 
 def attach_ripgrep_tools(toolbox: "ToolBox", sandbox: "FileToolSandbox") -> None:
     """Mount the ripgrep search tool onto a ToolBox instance."""

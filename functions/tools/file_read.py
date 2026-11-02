@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 _SEARCH_MAX_FILE_BYTES = 20 * 1024 * 1024
 
 
-# Ã¢â€â‚¬Ã¢â€â‚¬ Pydantic request schemas Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+# ── Pydantic request schemas ────────────────────────────────────────────
 
 class ReadFileArgs(BaseModel):
     path: str = Field(..., description="Path to the file (relative to sandbox root).")
@@ -130,7 +130,7 @@ class FileInfoArgs(BaseModel):
     path: str = Field(..., description="Path to the file or directory (relative to sandbox root).")
 
 
-# Ã¢â€â‚¬Ã¢â€â‚¬ Pydantic response schemas Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+# ── Pydantic response schemas ───────────────────────────────────────────
 
 class ReadFileResponse(BaseModel):
     """Structured reply from read_file."""
@@ -207,14 +207,14 @@ class FileInfoResponse(BaseModel):
     error: str | None = Field(None, description="Error message if metadata could not be read.")
 
 
-# Ã¢â€â‚¬Ã¢â€â‚¬ Tool implementations Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+# ── Tool implementations ────────────────────────────────────────────────
 
 def _get_sandbox(toolbox: Any) -> "FileToolSandbox":
     """Retrieve the sandbox from the toolbox instance."""
     sandbox = getattr(toolbox, "_file_sandbox", None)
     if sandbox is None:
         raise RuntimeError(
-            "No FileToolSandbox configured. Call attach_file_tools(sandbox=Ã¢â‚¬Â¦) first."
+            "No FileToolSandbox configured. Call attach_file_tools(sandbox=…) first."
         )
     return sandbox
 
@@ -250,7 +250,7 @@ def _read_file_impl(sandbox: "FileToolSandbox", path: str, max_bytes: int, offse
     total_read = len(content)
     rel = str(target.relative_to(sandbox.root_dir))
     if truncated:
-        content += f"\n\n[Truncated Ã¢â‚¬â€ returned the first {cap} bytes from offset {offset}; increase max_bytes or use offset to read more]"
+        content += f"\n\n[Truncated — returned the first {cap} bytes from offset {offset}; increase max_bytes or use offset to read more]"
 
     return ReadFileResponse(
         path=rel,
@@ -373,7 +373,7 @@ def _directory_tree_impl(
 ) -> str:
     """Render a compact ASCII tree, honouring the sandbox read policy.
 
-    Every entry is gated by ``sandbox.is_allowed`` Ã¢â‚¬â€ files (and whole subtrees)
+    Every entry is gated by ``sandbox.is_allowed`` — files (and whole subtrees)
     the LLM may not read are simply absent from the tree, with no placeholder
     that would leak their existence. Returns a plain string (not JSON) so the
     tree renders human-readably for the model.
@@ -418,19 +418,19 @@ def _directory_tree_impl(
                 truncated = True
                 return
             last = i == len(children) - 1
-            connector = "Ã¢â€â€Ã¢â€â‚¬Ã¢â€â‚¬ " if last else "Ã¢â€Å“Ã¢â€â‚¬Ã¢â€â‚¬ "
+            connector = "└── " if last else "├── "
             name = entry.name + ("/" if entry.is_dir() else "")
             lines.append(f"{prefix}{connector}{name}")
             rendered += 1
             if entry.is_dir():
-                extension = "    " if last else "Ã¢â€â€š   "
+                extension = "    " if last else "│   "
                 _walk(entry, prefix + extension, current_depth + 1)
                 if truncated:
                     return
 
     _walk(target, "", 0)
     if truncated:
-        lines.append(f"Ã¢â‚¬Â¦ (truncated at {max_entries} entries)")
+        lines.append(f"… (truncated at {max_entries} entries)")
     return "\n".join(lines)
 
 
@@ -577,7 +577,7 @@ def _file_info_impl(sandbox: "FileToolSandbox", path: str) -> FileInfoResponse:
     )
 
 
-# Ã¢â€â‚¬Ã¢â€â‚¬ Registration Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+# ── Registration ────────────────────────────────────────────────────────
 
 def attach_file_read_tools(toolbox: "ToolBox", sandbox: "FileToolSandbox") -> None:
     """Mount all read-only file tools onto a ToolBox instance."""
@@ -620,7 +620,7 @@ def attach_file_read_tools(toolbox: "ToolBox", sandbox: "FileToolSandbox") -> No
         replaces=[
             BashHint("cat", "view_file(path=...) for line-numbered text"),
             BashHint("bat", "view_file(path=...) for line-numbered text"),
-            BashHint("less", "view_file(path=..., start_line=..., end_line=...) Ã¢â‚¬â€ pagers block the shell"),
+            BashHint("less", "view_file(path=..., start_line=..., end_line=...) — pagers block the shell"),
             BashHint("more", "view_file(path=..., start_line=..., end_line=...)"),
             BashHint("head", "view_file(path=..., start_line=1, end_line=N)"),
         ],
@@ -668,7 +668,7 @@ def attach_file_read_tools(toolbox: "ToolBox", sandbox: "FileToolSandbox") -> No
         name="directory_tree",
         tags=("file", "read", "search"), category="file", risk="low",
         description=(
-            "Render a directory as a compact ASCII tree (Ã¢â€Å“Ã¢â€â‚¬Ã¢â€â‚¬/Ã¢â€â€Ã¢â€â‚¬Ã¢â€â‚¬ connectors). "
+            "Render a directory as a compact ASCII tree (├──/└── connectors). "
             "Returns a plain text tree. Honours the sandbox read policy: files or "
             "subtrees you cannot read are omitted entirely."
         ),
