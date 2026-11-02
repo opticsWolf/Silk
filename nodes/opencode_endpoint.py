@@ -229,9 +229,6 @@ class _OpenCodeEndpointBase(ActiveNode):
         self._model.currentTextChanged.connect(self._on_model_changed)
         self._context.valueChanged.connect(self._on_context_changed)
         self._catalog_ready.connect(self._apply_refresh)
-        # A graph restore, or a wire, writes the model with signals blocked;
-        # the slider still has to fit the model it now names.
-        self._widget_core.port_value_written.connect(self._on_port_written)
 
         self.set_content_widget(self._widget_core)
         if hasattr(self._widget_core, "patch_proxy"):
@@ -332,13 +329,6 @@ class _OpenCodeEndpointBase(ActiveNode):
         if model_id in self._catalog.models:
             self._catalog.set_selected(model_id)
 
-    @Slot(str, object)
-    def _on_port_written(self, port: str, _value: Any) -> None:
-        if port == "model":
-            self._sync_context_range(reset_value=False)
-        elif port == "context_length":
-            self._push_context_label()
-
     @Slot(int)
     def _on_context_changed(self, _value: int) -> None:
         self._push_context_label()
@@ -400,8 +390,10 @@ class _OpenCodeEndpointBase(ActiveNode):
         after = self._current_model()
         if after != before:
             # The dropdown went from empty to its first entry with signals
-            # blocked; tell WidgetCore, as an edit, so the graph re-runs.
-            self._widget_core.apply_port_value("model", after, user_edit=True)
+            # blocked; a programmatic write tells WidgetCore, and its
+            # port_value_written schedules the re-run (never user_edit=True
+            # from node code, WV403).
+            self._widget_core.apply_port_value("model", after)
             self._sync_context_range(reset_value=True)
         else:
             self._sync_context_range(reset_value=False)
@@ -410,6 +402,9 @@ class _OpenCodeEndpointBase(ActiveNode):
 
     def on_evaluate_finished(self) -> None:
         super().on_evaluate_finished()
+        # A graph restore, or a wire, writes the model with signals
+        # blocked; the slider still has to fit the model it now names.
+        self._sync_context_range(reset_value=False)
         self._widget_core.push_display("status", self._sync_status)
 
     # ── Worker thread ────────────────────────────────────────────────
@@ -486,6 +481,13 @@ class _OpenCodeEndpointBase(ActiveNode):
 
     def cleanup(self) -> None:
         self._handle = None
+        self._persist_timer.stop()
+        try:
+            # A refresh thread still in flight must not call back into a
+            # half-destroyed node.
+            self._catalog_ready.disconnect(self._apply_refresh)
+        except (RuntimeError, TypeError):
+            pass
         super().cleanup()
 
 
