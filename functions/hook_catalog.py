@@ -977,6 +977,61 @@ def build_hooks(
     return merged
 
 
+# ── what a Role may say about the ToolBox-wired hooks ──────────────────────
+
+#: Hooks a Role's tick can *tighten* or *adjust*. The ToolBox owns them
+#: (they need the box to be wired); a Role layers on top for its own runs:
+#: the two gates only ever ask more (:func:`attach_role_gate`), and
+#: compaction takes the Role's settings in place of the box's.
+ROLE_OVERLAY_HOOKS: frozenset[str] = frozenset({
+    "tool_approval", "signoff", "auto_compact",
+})
+
+#: Hooks that only the ToolBox can wire and a Role cannot change: what they
+#: do is a property of the box (its folder, its memory, its disk), not of
+#: who is using it. Shown greyed out on a Role, and ignored there.
+TOOLBOX_ONLY_HOOKS: frozenset[str] = frozenset({"spill", "remember", "run_log"})
+
+
+def attach_role_gate(
+    toolbox: "ToolBox",
+    names: Iterable[str],
+    configs: Optional[Mapping[str, Mapping[str, Any]]] = None,
+) -> Optional[Any]:
+    """Install a Role's approval gate on *toolbox*; returns its entry.
+
+    Only ever stricter than the box: it sits just inside the box's own gate
+    and asks only where the Role's level for a call beats the box's (see
+    ``attach_approval_gate(beneath=...)``). ``None`` when the Role ticks
+    neither gate, or its policies gate nothing. The caller removes the
+    entry when the Role's run ends.
+    """
+    names = {str(n) for n in names}
+    if not names & {"signoff", "tool_approval"}:
+        return None
+    from .approval import APPROVAL_POLICY_ATTR
+
+    task_policy = None
+    if "signoff" in names:
+        cfg = resolve_config(HOOK_CATALOG["signoff"], (configs or {}).get("signoff"))
+        task_policy = signoff_policy_from_config(cfg)  # type: ignore[arg-type]
+    tool_policy = None
+    durable = None
+    if "tool_approval" in names:
+        tcfg = resolve_config(HOOK_CATALOG["tool_approval"],
+                              (configs or {}).get("tool_approval"))
+        tool_policy = tool_policy_from_config(tcfg)  # type: ignore[arg-type]
+        if getattr(tcfg, "durable_grants", False):
+            durable = GrantStore()
+    sandbox = getattr(toolbox, "base_sandbox", None)
+    root = str(getattr(sandbox, "root_dir", "") or "")
+    beneath = getattr(toolbox, APPROVAL_POLICY_ATTR, None) or {}
+    return attach_approval_gate(
+        toolbox, sandbox, task_policy=task_policy, tool_policy=tool_policy,
+        grants=durable, project_root=root, beneath=dict(beneath),
+    )
+
+
 def _memory_for(toolbox: "ToolBox", sandbox: "Optional[FileToolSandbox]") -> Any:
     """The ledger this box writes its memory to, or ``None``.
 

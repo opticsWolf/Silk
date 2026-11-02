@@ -40,6 +40,7 @@
 | Cap what a run may cost | the Agent/Orchestrator node's **Budget** field (`requests=20, output=8k`); a worker's own share goes on its Worker node and nests inside it (D26) |
 | Stop one worker eating the fan-out's budget | give its `WorkerSpec` a `usage_limits`; `run_subagent` nests it inside the orchestrator's shared cap rather than replacing it (D26) |
 | Require a human before a tool runs | the `tool_approval` catalog hook (risk band or tool names) — the same middleware the `signoff` policy uses |
+| Make one role stricter, or compact differently, than the ToolBox | tick `tool_approval`, `signoff` or `auto_compact` on the Role: the gates only ever ask more than the box's (a role gate just inside the box's, asking only where it is stricter), and compaction takes the Role's settings. `spill`, `remember` and `run_log` are the box's alone and are greyed out on a Role |
 | Let a user say "don't ask again" | a `remember` scope on the decision: run-scoped in the gate closure, or a durable grant in `~/.weave/silk/grants.json` |
 | Give agents the tools of an MCP server | a `Silk MCP Server` node per server (it owns the session), optionally a `Silk MCP Aggregator` to switch individual tools off, into the ToolBox node's `mcp` input (D19–D22) |
 | Delegate work across agents | `Silk Worker` nodes feeding the `Silk Orchestrator` (`delegate` / `delegate_parallel`) |

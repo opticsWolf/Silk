@@ -27,7 +27,11 @@ from weave.widgets.markdown_widget import MarkdownWidget
 
 from .silk_ports import SILK_ROLE_TYPE, SILK_TOOLSET_TYPE  # noqa: F401
 from ..functions.file_grants import FileGrants
-from ..functions.hook_catalog import build_hooks
+from ..functions.hook_catalog import (
+    ROLE_OVERLAY_HOOKS,
+    TOOLBOX_ONLY_HOOKS,
+    build_hooks,
+)
 from ..functions.port_text import text_input
 from ..functions.presets import PresetStore, RolePreset
 from ..functions.role import Role, ToolSelector
@@ -157,6 +161,9 @@ class SilkRoleNode(ActiveNode):
         # removed on deactivation — scoped to this role's runs only.
         # Value shape: {"names": [...], "configs": {name: {...}}}.
         self._hook_select = HookSelectWidget()
+        # Spill, memory and the run log are the box's; the two gates and
+        # compaction layer on the box's for this role's runs.
+        self._hook_select.set_role_layer(TOOLBOX_ONLY_HOOKS, ROLE_OVERLAY_HOOKS)
         form.addRow("Hooks:", self._hook_select)
         self._widget_core.register_widget(
             "hooks_config", self._hook_select, role=PortRole.INTERNAL,
@@ -262,6 +269,7 @@ class SilkRoleNode(ActiveNode):
                 (inputs.get("hooks_config") or {}).get("configs") or {},
             ),
             file_grants=grants,
+            hook_settings=_role_hook_settings(role_id, inputs.get("hooks_config")),
         )
         return {"role": role, "permissions": grants}
 
@@ -282,3 +290,24 @@ class SilkRoleNode(ActiveNode):
     def cleanup(self) -> None:
         self._preset_bar.cleanup()
         super().cleanup()
+
+
+def _role_hook_settings(role_id: str, value: Any) -> Dict[str, Any]:
+    """The hook selection as data, with the ToolBox-only hooks taken out.
+
+    Those cannot do anything on a Role (they need the box's folder, memory
+    or disk), so a preset that ticks one is told once rather than left
+    looking like it took effect.
+    """
+    value = value if isinstance(value, dict) else {}
+    names = [str(n) for n in (value.get("names") or ())]
+    ignored = sorted(set(names) & TOOLBOX_ONLY_HOOKS)
+    if ignored:
+        log.warning(
+            f"Role '{role_id}': {', '.join(ignored)} only work on the "
+            "ToolBox; ticking them on a Role does nothing."
+        )
+    return {
+        "names": [n for n in names if n not in TOOLBOX_ONLY_HOOKS],
+        "configs": dict(value.get("configs") or {}),
+    }

@@ -43,6 +43,10 @@ class HookSelectWidget(CompositeValueWidget):
         super().__init__(parent)
         self._inherited: set[str] = set()
         self._configs: Dict[str, dict] = {}
+        #: Role-layer rules (set_role_layer): hooks this layer cannot use,
+        #: and hooks whose tick here tightens/adjusts the ToolBox's.
+        self._unavailable: set[str] = set()
+        self._overlays: set[str] = set()
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -84,14 +88,35 @@ class HookSelectWidget(CompositeValueWidget):
             return
         checked = item.checkState() == Qt.CheckState.Checked
         inherited = name in self._inherited
+        unavailable = name in self._unavailable
+        overlay = name in self._overlays
 
         text = name
-        if inherited and checked:
+        if unavailable:
+            text += "  — ToolBox only"
+        elif overlay and checked:
+            text += ("  — tightens the ToolBox's for this role"
+                     if name != "auto_compact"
+                     else "  — this role's settings replace the ToolBox's")
+        elif inherited and checked:
             text += "  — ×2: ToolBox + this role (runs twice)"
         elif inherited:
             text += "  — already on ToolBox"
 
         tooltip = spec.description
+        if unavailable:
+            tooltip += (
+                "\n\nOnly the ToolBox can wire this hook: it works on the "
+                "box's folder, memory or disk, not on who uses it. Tick it "
+                "on the ToolBox."
+            )
+        elif overlay:
+            tooltip += (
+                "\n\nOn a Role this layers on the ToolBox's: "
+                + ("the gate only ever asks more, never less."
+                   if name != "auto_compact"
+                   else "its settings replace the box's for this role's runs.")
+            )
         if spec.config_model is not None:
             config = resolve_config(spec, self._configs.get(name))
             tooltip += "\n\nDouble-click to configure. Current settings:"
@@ -111,10 +136,16 @@ class HookSelectWidget(CompositeValueWidget):
             )
 
         font = item.font()
-        font.setItalic(inherited and not checked)
-        font.setBold(inherited and checked)
+        font.setItalic((inherited and not checked) or unavailable)
+        font.setBold(inherited and checked and not overlay)
         # Text mutation fires itemChanged — suppress while rendering.
         self._list.blockSignals(True)
+        flags = item.flags()
+        if unavailable:
+            flags &= ~Qt.ItemFlag.ItemIsEnabled
+        else:
+            flags |= Qt.ItemFlag.ItemIsEnabled
+        item.setFlags(flags)
         item.setText(text)
         item.setToolTip(tooltip)
         item.setFont(font)
@@ -137,6 +168,15 @@ class HookSelectWidget(CompositeValueWidget):
         self._inherited = inherited
         self._refresh_all()
         self.inherited_changed.emit()
+
+    def set_role_layer(self, unavailable: Iterable[str],
+                       overlays: Iterable[str]) -> None:
+        """Mark this list as a Role's: *unavailable* hooks are greyed out
+        and cannot be ticked here; *overlays* say they layer on the
+        ToolBox's rather than run a second time. Display-only."""
+        self._unavailable = {str(n) for n in unavailable}
+        self._overlays = {str(n) for n in overlays}
+        self._refresh_all()
 
     # -- display-state accessors (panel mirroring) -------------------------
 

@@ -127,6 +127,18 @@ class Role:
     #: ``None`` means "this role says nothing about files", which leaves the
     #: toolset's own sandbox exactly as it was.
     file_grants: Any = None
+    #: The hook selection as data, ``{"names": [...], "configs": {...}}`` --
+    #: what ``hooks`` was built from. Kept because three ToolBox-wired hooks
+    #: take a Role's word on top of the box's (``ROLE_OVERLAY_HOOKS``): the
+    #: approval and sign-off gates can be tightened for this Role's runs,
+    #: and compaction takes this Role's settings.
+    hook_settings: dict[str, Any] = field(default_factory=dict)
+
+    def hook_names(self) -> frozenset[str]:
+        return frozenset(str(n) for n in (self.hook_settings or {}).get("names") or ())
+
+    def hook_config(self, name: str) -> dict[str, Any]:
+        return dict(((self.hook_settings or {}).get("configs") or {}).get(name) or {})
 
     def system_prompt_block(self) -> str:
         """The ``[ROLE: …]`` block contributed to the system prompt."""
@@ -145,6 +157,7 @@ class Role:
             "selector": self.selector.to_dict(),
             "model_settings": dict(self.model_settings),
             "max_rounds": self.max_rounds,
+            "hook_settings": dict(self.hook_settings),
         }
 
     @classmethod
@@ -157,6 +170,7 @@ class Role:
             selector=ToolSelector.from_dict(d.get("selector") or {"allow_all": True}),
             model_settings=dict(d.get("model_settings") or {}),
             max_rounds=d.get("max_rounds"),
+            hook_settings=dict(d.get("hook_settings") or {}),
         )
 
 
@@ -183,6 +197,7 @@ class RoleBinding:
         self._registered_hooks: list[tuple[str, Callable]] = []
         self._added_capability_ids: list[str] = []
         self._added_tool_names: set[str] = set()
+        self._role_gate: Any = None
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -215,6 +230,14 @@ class RoleBinding:
         self._registered_hooks = register_hook_map(
             self.toolbox.hooks, self.role.hooks
         )
+        # 2b. The Role's word on the ToolBox's gates: stricter only, and
+        #     only for this Role's runs.
+        if self.role.hook_names() & {"signoff", "tool_approval"}:
+            from .hook_catalog import attach_role_gate
+            self._role_gate = attach_role_gate(
+                self.toolbox, self.role.hook_names(),
+                (self.role.hook_settings or {}).get("configs") or {},
+            )
 
         # 3. Install the hard enforcement predicate (prompt + dispatch side).
         self.toolbox.set_role_filter(self.role.selector.permits)
@@ -229,9 +252,13 @@ class RoleBinding:
 
         self.toolbox.set_role_filter(None)
 
-        from .hooks import unregister_hook_map
+        from .hooks import HOOK_WRAP_TOOL_EXECUTE, unregister_hook_map
         unregister_hook_map(self.toolbox.hooks, self._registered_hooks)
         self._registered_hooks.clear()
+        if self._role_gate is not None:
+            self.toolbox.hooks.unregister_middleware(
+                HOOK_WRAP_TOOL_EXECUTE, self._role_gate)
+            self._role_gate = None
 
         for cap_id in self._added_capability_ids:
             self.toolbox._capabilities.pop(cap_id, None)

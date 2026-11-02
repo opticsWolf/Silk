@@ -773,18 +773,28 @@ COMPACTION_CONFIG_ATTR = "compaction_config"
 COMPACTION_REQUESTS_ATTR = "compaction_requests"
 
 
-def compactor_for(toolbox: Any) -> Compactor:
-    """The run's compactor, configured from its toolbox.
+def compactor_for(toolbox: Any, role: Any = None) -> Compactor:
+    """The run's compactor, configured from its toolbox and its role.
 
     No toolbox at all: the defaults, compacting automatically -- an agent
     without tools still runs into its context window. A toolbox without
     the ``auto_compact`` hook: the defaults with ``auto`` off, so only an
     explicit request (the ``compact_context`` tool) compacts. With it: the
-    hook's settings.
+    hook's settings. A Role that ticks ``auto_compact`` adjusts that for
+    its own runs: its settings replace the box's, and it switches automatic
+    compaction on even where the box left it off. A Role that does not
+    tick it has no say, so it cannot switch the box's off.
     """
-    if toolbox is None:
+    cfg: Any = None
+    if toolbox is not None:
+        cfg = getattr(toolbox, COMPACTION_CONFIG_ATTR, None)
+    names = role.hook_names() if hasattr(role, "hook_names") else frozenset()
+    if "auto_compact" in names:
+        from .hook_catalog import HOOK_CATALOG, resolve_config
+        cfg = resolve_config(HOOK_CATALOG["auto_compact"],
+                             role.hook_config("auto_compact")).model_dump()
+    elif toolbox is None:
         return Compactor()
-    cfg = getattr(toolbox, COMPACTION_CONFIG_ATTR, None)
     if not isinstance(cfg, dict):
         return Compactor(auto=False)
     out = Compactor(auto=True)

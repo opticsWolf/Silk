@@ -894,9 +894,10 @@ class SilkAgentNode(ThreadedManualNode):
                 # and stays inert when the backend does not report a
                 # context window, because there is then no pressure to
                 # measure and compacting on a hunch costs two prefills.
-                # Configured by the ToolBox's auto_compact hook; without
-                # it, only the compact_context tool compacts.
-                compactor=compactor_for(toolset),
+                # Configured by the ToolBox's auto_compact hook, adjusted
+                # by the Role's; without either, only the compact_context
+                # tool compacts.
+                compactor=compactor_for(toolset, role),
             )
 
             # Build gen_params from internal defaults (no limit on tokens).
