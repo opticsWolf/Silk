@@ -669,6 +669,24 @@ class AgentLoop:
                 )
                 return
 
+            if (
+                not self._overflow_compacted
+                and _stopped_early_by_length(stats, gen_params)
+                and (yield from self._maybe_compact(
+                    reason=REASON_OVERFLOW, force=True,
+                ))
+            ):
+                # The answer ran into the context window rather than into
+                # the token cap it was given: the same verdict as a
+                # classified overflow, reached by the server finishing
+                # instead of refusing. Half an answer is dropped, not
+                # persisted, and the round is asked again on the room the
+                # compaction just made -- once per run, like the overflow
+                # retry, so a model that always rambles cannot loop here.
+                self._overflow_compacted = True
+                full_text = ""
+                continue
+
             self._final_text = full_text
             self._emit(
                 HOOK_AFTER_MODEL_RESPONSE,
@@ -876,3 +894,30 @@ def _correct_schema(body: str) -> Optional[str]:
     if isinstance(data, dict) and "correct_schema" in data:
         return json.dumps(data["correct_schema"], indent=2)
     return None
+
+
+def _stopped_early_by_length(
+    stats: dict[str, Any], gen_params: dict[str, Any],
+) -> bool:
+    """Whether a ``length`` finish means the context ran out, not the cap.
+
+    A ``length`` finish is ambiguous: the answer hit the ``max_tokens`` it
+    was given (the caller's choice, and a complete request), or the prompt
+    plus the answer hit the context window (an overflow that arrived as a
+    finish). It is the second only when the answer stopped short of a cap
+    that was set, or when no cap was set at all. Unknown output size with
+    a cap set reads as the first -- compacting on a guess costs two
+    prefills.
+    """
+    if stats.get("finish_reason") != "length":
+        return False
+    cap = gen_params.get("max_tokens") if gen_params else None
+    if not cap:
+        return True
+    produced = stats.get("tokens")
+    if produced is None:
+        return False
+    try:
+        return int(produced) < int(cap)
+    except (TypeError, ValueError):
+        return False

@@ -532,6 +532,24 @@ precondition for telling a compacted run from a clean one (G14(e)).
 as the record of what was missing and why; the checklist now carries where
 each piece landed.
 
+**Revised 2026-11-02** after a read of pi's compaction
+(`earendil-works/pi`, `packages/coding-agent/src/core/compaction/`). Two
+defects fixed: a run's second compaction re-summarized the first summary as
+an ordinary turn, clipped to 2,000 characters (head and tail kept, middle
+lost), and native `tool_calls` were never rendered, so the summarizer saw
+results without the calls that produced them. Adopted alongside: a summary
+in fixed sections with an update prompt for later compactions; a tail sized
+as a share of the window (30 %) instead of 8 turns; read/modified file
+lists recorded from tool calls by code; a summary cut off by `length` or a
+missing finish reason is rejected; a `length` finish short of the token cap
+counts as an overflow (once per run, like D40's retry); `compact_now()`
+with a one-off focus; and Role settings for on/off, the tail share and a
+standing focus (Role node version 2). Kept where Silk was already ahead:
+hysteresis, the minimum worth dropping, the window-relative reserve, no
+compaction on an unknown window, and D41's prefill accounting. Not built:
+a canvas button for `compact_now()` (the Agent node has no seam for an
+out-of-run request yet).
+
 The declaration here was the requirement, not the code — unlike G1–G13
 (machinery declared, implementation missing), compaction was not declared
 anywhere in the codebase; it was entirely absent. The requirement is on

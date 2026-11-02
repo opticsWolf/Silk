@@ -127,6 +127,28 @@ class Role:
     #: ``None`` means "this role says nothing about files", which leaves the
     #: toolset's own sandbox exactly as it was.
     file_grants: Any = None
+    #: How this role's runs compact their history (spec §12), as data:
+    #: ``enabled`` (default on), ``keep_recent_ratio`` (share of the window
+    #: kept verbatim) and ``focus`` (what the summary should keep). Empty
+    #: means the defaults. :meth:`make_compactor` turns it into the object.
+    compaction: dict[str, Any] = field(default_factory=dict)
+
+    def make_compactor(self) -> Any:
+        """The run's :class:`~.compaction.Compactor`, or ``None`` if off."""
+        from .compaction import DEFAULT_KEEP_RECENT_RATIO, Compactor
+
+        cfg = self.compaction or {}
+        if not cfg.get("enabled", True):
+            return None
+        try:
+            ratio = float(cfg.get("keep_recent_ratio") or DEFAULT_KEEP_RECENT_RATIO)
+        except (TypeError, ValueError):
+            ratio = DEFAULT_KEEP_RECENT_RATIO
+        # Clamped below the reserve's complement: a tail as big as the
+        # threshold would leave nothing to drop.
+        ratio = min(max(ratio, 0.05), 0.60)
+        return Compactor(keep_recent_ratio=ratio,
+                         focus=str(cfg.get("focus") or ""))
 
     def system_prompt_block(self) -> str:
         """The ``[ROLE: …]`` block contributed to the system prompt."""
@@ -145,6 +167,7 @@ class Role:
             "selector": self.selector.to_dict(),
             "model_settings": dict(self.model_settings),
             "max_rounds": self.max_rounds,
+            "compaction": dict(self.compaction),
         }
 
     @classmethod
@@ -157,7 +180,27 @@ class Role:
             selector=ToolSelector.from_dict(d.get("selector") or {"allow_all": True}),
             model_settings=dict(d.get("model_settings") or {}),
             max_rounds=d.get("max_rounds"),
+            compaction=dict(d.get("compaction") or {}),
         )
+
+
+def compaction_settings(inputs: dict[str, Any]) -> dict[str, Any]:
+    """The Role node's compaction widgets as :attr:`Role.compaction` data.
+
+    A missing key (a graph saved before the Role node's version 2) reads as
+    its default, so an old role compacts exactly as it did.
+    """
+    enabled = inputs.get("auto_compact")
+    try:
+        pct = int(inputs.get("keep_recent_pct") or 30)
+    except (TypeError, ValueError):
+        pct = 30
+    focus = inputs.get("compaction_focus")
+    return {
+        "enabled": True if enabled is None else bool(enabled),
+        "keep_recent_ratio": min(max(pct, 5), 60) / 100.0,
+        "focus": focus.strip() if isinstance(focus, str) else "",
+    }
 
 
 DEFAULT_ROLE = Role(

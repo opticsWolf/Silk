@@ -907,7 +907,9 @@ class SilkAgentNode(ThreadedManualNode):
                 # and stays inert when the backend does not report a
                 # context window, because there is then no pressure to
                 # measure and compacting on a hunch costs two prefills.
-                compactor=Compactor(),
+                # The role may turn it off or steer it; a role that says
+                # nothing gets the defaults.
+                compactor=_compactor_for(role),
             )
 
             # Build gen_params from internal defaults (no limit on tokens).
@@ -1167,3 +1169,15 @@ class SilkAgentNode(ThreadedManualNode):
         """
         return compose_system_prompt(base, role, toolset,
                                      native_tools=native_tools)
+
+
+def _compactor_for(role: Any) -> Optional[Compactor]:
+    """The role's compactor; the defaults for a role that predates the field."""
+    make = getattr(role, "make_compactor", None)
+    if make is None:
+        return Compactor()
+    try:
+        return make()
+    except Exception as exc:      # noqa: BLE001 - a bad setting is not a dead run
+        log.warning(f"Compaction settings ignored ({exc}); using the defaults.")
+        return Compactor()

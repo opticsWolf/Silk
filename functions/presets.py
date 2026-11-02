@@ -45,6 +45,10 @@ class RolePreset(BaseModel):
     # Per-hook config values, validated against the catalog entry's
     # config_model when the hooks are built.
     hook_configs: dict[str, dict] = Field(default_factory=dict)
+    # History compaction (spec §12). Defaults match a role that says nothing.
+    auto_compact: bool = True
+    keep_recent_pct: int = 30
+    compaction_focus: str = ""
 
 
 class ClassifierPreset(BaseModel):
