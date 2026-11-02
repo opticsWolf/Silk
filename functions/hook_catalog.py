@@ -55,6 +55,7 @@ from .classifier_hooks import (
 )
 from .grants import GrantStore
 from .ledger import HistoryLedger, available as ledger_available
+from .event_sink import DEFAULT_KEEP_RUNS, DEFAULT_MAX_LINES
 from .remember import attach_remember_hook
 from .spill import (
     DEFAULT_HEAD,
@@ -641,6 +642,35 @@ def _make_auto_compact(_config: Optional[BaseModel] = None) -> HookMap:
     return {}
 
 
+class RunLogConfig(BaseModel):
+    """A durable, metadata-only record of every run (T7, D85).
+
+    One JSONL file per run in ``~/.weave/silk/runs/``: which events
+    happened, in what order, how big -- never prompts, completions or tool
+    arguments. Compaction drops turns permanently, so this is the only
+    account of a long run's middle.
+    """
+
+    keep_runs: int = Field(
+        DEFAULT_KEEP_RUNS, ge=1, le=10_000,
+        description="Keep the newest this many run files; older ones go.",
+    )
+    max_lines: int = Field(
+        DEFAULT_MAX_LINES, ge=100, le=1_000_000,
+        description=(
+            "Stop writing a run's file after this many events, so one "
+            "runaway loop cannot fill a disk."
+        ),
+    )
+
+
+def _make_run_log(_config: Optional[BaseModel] = None) -> HookMap:
+    """Inert: the log records the Agent's event stream, which no hook event
+    carries whole, so the hook leaves its settings on the toolbox in
+    :func:`attach_catalog_hooks` and the Agent node opens the sink."""
+    return {}
+
+
 def _make_remember(_config: Optional[BaseModel] = None) -> HookMap:
     """Inert: the remember hook needs the history ledger, so it is wired by
     :func:`attach_catalog_hooks` rather than the factory path."""
@@ -806,6 +836,16 @@ HOOK_CATALOG: dict[str, HookSpec] = {
             config_model=AutoCompactConfig,
         ),
         HookSpec(
+            name="run_log",
+            description=(
+                "Write one metadata-only JSONL file per run to "
+                "~/.weave/silk/runs/: which events, in what order, how big. "
+                "No prompts, completions or tool arguments."
+            ),
+            factory=_make_run_log,
+            config_model=RunLogConfig,
+        ),
+        HookSpec(
             name="remember",
             description=(
                 "Write this run's turns into the history ledger, so recall "
@@ -866,14 +906,20 @@ GATING_HOOKS: frozenset[str] = frozenset({
     "tool_approval", "signoff", "tool_budget", "task_audit",
 })
 
-#: What a fresh ToolBox starts with: the whole catalog minus the gates.
+#: Hooks that write a file on the user's disk nobody asked for. Not gates,
+#: but not on by default either: the honest default for a file outside the
+#: project is "only when asked" (D85).
+OPT_IN_HOOKS: frozenset[str] = frozenset({"run_log"})
+
+#: What a fresh ToolBox starts with: the whole catalog minus the gates
+#: and the opt-ins.
 #: Observation is the thing people regret not having *after* a run, and
 #: a hook that was never ticked leaves no trace to go back to. Each of
 #: these degrades on its own when its dependency is missing -- `remember`
 #: without the ledger extra logs that it did not attach rather than
 #: failing the build.
 DEFAULT_HOOKS: tuple[str, ...] = tuple(
-    sorted(set(HOOK_CATALOG) - GATING_HOOKS)
+    sorted(set(HOOK_CATALOG) - GATING_HOOKS - OPT_IN_HOOKS)
 )
 
 
@@ -997,6 +1043,11 @@ def attach_catalog_hooks(
         ccfg = resolve_config(HOOK_CATALOG["auto_compact"],
                               (configs or {}).get("auto_compact"))
         setattr(toolbox, COMPACTION_CONFIG_ATTR, ccfg.model_dump())  # type: ignore[union-attr]
+
+    if "run_log" in names:
+        lcfg = resolve_config(HOOK_CATALOG["run_log"],
+                              (configs or {}).get("run_log"))
+        toolbox.run_log_config = lcfg.model_dump()  # type: ignore[attr-defined,union-attr]
 
     if "remember" in names:
         rcfg = resolve_config(HOOK_CATALOG["remember"],

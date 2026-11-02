@@ -50,6 +50,7 @@ __all__ = [
     "REDACTED",
     "RunSink",
     "redact",
+    "sink_for",
 ]
 
 log = get_logger("SilkEventSink")
@@ -234,3 +235,22 @@ class RunSink:
         except (OSError, ValueError) as exc:
             self._fail(f"write failed: {exc}")
             return False
+
+
+def sink_for(toolbox: Any) -> Optional["RunSink"]:
+    """A sink configured by the toolbox's ``run_log`` hook, or ``None``.
+
+    The hook is the switch: an Agent whose toolbox does not have it ticked
+    records nothing, which is the default (D85).
+    """
+    cfg = getattr(toolbox, "run_log_config", None) if toolbox is not None else None
+    if not isinstance(cfg, dict):
+        return None
+    try:
+        return RunSink(
+            keep_runs=int(cfg.get("keep_runs", DEFAULT_KEEP_RUNS)),
+            max_lines=int(cfg.get("max_lines", DEFAULT_MAX_LINES)),
+        )
+    except (TypeError, ValueError) as exc:
+        log.warning(f"Run log settings ignored ({exc}); using the defaults.")
+        return RunSink()

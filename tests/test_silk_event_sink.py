@@ -155,3 +155,51 @@ def test_every_named_content_field_is_a_length_on_disk(tmp_path, field):
     sink.close()
     row = _lines(list(tmp_path.glob("*.jsonl"))[0])[0]
     assert row[f"{field}_chars"] == 19 and field not in row
+
+
+# -- switched by the ToolBox's run_log hook ----------------------------------
+
+
+def test_run_log_is_a_catalog_hook_but_not_on_by_default():
+    from silk.functions.hook_catalog import DEFAULT_HOOKS, HOOK_CATALOG
+
+    assert "run_log" in HOOK_CATALOG
+    assert "run_log" not in DEFAULT_HOOKS, "a file on disk only when asked (D85)"
+
+
+def test_no_hook_means_no_sink():
+    from silk.functions.event_sink import sink_for
+    from silk.functions.hook_catalog import attach_catalog_hooks
+    from silk.functions.tool_box import ToolBox
+
+    assert sink_for(None) is None
+    box = ToolBox()
+    attach_catalog_hooks(box, None, names=["timing"])
+    assert sink_for(box) is None
+
+
+def test_the_hook_settings_reach_the_sink():
+    from silk.functions.event_sink import sink_for
+    from silk.functions.hook_catalog import attach_catalog_hooks
+    from silk.functions.tool_box import ToolBox
+
+    box = ToolBox()
+    attach_catalog_hooks(box, None, names=["run_log"],
+                         configs={"run_log": {"keep_runs": 7, "max_lines": 500}})
+    sink = sink_for(box)
+    assert sink is not None and (sink.keep_runs, sink.max_lines) == (7, 500)
+    assert sink.path is None, "nothing is written before the first event"
+
+
+def test_the_agent_node_no_longer_has_its_own_switch():
+    from PySide6.QtWidgets import QApplication
+
+    from silk.nodes.agent import SilkAgentNode
+
+    _app = QApplication.instance() or QApplication([])  # noqa: F841
+    node = SilkAgentNode()
+    try:
+        assert "event_log" not in {p.name for p in node.inputs}
+        assert SilkAgentNode.node_version == 3
+    finally:
+        node.cleanup()
