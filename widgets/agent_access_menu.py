@@ -16,10 +16,12 @@ change is one undo step, as any other edit to a node is.
 """
 from __future__ import annotations
 
-from typing import Any, Iterable, List
+from typing import Any, Iterable, List, Tuple
 
 from PySide6.QtGui import QAction, QActionGroup
 from PySide6.QtWidgets import QMenu
+
+from weave.widgetcore import menus as widget_menus
 
 from ..functions.graph_author import (
     ACCESS_CONFIGURE, ACCESS_CONNECT, ACCESS_FULL, ACCESS_NONE, MARK_ACCESS,
@@ -38,6 +40,16 @@ CHOICES = (
     (ACCESS_FULL, "Full: also remove it"),
 )
 
+#: Tabler icon stems (Weave's widget_icons) for the submenu and each choice.
+MENU_ICON = "shield-lock"
+CHOICE_ICONS = {
+    "": "restore",
+    ACCESS_NONE: "lock",
+    ACCESS_CONNECT: "plug-connected",
+    ACCESS_CONFIGURE: "adjustments",
+    ACCESS_FULL: "lock-open",
+}
+
 
 def _editable(nodes: Iterable[Any]) -> List[Any]:
     """The nodes a level can be set on (a group has no access of its own)."""
@@ -50,17 +62,18 @@ def _editable(nodes: Iterable[Any]) -> List[Any]:
             and hasattr(n, "unique_id") and not is_group_node(n)]
 
 
-def _owner_line(nodes: List[Any], canvas: Any) -> str:
+def _owner_line(nodes: List[Any], canvas: Any) -> Tuple[str, str]:
+    """Who placed *nodes*, and the icon stem that goes with it."""
     owners = {str(access_marks(n).get(MARK_OWNER) or "") for n in nodes}
     if len(owners) != 1:
-        return "Placed by you and by agents"
+        return "Placed by you and by agents", "users"
     owner = owners.pop()
     if not owner:
-        return "Placed by you" if len(nodes) == 1 else "All placed by you"
+        return ("Placed by you" if len(nodes) == 1 else "All placed by you"), "user"
     for item in getattr(canvas, "items", lambda: [])():
         if str(getattr(item, "unique_id", "")) == owner:
-            return f"Placed by agent “{node_title(item)}”"
-    return "Placed by an agent no longer on the canvas"
+            return f"Placed by agent “{node_title(item)}”", "robot"
+    return "Placed by an agent no longer on the canvas", "robot-off"
 
 
 def _default_label(nodes: List[Any]) -> str:
@@ -105,7 +118,12 @@ def build_agent_access_menu(menu: QMenu, nodes: Iterable[Any], canvas: Any) -> N
         return
     sub = menu.addMenu("Agent access")
     sub.setToolTipsVisible(True)
-    who = QAction(_owner_line(nodes, canvas), sub)
+    if ic := widget_menus._icon(MENU_ICON):
+        sub.setIcon(ic)
+    text, stem = _owner_line(nodes, canvas)
+    who = QAction(text, sub)
+    if ic := widget_menus._icon(stem):
+        who.setIcon(ic)
     who.setEnabled(False)
     sub.addAction(who)
     sub.addSeparator()
@@ -116,6 +134,8 @@ def build_agent_access_menu(menu: QMenu, nodes: Iterable[Any], canvas: Any) -> N
     group.setExclusive(True)
     for level, label in CHOICES:
         action = QAction(label or _default_label(nodes), sub)
+        if ic := widget_menus._icon(CHOICE_ICONS[level]):
+            action.setIcon(ic)
         action.setCheckable(True)
         action.setChecked(level == current)
         action.triggered.connect(
