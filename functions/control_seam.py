@@ -38,6 +38,7 @@ from .blocking_seam import CAUSE_ANSWERED, CAUSE_TRANSPORT, new_request_id
 from .graph_author import (
     OP_CONNECT, OP_DESCRIBE, OP_DISCONNECT, OP_EVALUATE, OP_LIST, OP_PLACE,
     OP_READ, OP_REMOVE, OP_SET_VALUE, OP_SETTINGS, check_settable, coerce_value,
+    grants_authority,
 )
 from .main_thread_call import CallResult
 
@@ -137,6 +138,11 @@ class ControlSeam:
         decl = self.kinds().get(node.get("kind", ""), {})
         controls = {c.get("name"): c for c in decl.get("controls", []) if c.get("name")}
         connected = {p["name"] for p in node.get("inputs", []) if p.get("connected")}
+        # An unknown kind has no declaration to read, so its INTERNAL state
+        # stays locked: `check_settable` fails closed without the flag.
+        authority = (not decl) or grants_authority(
+            (p.get("datatype", "") for p in decl.get("outputs", [])),
+            decl.get("module", ""))
         rows = []
         for p in node.get("params", []):
             control = controls.get(p["name"], {})
@@ -149,6 +155,7 @@ class ControlSeam:
                 "value": p.get("value"),
                 "default": p.get("default"),
                 "exists": True,
+                "authority": authority,
             })
         return sorted(rows, key=lambda r: r["name"])
 

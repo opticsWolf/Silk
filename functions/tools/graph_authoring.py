@@ -27,11 +27,13 @@ reuse what is already there, or know which ports are free.
 Configuration arrived later (§22 q9, two more tools): a node an agent can
 place but not set up is a skeleton a human has to finish, so
 `list_node_settings` reads a node's widgets and `set_node_value` writes
-one -- values only, on nodes this run placed, through the same undo
+one -- values only, on nodes the agent has access to, through the same undo
 command a user's own edit goes through. What stays out is the reason the
-question needed its own answer: DISPLAY and INTERNAL widgets are not
-settings (INTERNAL is where the permission switches live), and any port
-whose datatype is an object comes from a connection.
+question needed its own answer: DISPLAY widgets are not settings,
+INTERNAL ones are not settings on a node that grants authority (that is
+where the permission switches live), and any port whose datatype is an
+object comes from a connection. A text box on a value node is INTERNAL
+too, and it is the agent's to type into.
 
 Running and reading came with Weave's control API (P3, two more tools):
 `evaluate_graph` runs the graph, or some of its nodes, and `read_output`
@@ -42,6 +44,11 @@ evaluated, only read as it is. The seam is the canvas's main-thread call
 or, for a Weave without a canvas on this side, `ControlSeam`
 (`functions/control_seam.py`) over the control API; the tools cannot tell
 which.
+
+Which nodes an agent may edit is the node's access level (graph_author,
+rule 2): a node it placed is its own, in every later run too, and any
+other node is untouchable until the user grants access from the node's
+right-click menu. Wiring *from* a node's outputs needs nothing.
 
 Deliberately not here: moving or resizing nodes, saving or loading graph
 files, placing classes off the whitelist, and anything touching another
@@ -58,8 +65,9 @@ from pydantic import BaseModel, Field
 # relative import would be "beyond top-level".
 from ..graph_author import (
     OP_CONNECT, OP_DESCRIBE, OP_DISCONNECT, OP_EVALUATE, OP_LIST, OP_PLACE,
-    OP_READ, OP_REMOVE, OP_SET_VALUE, OP_SETTINGS, Refusal, RunScope, Whitelist,
-    canvas_binding, check_self_modification, protected_nodes,
+    OP_READ, OP_REMOVE, OP_SET_VALUE, OP_SETTINGS, Refusal, Whitelist,
+    canvas_binding, check_access, check_self_modification, node_access,
+    protected_nodes,
 )
 
 if TYPE_CHECKING:
@@ -174,12 +182,29 @@ def attach_graph_tools(toolbox: "ToolBox", sandbox: "FileToolSandbox",
             return None, None, ""
         return binding.seam, binding.scope, binding.agent_uid
 
-    def _graph_edges(seam: Any) -> list:
-        """The current edges, for the self-modification walk (D73)."""
+    def _graph(seam: Any) -> tuple:
+        """(edges, nodes) as describe_graph has them: the edges for the
+        self-modification walk (D73), the nodes for their access."""
         answer = seam.call(OP_DESCRIBE)
         if not answer.ok:
-            return []
-        return list((answer.value or {}).get("edges") or [])
+            return [], []
+        value = answer.value or {}
+        return list(value.get("edges") or []), list(value.get("nodes") or [])
+
+    def _graph_edges(seam: Any) -> list:
+        return _graph(seam)[0]
+
+    def _edit_refusal(op: str, seam: Any, scope: Any, agent_uid: str,
+                      node_id: str, *guarded: str):
+        """Whether *op* on *node_id* is refused: it (or one of *guarded*)
+        is on the agent's own path, which no access level opens, or the
+        agent has too little access to it."""
+        edges, nodes = _graph(seam)
+        refusal = check_self_modification(op, agent_uid, edges,
+                                          *(guarded or (node_id,)))
+        if refusal is not None:
+            return refusal
+        return check_access(op, node_id, node_access(nodes, scope, node_id))
 
     # ── reads ────────────────────────────────────────────────────────────
 
@@ -225,6 +250,9 @@ def attach_graph_tools(toolbox: "ToolBox", sandbox: "FileToolSandbox",
             "- Place nodes *relative* to what is there; reuse a node "
             "rather than duplicating it.\n"
             "- 'connected' on an input port means it is taken.\n"
+            "- 'access' on a node is what you may do to it: none (read it, wire from its outputs), connect (also wire into its "
+            "inputs), configure (also change its settings), full "
+            "(also remove it).\n"
             "- 'agent_id' is you: neither you nor anything upstream of "
             "you may be edited."
         ),
@@ -291,6 +319,9 @@ def attach_graph_tools(toolbox: "ToolBox", sandbox: "FileToolSandbox",
             "list_placeable_nodes.\n"
             "- A refusal names the two datatypes: pick a different port "
             "or an adapter node rather than retrying the same edge.\n"
+            "- Wiring from any node's outputs is fine; wiring into a "
+            "node's inputs needs 'connect' access to it (see "
+            "describe_graph).\n"
             "- You may not connect anything to yourself or to a node "
             "upstream of you."
         ),
@@ -300,8 +331,7 @@ def attach_graph_tools(toolbox: "ToolBox", sandbox: "FileToolSandbox",
         seam, scope, agent_uid = _bound()
         if seam is None:
             return _no_canvas(OP_CONNECT)
-        refusal = check_self_modification(
-            OP_CONNECT, agent_uid, _graph_edges(seam), dst_id)
+        refusal = _edit_refusal(OP_CONNECT, seam, scope, agent_uid, dst_id)
         if refusal is not None:
             return _refused(refusal)
         answer = seam.call(OP_CONNECT, src_id=src_id, src_port=src_port,
@@ -313,7 +343,7 @@ def attach_graph_tools(toolbox: "ToolBox", sandbox: "FileToolSandbox",
             scope.connected((src_id, src_port, dst_id, dst_port))
         return GraphResult(ok=True, op=OP_CONNECT, result=answer.value or {})
 
-    # ── configuring what this run placed (§22 q9) ────────────────────────
+    # ── configuring a node (§22 q9) ──────────────────────────────────────
 
     @toolbox.register(
         name=OP_SETTINGS,
@@ -325,9 +355,15 @@ def attach_graph_tools(toolbox: "ToolBox", sandbox: "FileToolSandbox",
         args_model=SettingsArgs,
         procedure=(
             "Read a node's configuration before changing it.\n"
-            "- settable=false comes with why_not: a display or internal "
-            "widget, an object port that needs a connection, or a port "
-            "something is already wired into.\n"
+            "- Settable or not, you may write only with 'configure' "
+            "access to the node (see describe_graph).\n"
+            "- settable=false comes with why_not: a display widget, an "
+            "internal switch on a node that grants authority (tools, "
+            "permissions, roots, a model, a plan), an object port that "
+            "needs a connection, or a port something is already wired "
+            "into.\n"
+            "- A value node's text box or number field is internal "
+            "and settable: that is how you type into one.\n"
             "- 'value' is what the widget holds right now, so this also "
             "reads results off a node you placed."
         ),
@@ -347,15 +383,18 @@ def attach_graph_tools(toolbox: "ToolBox", sandbox: "FileToolSandbox",
         name=OP_SET_VALUE,
         tags=("graph", "write"), category="graph", risk="medium",
         description=(
-            "Set one setting on a node **this run placed**: text, number "
-            "or boolean. Nodes the user placed are not yours to retune."
+            "Set one setting on a node you have 'configure' access to "
+            "(every node you placed): text, number or boolean."
         ),
         args_model=SetValueArgs,
         procedure=(
-            "Configure your own node.\n"
-            "- Only nodes you placed in this run, and only value "
+            "Configure a node.\n"
+            "- Only nodes with 'configure' or 'full' access, and only value "
             "settings: a model, a toolset or a permissions object comes "
             "from a connection.\n"
+            "- A text box, number field or checkbox on a node is a "
+            "setting when list_node_settings says settable=true; a "
+            "switch on a node that grants authority is the user's.\n"
             "- Read the result: 'value' is what the widget holds after "
             "the write, which is not always what you asked for.\n"
             "- One call is one undo step for the user."
@@ -366,18 +405,7 @@ def attach_graph_tools(toolbox: "ToolBox", sandbox: "FileToolSandbox",
         seam, scope, agent_uid = _bound()
         if seam is None:
             return _no_canvas(OP_SET_VALUE)
-        refusal = (scope or RunScope()).check_node(id)
-        if refusal is not None:
-            # The scope refusal is written for removal; configuring a
-            # node the user placed is the same trespass with a different
-            # verb, so it is worth saying which one this was.
-            return _refused(Refusal(
-                f"Node '{id}' was not created by this run, so its settings "
-                f"are not yours to change. Place your own node, or ask the "
-                f"user to change that one.",
-                op=OP_SET_VALUE, subject=str(id)))
-        refusal = check_self_modification(
-            OP_SET_VALUE, agent_uid, _graph_edges(seam), id)
+        refusal = _edit_refusal(OP_SET_VALUE, seam, scope, agent_uid, id)
         if refusal is not None:
             return _refused(refusal)
         answer = seam.call(OP_SET_VALUE, id=id, port=port, value=value)
@@ -386,20 +414,20 @@ def attach_graph_tools(toolbox: "ToolBox", sandbox: "FileToolSandbox",
                                message=answer.failure_text())
         return GraphResult(ok=True, op=OP_SET_VALUE, result=answer.value or {})
 
-    # ── taking apart what this run built ─────────────────────────────────
+    # ── taking apart ─────────────────────────────────────────────────────
 
     @toolbox.register(
         name=OP_DISCONNECT,
         tags=("graph", "write"), category="graph", risk="high",
         requires_approval=True,
         description=(
-            "Remove an edge **that this run created**. Edges the user made "
-            "are not yours to remove."
+            "Remove an edge into a node you have 'connect' access to "
+            "(every node you placed)."
         ),
         args_model=DisconnectArgs,
         procedure=(
-            "Undo one of your own connections.\n"
-            "- Only edges created earlier in this run can be removed.\n"
+            "Take a wire out.\n"
+            "- Only wires into a node with 'connect' access or more.\n"
             "- The user is asked to approve before it happens."
         ),
     )
@@ -409,11 +437,8 @@ def attach_graph_tools(toolbox: "ToolBox", sandbox: "FileToolSandbox",
         if seam is None:
             return _no_canvas(OP_DISCONNECT)
         edge = (src_id, src_port, dst_id, dst_port)
-        refusal = (scope or RunScope()).check_edge(edge)
-        if refusal is not None:
-            return _refused(refusal)
-        refusal = check_self_modification(
-            OP_DISCONNECT, agent_uid, _graph_edges(seam), src_id, dst_id)
+        refusal = _edit_refusal(OP_DISCONNECT, seam, scope, agent_uid,
+                                dst_id, src_id, dst_id)
         if refusal is not None:
             return _refused(refusal)
         answer = seam.call(OP_DISCONNECT, src_id=src_id, src_port=src_port,
@@ -430,13 +455,13 @@ def attach_graph_tools(toolbox: "ToolBox", sandbox: "FileToolSandbox",
         tags=("graph", "write"), category="graph", risk="high",
         requires_approval=True,
         description=(
-            "Remove a node **that this run placed**. Nodes the user placed "
-            "are not yours to remove."
+            "Remove a node you have 'full' access to (every node you "
+            "placed, unless the user took it back)."
         ),
         args_model=RemoveNodeArgs,
         procedure=(
-            "Undo one of your own placements.\n"
-            "- Only nodes placed earlier in this run can be removed.\n"
+            "Take a node out.\n"
+            "- Only nodes with 'full' access.\n"
             "- Its connections go with it, in the same undo step.\n"
             "- The user is asked to approve before it happens."
         ),
@@ -445,11 +470,7 @@ def attach_graph_tools(toolbox: "ToolBox", sandbox: "FileToolSandbox",
         seam, scope, agent_uid = _bound()
         if seam is None:
             return _no_canvas(OP_REMOVE)
-        refusal = (scope or RunScope()).check_node(id)
-        if refusal is not None:
-            return _refused(refusal)
-        refusal = check_self_modification(
-            OP_REMOVE, agent_uid, _graph_edges(seam), id)
+        refusal = _edit_refusal(OP_REMOVE, seam, scope, agent_uid, id)
         if refusal is not None:
             return _refused(refusal)
         answer = seam.call(OP_REMOVE, id=id)

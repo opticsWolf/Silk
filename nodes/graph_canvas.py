@@ -32,16 +32,25 @@ from PySide6.QtCore import QCoreApplication, QObject, Qt, Signal
 from weave.logger import get_logger
 
 from ..functions.graph_author import (
-    OP_CONNECT, OP_DESCRIBE, OP_DISCONNECT, OP_EVALUATE, OP_LIST, OP_PLACE,
-    OP_READ, OP_REMOVE, OP_SET_VALUE, OP_SETTINGS, check_settable, coerce_value,
-    describe_class, describe_instance, node_title, set_node_title,
+    MARK_OWNER, OP_CONNECT, OP_DESCRIBE, OP_DISCONNECT, OP_EVALUATE, OP_LIST,
+    OP_PLACE, OP_READ, OP_REMOVE, OP_SET_VALUE, OP_SETTINGS, PLUGIN_KEY,
+    access_marks, check_settable, coerce_value, describe_class,
+    describe_instance, effective_access, grants_authority, node_title,
+    set_node_title,
 )
 from ..functions.main_thread_call import CallRequest, MainThreadCall
 from ..functions.self_modify import (
     OP_LOAD_SUITE, OP_RELAUNCH, OP_RELOAD_SUITE,
 )
+from ..widgets.agent_access_menu import install as install_access_menu
 
 log = get_logger("SilkGraphCanvas")
+
+# The user's half of node access: the **Agent access** entry in every
+# node's right-click menu, which sets the levels the graph tools obey.
+if not install_access_menu():
+    log.info("This Weave has no node-menu hook; Agent access cannot be "
+             "changed from the canvas")
 
 
 class CanvasAuthor(QObject):
@@ -169,12 +178,19 @@ class CanvasAuthor(QObject):
         return entry
 
     def _describe(self, canvas: Any, args: dict) -> dict:
-        """Nodes and edges, in the tuple shape the undo commands speak."""
+        """Nodes and edges, in the tuple shape the undo commands speak.
+
+        Each node carries ``access``: what this agent may do to it, read
+        off the marks the node saves with the graph.
+        """
+        agent_uid = str(getattr(self._node, "unique_id", ""))
         nodes, edges = [], []
         for item in canvas.items():
             if not hasattr(item, "unique_id"):
                 continue
-            nodes.append(describe_instance(item))
+            entry = describe_instance(item)
+            entry["access"] = effective_access(access_marks(item), agent_uid)
+            nodes.append(entry)
             for port in getattr(item, "outputs", []) or []:
                 for trace in getattr(port, "connected_traces", None) or ():
                     target = getattr(trace, "target", None)
@@ -234,6 +250,12 @@ class CanvasAuthor(QObject):
             bindings = core.bindings()
         except (AttributeError, RuntimeError):
             return rows
+        # Whether this node's INTERNAL widgets are authority (see
+        # `check_settable`): read off what it emits and where it comes from.
+        authority = grants_authority(
+            (str(getattr(port, "datatype", "") or "")
+             for port in getattr(node, "outputs", []) or []),
+            type(node).__module__)
         for name, binding in (bindings or {}).items():
             role = getattr(getattr(binding, "role", None), "name", "")
             try:
@@ -249,6 +271,7 @@ class CanvasAuthor(QObject):
                 "value": value,
                 "default": getattr(binding, "default", None),
                 "exists": True,
+                "authority": authority,
             })
         return sorted(rows, key=lambda r: r["name"])
 
@@ -282,6 +305,12 @@ class CanvasAuthor(QObject):
             # wrote an attribute the canvas never reads (see
             # `set_node_title`), so the agent's title was silently lost.
             set_node_title(node, title)
+        if hasattr(node, "set_plugin_data"):
+            # Whose node this is, saved with it: the placing agent keeps
+            # full access in later runs, and undo restores the mark with
+            # the node (it is in the snapshot below).
+            node.set_plugin_data((PLUGIN_KEY, {
+                MARK_OWNER: str(getattr(self._node, "unique_id", ""))}))
         canvas.add_node(node, (float(position[0]), float(position[1])))
 
         uid, cls_name, state, npos = capture_node_snapshot(node)

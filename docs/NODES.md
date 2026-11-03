@@ -463,9 +463,21 @@ waiting on a decision unwinds at once instead of waiting out the timeout.
 reads a node's widgets — name, type, current value, and why a port is not
 writable — and `set_node_value` writes one, as one undo step. Values only
 (text, number, boolean): a model, a toolset or a permissions object comes
-from a connection, and display and internal widgets are readable but never
-writable, which is what keeps a `Plugin authoring` checkbox out of an
-agent's reach. Only nodes the run placed itself.
+from a connection. Display widgets are readable but never writable;
+internal ones — a String Input's text box, an Int Input's number — are
+writable unless the node grants authority (any Silk node, or one that
+outputs tools, permissions, roots, a model or a plan), which is what keeps
+a `Plugin authoring` checkbox out of an agent's reach.
+
+**Which nodes an agent may edit is the node's Agent access** (right-click
+a node, **Agent access**). A node an agent placed stays that agent's in
+full, across runs and saves; any other node gives agents no access until
+you pick a level: *Connect* (wire into its inputs), *Configure* (also
+change its settings), *Full* (also remove it). Wiring *from* a node's
+outputs never needs access. A level you pick applies to every agent and
+beats ownership, so *No access* takes back a node an agent placed;
+*Default* returns it to the owner. Each change is one undo step. Nothing
+opens the agent's own path — itself, and whatever feeds it.
 
 **An approved plugin comes back by itself, until it is edited** (§22 q10).
 Approving a `load_suite` pins the SHA-256 of every importable file in that

@@ -89,9 +89,30 @@ without Qt and unit-testable against a fake resolver:
   remove entries, never add), and `missing()` names whitelisted classes that
   are no longer registered — surfaced at the node, not as a refusal an agent
   hits halfway through building something.
-- **`RunScope`** (D73) — what *this run* placed and connected. `remove_node`
-  and `disconnect` touch nothing else: an agent may clean up after itself, it
-  may not prune the user's graph. Removing a node forgets its edges with it.
+- **Node access** (D73, widened) — each node has an agent access level,
+  weakest first: `none` (read it, wire *from* its outputs), `connect` (also
+  wire into or out of its inputs), `configure` (also `set_node_value`),
+  `full` (also `remove_node`). `ACCESS_NEEDED` maps each write to the level
+  it needs on the node it edits — for a wire, the destination; reading a
+  node's outputs needs nothing. The level lives in the node's plugin data
+  under `silk` (Weave's `Node.plugin_data`, saved, undone and duplicated with
+  the node): `owner` is the uid of the Agent node that placed it, `access`
+  a level the user chose. Unchosen, a node is `full` for its owner — in this
+  run and every later one — and `none` for everyone else, so the user's
+  graph stays out of reach until they open it up. A chosen level applies to
+  every agent, the owner included, so the user can take back a node an agent
+  placed. The canvas reports each node's level on `describe_graph`
+  (`access`), and the tools refuse below it with the level they saw and the
+  one they needed.
+- **Agent access** (`widgets/agent_access_menu.py`) — the user's half: a
+  submenu in every node's right-click menu, through Weave's
+  `register_node_menu_extension`. It says who placed the node and offers
+  Default plus the four levels, for one node or a selection; each change is
+  one `NodePropertyCommand` on `set_plugin_data`, so Ctrl+Z undoes it.
+- **`RunScope`** — the fallback for a seam whose nodes carry no marks (the
+  control API): there a node is the agent's in full for the run that placed
+  it and nobody's after. A headless graph has no menu to grant access from,
+  so nothing else is reachable there.
 - **`check_self_modification`** (D73) — an upstream walk from the Agent node
   at request time (`upstream_of`, `protected_nodes`, cycle-safe). The agent
   may not rewire itself, its ToolBox / ToolSet / Role / model chain, or
@@ -147,17 +168,26 @@ setter over `WidgetCore` bindings, and the narrowing is where the safety is:
   refusal says so. That keeps the authority-bearing ports (`file_permissions`,
   `dirpath_list`) unwritable *by construction* rather than by a rule someone
   has to remember.
-- **INPUT and BIDIRECTIONAL roles only.** DISPLAY is computed output;
-  INTERNAL is node-local state, and INTERNAL is where the permission switches
-  live — a ToolBox's **Plugin authoring** checkbox is an INTERNAL widget, so
-  an agent that could write INTERNAL could grant itself authority by ticking a
-  box. Both roles stay *readable*: `list_node_settings` returns every widget
+- **INPUT and BIDIRECTIONAL roles, and INTERNAL where no authority is at
+  stake.** DISPLAY is computed output and never a setting. INTERNAL is
+  node-local state, and it is two things: the text box on a String Input or
+  the number field on an Int Input — a value node's whole point, and the
+  agent's to type into — and the permission switches — a ToolBox's **Plugin
+  authoring** checkbox is an INTERNAL widget, so an agent that could write it
+  could grant itself authority by ticking a box. `grants_authority` tells
+  them apart by the node rather than the widget: a node from the Silk
+  package, or one with an output in `AUTHORITY_TYPES` (a toolbox, toolset,
+  role, plan, model, permissions, roots, MCP servers, toolchains), keeps its
+  INTERNAL widgets locked. Both resolvers (the canvas and the control seam)
+  put the answer on each setting row, and a row without one is refused, so
+  a resolver that forgets it fails closed. Both roles stay *readable*: `list_node_settings` returns every widget
   with its current value, and an agent reading a display port is reading a
   result, not editing one.
 - **A wired port is not written behind the wire.** The upstream value wins
   over the widget, so writing one would be a change the graph then discards.
-- **The same scope as removal** (D73): only nodes this run placed, never the
-  user's, and never the agent's own execution path.
+- **`configure` access** (D73, widened): every node the agent placed, and a
+  user's node only once the user grants it — never the agent's own execution
+  path, which no level opens.
 - **One call, one undoable command.** `WidgetValueCommand`, applied then
   pushed — the order `_place` already uses, because the undo manager records
   what happened rather than performing it.

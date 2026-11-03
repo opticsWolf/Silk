@@ -88,7 +88,10 @@ def test_an_agent_builds_evaluates_and_reads_a_headless_graph(local):
     settings = call(box, OP_SETTINGS, id=add_id)["result"]["settings"]
     by_name = {s["name"]: s for s in settings}
     assert by_name["B"]["settable"] and by_name["B"]["datatype"] == "float"
-    assert not by_name["op"]["settable"], "INTERNAL is not a setting"
+    assert by_name["op"]["role"] == "INTERNAL" and by_name["op"]["settable"], (
+        "a math node grants no authority, so its internal choice is a setting")
+    same_op = call(box, OP_SET_VALUE, id=add_id, port="op", value=by_name["op"]["value"])
+    assert same_op["ok"], same_op
     set_b = call(box, OP_SET_VALUE, id=add_id, port="B", value=4)
     assert set_b["ok"] and set_b["result"]["value"] == 4.0, set_b
 

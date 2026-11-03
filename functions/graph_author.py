@@ -22,9 +22,14 @@ Three rules, in the order they are checked:
    them. There is no "allow all": selecting everything is possible and
    must be a deliberate act. Same reasoning as I6 -- the safe state is
    the one you get by doing nothing.
-2. **Destructive calls are scoped to the run** (D73). `remove_node` and
-   `disconnect` touch only what *this* agent placed in *this* run. An
-   agent may clean up after itself; it may not prune the user's graph.
+2. **Editing a node needs access to it** (D73, widened). Each node has an
+   agent access level -- none, connect, configure or full -- that the user
+   sets from its right-click menu (**Agent access**). Left at its default, a
+   node the agent placed is the placing agent's in full, in this run and
+   every later one, and a node the user placed is nobody's. Reading a node
+   and wiring *from* its outputs need nothing; wiring into or out of its
+   inputs needs connect, `set_node_value` needs configure, `remove_node`
+   needs full.
 3. **No self-modification** (D73). Nothing may touch the Agent node, its
    ToolBox / ToolSet / Role / model chain, or anything upstream of it.
    The graph that is running the agent is not material the agent edits
@@ -62,12 +67,50 @@ DESTRUCTIVE_OPS = (OP_DISCONNECT, OP_REMOVE)
 RUN_OPS = (OP_EVALUATE,)
 OPS = READ_OPS + WRITE_OPS + DESTRUCTIVE_OPS + RUN_OPS
 
-#: Widget roles a value may be written to. DISPLAY is computed output and
-#: INTERNAL is node-local state -- which is where the permission-bearing
-#: switches live (a ToolBox's "Plugin authoring", for one), so an agent
-#: that could write INTERNAL could grant itself authority by ticking a
-#: box. Both are readable in the listing and neither is settable.
+#: Widget roles a value may be written to on any node. DISPLAY is computed
+#: output and never settable. INTERNAL is node-local state: it is where
+#: the permission-bearing switches live (a ToolBox's "Plugin authoring",
+#: for one), and also where most of Weave's value nodes keep the very text
+#: box they exist for -- String Input, Text Box Input, the Int / Float /
+#: Bool inputs. So INTERNAL is settable on a node that grants no authority
+#: (:func:`grants_authority`) and on no other.
 SETTABLE_ROLES = ("INPUT", "BIDIRECTIONAL")
+ROLE_INTERNAL = "INTERNAL"
+
+#: Output datatypes that carry authority: a node emitting one of these
+#: hands a downstream node tools, permissions, roots, a model or a plan.
+#: Its node-local switches are how that authority is set, so an agent that
+#: could tick them could grant itself what it was not given -- place a
+#: ToolBox, enable Plugin authoring, wire it to an Agent of its own. Read
+#: off the node's own ports, so a new value node is configurable with no
+#: extra code and a new authority node is locked as soon as it says what it
+#: emits. ``agent_message`` is not one: a message is content, not a grant,
+#: and the only node that emits one (Silk Agent) is locked as a Silk node.
+AUTHORITY_TYPES = frozenset({
+    "silk_toolbox", "silk_toolset", "silk_role", "silk_classifier",
+    "silk_plan", "silk_workers", "model_handle",
+    "file_permissions", "dirpath_list", "mcp_servers", "toolchains",
+})
+
+#: This plugin's own package, however it was imported (``weave.plugins.silk``
+#: in the app, ``silk`` in its tests). Every Silk node configures an agent,
+#: its tools or its view of them, so none of their INTERNAL state is the
+#: agent's to set, whatever it happens to output.
+_SILK_PACKAGE = __name__.rsplit(".", 2)[0]
+
+
+def grants_authority(output_types: Iterable[str], module: str = "") -> bool:
+    """Whether a node's node-local state is authority the agent must not set.
+
+    True for a Silk node and for any node that emits an
+    :data:`AUTHORITY_TYPES` value. A caller that cannot tell (no module,
+    no ports) should pass nothing and treat the row as authority-bearing:
+    :func:`check_settable` fails closed on a row without the flag.
+    """
+    module = str(module or "")
+    if module == _SILK_PACKAGE or module.startswith(_SILK_PACKAGE + "."):
+        return True
+    return any(str(t).lower() in AUTHORITY_TYPES for t in output_types)
 
 #: Datatypes a *value* can carry. Everything else on a node -- a model, a
 #: toolset, a permissions object, a list of roots -- is supplied by a
@@ -82,6 +125,80 @@ SETTABLE_TYPES = {
     "float": float, "number": float,
     "bool": bool, "boolean": bool,
 }
+
+
+#: Agent access to one node, weakest first; each level includes the ones
+#: before it. Reading a node and wiring from its outputs need none.
+ACCESS_NONE = "none"
+ACCESS_CONNECT = "connect"
+ACCESS_CONFIGURE = "configure"
+ACCESS_FULL = "full"
+ACCESS_LEVELS = (ACCESS_NONE, ACCESS_CONNECT, ACCESS_CONFIGURE, ACCESS_FULL)
+
+#: What each edit needs on the node it edits (the destination, for a wire).
+ACCESS_NEEDED = {
+    OP_CONNECT: ACCESS_CONNECT,
+    OP_DISCONNECT: ACCESS_CONNECT,
+    OP_SET_VALUE: ACCESS_CONFIGURE,
+    OP_REMOVE: ACCESS_FULL,
+}
+
+_ACCESS_WORDS = {
+    ACCESS_CONNECT: "wire into its inputs",
+    ACCESS_CONFIGURE: "change its settings",
+    ACCESS_FULL: "remove it",
+}
+
+#: The key Silk's marks live under in a node's plugin data
+#: (``Node.plugin_data``): ``owner`` is the uid of the Agent node that placed
+#: it, ``access`` a level the user chose. Both are saved with the graph.
+PLUGIN_KEY = "silk"
+MARK_OWNER = "owner"
+MARK_ACCESS = "access"
+
+
+def access_marks(node: Any) -> dict:
+    """Silk's marks on a live node: ``{"owner": ..., "access": ...}``, or {}."""
+    reader = getattr(node, "plugin_data", None)
+    if not callable(reader):
+        return {}
+    try:
+        marks = reader(PLUGIN_KEY)
+    except Exception:  # noqa: BLE001 - a node mid-teardown
+        return {}
+    return dict(marks) if isinstance(marks, dict) else {}
+
+
+def default_access(marks: dict, agent_uid: str) -> str:
+    """The level a node has when the user has not chosen one: full for the
+    agent that placed it, none for everyone else."""
+    owner = str(marks.get(MARK_OWNER) or "")
+    return ACCESS_FULL if owner and owner == str(agent_uid) else ACCESS_NONE
+
+
+def effective_access(marks: dict, agent_uid: str) -> str:
+    """What *agent_uid* may do to a node with *marks*. A level the user
+    chose applies to every agent, the placing one included."""
+    chosen = str(marks.get(MARK_ACCESS) or "")
+    if chosen in ACCESS_LEVELS:
+        return chosen
+    return default_access(marks, agent_uid)
+
+
+def check_access(op: str, node_uid: str, level: str) -> Optional[Refusal]:
+    """Refuse *op* on a node the agent has *level* access to, if too low."""
+    need = ACCESS_NEEDED.get(op)
+    if need is None:
+        return None
+    have = level if level in ACCESS_LEVELS else ACCESS_NONE
+    if ACCESS_LEVELS.index(have) >= ACCESS_LEVELS.index(need):
+        return None
+    return Refusal(
+        f"You may not {_ACCESS_WORDS[need]}: node '{node_uid}' gives you "
+        f"'{have}' access and this needs '{need}'. Nodes you placed are "
+        f"yours; any other node's access is set by the user (right-click "
+        f"the node, Agent access). Place your own node, or ask the user.",
+        op=op, subject=str(node_uid))
 
 
 @dataclass(frozen=True)
@@ -163,11 +280,12 @@ class Whitelist:
 
 @dataclass
 class RunScope:
-    """What this run built, and therefore what it may take apart (D73).
+    """What this run built: the fallback for a seam that keeps no marks.
 
-    The record is per run and per agent, not per graph: two agents
-    building side by side each undo only their own work, and neither can
-    reach a node the user placed.
+    A canvas marks the nodes an agent places (:func:`access_marks`), so
+    there the marks decide and outlive the run. A seam whose nodes carry
+    no marks (the control API) has only this record, so there a node is
+    the agent's in full for the run that placed it and nobody's after.
     """
 
     nodes: set = field(default_factory=set)
@@ -213,6 +331,22 @@ class RunScope:
         return None
 
 
+def node_access(nodes: Iterable[dict], scope: Optional[RunScope],
+                node_uid: str) -> str:
+    """The agent's access to *node_uid*, from what `describe_graph` said.
+
+    A seam that knows the marks reports ``access`` on each node and that
+    is the answer, even for a node this run placed (the user may have
+    taken it back). Otherwise the run's own record: placed here is full,
+    anything else none.
+    """
+    for entry in nodes:
+        if str(entry.get("id", "")) == str(node_uid) and "access" in entry:
+            return str(entry["access"])
+    owned = scope is not None and scope.owns_node(node_uid)
+    return ACCESS_FULL if owned else ACCESS_NONE
+
+
 def check_settable(port: dict, node_uid: str) -> Optional[Refusal]:
     """Whether one port of a live node may be written (§22 q9).
 
@@ -220,6 +354,11 @@ def check_settable(port: dict, node_uid: str) -> Optional[Refusal]:
     because "no" without a reason sends a model round the same loop:
     it does not exist, it is not a value port, it carries something only
     a wire can supply, or a wire is already supplying it.
+
+    An INTERNAL widget is a value port only when the row says
+    ``authority=False`` (see :func:`grants_authority`); a row without the
+    flag is treated as authority-bearing, so a resolver that forgets to
+    say fails closed.
     """
     name = str(port.get("name", ""))
     if not port.get("exists", True):
@@ -229,7 +368,14 @@ def check_settable(port: dict, node_uid: str) -> Optional[Refusal]:
             op=OP_SET_VALUE, subject=name)
 
     role = str(port.get("role", "")).upper()
-    if role not in SETTABLE_ROLES:
+    if role == ROLE_INTERNAL and port.get("authority", True):
+        return Refusal(
+            f"'{name}' is internal state on a node that grants authority "
+            f"(tools, permissions, roots, a model or a plan). Setting it "
+            f"would be granting that authority, so it cannot be written; "
+            f"ask the user to set it.",
+            op=OP_SET_VALUE, subject=name)
+    if role not in SETTABLE_ROLES and role != ROLE_INTERNAL:
         return Refusal(
             f"'{name}' is a {role.lower() or 'display'} widget, not a "
             f"setting: it shows what the node computed or holds state the "

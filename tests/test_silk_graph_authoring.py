@@ -17,10 +17,12 @@ from types import SimpleNamespace
 import pytest
 
 from silk.functions.graph_author import (
-    CanvasBinding, OP_CONNECT, OP_DESCRIBE, OP_DISCONNECT, OP_LIST, OP_PLACE,
-    OP_REMOVE, OP_SET_VALUE, OP_SETTINGS, OPS, RunScope, Whitelist,
-    bind_canvas, canvas_binding, check_self_modification, check_settable,
-    coerce_value, protected_nodes, upstream_of,
+    ACCESS_CONFIGURE, ACCESS_CONNECT, ACCESS_FULL, ACCESS_NONE, MARK_ACCESS,
+    MARK_OWNER, CanvasBinding, OP_CONNECT, OP_DESCRIBE, OP_DISCONNECT, OP_LIST,
+    OP_PLACE, OP_REMOVE, OP_SET_VALUE, OP_SETTINGS, OPS, RunScope, Whitelist,
+    bind_canvas, canvas_binding, check_access, check_self_modification,
+    check_settable, coerce_value, default_access, effective_access,
+    grants_authority, node_access, protected_nodes, upstream_of,
 )
 from silk.functions.approval import bind_run_seam
 from silk.functions.decision_seam import DecisionSeam
@@ -200,12 +202,12 @@ def test_the_agent_can_read_the_graph(box, canvas):
     )
 
 
-# ── destructive calls are scoped to the run (D73) ────────────────────────
+# ── an edit needs access to the node it edits (D73, widened) ────────────
 
 
 def test_a_node_this_run_did_not_place_cannot_be_removed(box, canvas):
     result = call(box, OP_REMOVE, id="user-node")
-    assert not result["ok"] and "not created by this run" in result["message"]
+    assert not result["ok"] and "'none' access" in result["message"]
     assert not any(op == OP_REMOVE for op, _ in canvas.calls), (
         "an agent may clean up after itself; it may not prune the user's "
         "graph"
@@ -221,17 +223,71 @@ def test_what_this_run_placed_it_may_remove(box, canvas):
 
 
 def test_an_edge_this_run_did_not_make_cannot_be_cut(box, canvas):
-    result = call(box, OP_DISCONNECT, src_id="box", src_port="toolbox",
-                  dst_id="set", dst_port="toolbox")
-    assert not result["ok"] and "not created by this run" in result["message"]
+    canvas.edges.append(["u1", "out", "u2", "in"])
+    result = call(box, OP_DISCONNECT, src_id="u1", src_port="out",
+                  dst_id="u2", dst_port="in")
+    assert not result["ok"] and "'none' access" in result["message"]
 
 
-def test_what_this_run_connected_it_may_disconnect(box):
+def test_a_wire_into_its_own_node_it_may_make_and_cut(box):
+    """From any node's outputs -- the user's 'other' here -- into its own."""
     call(box, OP_PLACE, class_name="TextNode")
-    assert call(box, OP_CONNECT, src_id="new-1", src_port="text",
-                dst_id="other", dst_port="text")["ok"]
-    assert call(box, OP_DISCONNECT, src_id="new-1", src_port="text",
-                dst_id="other", dst_port="text")["ok"]
+    assert call(box, OP_CONNECT, src_id="other", src_port="text",
+                dst_id="new-1", dst_port="text")["ok"]
+    assert call(box, OP_DISCONNECT, src_id="other", src_port="text",
+                dst_id="new-1", dst_port="text")["ok"]
+
+
+def test_a_wire_into_a_users_node_needs_access(box, canvas):
+    call(box, OP_PLACE, class_name="TextNode")
+    result = call(box, OP_CONNECT, src_id="new-1", src_port="text",
+                  dst_id="other", dst_port="text")
+    assert not result["ok"] and "wire into its inputs" in result["message"]
+    assert not any(op == OP_CONNECT for op, _ in canvas.calls)
+
+
+def test_the_level_the_canvas_reports_decides(box, canvas):
+    """The user's level wins both ways: it opens their node, and it
+    takes back one the agent placed in this very run."""
+    placed = call(box, OP_PLACE, class_name="TextNode")["result"]["id"]
+    canvas.nodes = [{"id": "theirs", "access": ACCESS_CONFIGURE},
+                    {"id": placed, "access": ACCESS_NONE}]
+    assert call(box, OP_SET_VALUE, id="theirs", port="text", value="x")["ok"]
+    assert call(box, OP_CONNECT, src_id=placed, src_port="text",
+                dst_id="theirs", dst_port="text")["ok"]
+    removed = call(box, OP_REMOVE, id="theirs")
+    assert not removed["ok"] and "needs 'full'" in removed["message"]
+    retuned = call(box, OP_SET_VALUE, id=placed, port="text", value="x")
+    assert not retuned["ok"] and "'none' access" in retuned["message"]
+
+
+def test_no_level_opens_the_agents_own_path(box, canvas):
+    canvas.nodes = [{"id": "set", "access": ACCESS_FULL}]
+    result = call(box, OP_SET_VALUE, id="set", port="text", value="x")
+    assert not result["ok"] and "own execution path" in result["message"]
+
+
+def test_access_levels_and_their_defaults():
+    mine = {MARK_OWNER: "agent"}
+    assert default_access(mine, "agent") == ACCESS_FULL
+    assert default_access(mine, "other-agent") == ACCESS_NONE, (
+        "a node is the placing agent's, not every agent's")
+    assert default_access({}, "agent") == ACCESS_NONE
+    assert effective_access({**mine, MARK_ACCESS: ACCESS_CONNECT},
+                            "agent") == ACCESS_CONNECT
+    assert effective_access({MARK_ACCESS: "bogus"}, "agent") == ACCESS_NONE
+    assert check_access(OP_CONNECT, "n", ACCESS_CONNECT) is None
+    assert check_access(OP_SET_VALUE, "n", ACCESS_CONNECT) is not None
+    assert check_access(OP_REMOVE, "n", ACCESS_CONFIGURE) is not None
+    assert check_access(OP_REMOVE, "n", ACCESS_FULL) is None
+    assert check_access(OP_PLACE, "n", ACCESS_NONE) is None
+    scope = RunScope()
+    scope.placed("n1")
+    assert node_access([], scope, "n1") == ACCESS_FULL, (
+        "a seam without marks falls back to what this run placed")
+    assert node_access([{"id": "n1", "access": ACCESS_NONE}], scope,
+                       "n1") == ACCESS_NONE
+    assert node_access([], None, "n2") == ACCESS_NONE
 
 
 def test_removing_a_node_forgets_its_edges():
@@ -264,8 +320,8 @@ def test_the_agent_may_not_edit_what_feeds_it(box, canvas):
 
 def test_an_unrelated_node_is_not_protected(box):
     call(box, OP_PLACE, class_name="TextNode")
-    assert call(box, OP_CONNECT, src_id="new-1", src_port="out",
-                dst_id="sibling", dst_port="in")["ok"]
+    assert call(box, OP_CONNECT, src_id="sibling", src_port="out",
+                dst_id="new-1", dst_port="in")["ok"]
 
 
 def test_the_guard_walks_the_whole_chain():
@@ -329,7 +385,7 @@ def test_a_node_the_user_placed_is_not_retuned(box, canvas):
     """The same boundary as removal, said in the verb that was tried."""
     result = call(box, OP_SET_VALUE, id="theirs", port="text", value="x")
     assert result["ok"] is False
-    assert "not yours to change" in result["message"]
+    assert "change its settings" in result["message"]
     assert all(op != OP_SET_VALUE for op, _ in canvas.calls), (
         "and nothing reached the canvas"
     )
@@ -383,13 +439,35 @@ def test_a_value_port_is_settable():
     assert check_settable(_port(), "n1") is None
 
 
-def test_a_display_or_internal_widget_is_not_a_setting():
-    """INTERNAL is where the permission switches live (a ToolBox's
-    'Plugin authoring'), so writing it would be an agent granting itself
-    authority by ticking a box."""
-    for role in ("DISPLAY", "INTERNAL", "OUTPUT"):
-        refusal = check_settable(_port(role=role), "n1")
+def test_a_display_widget_is_not_a_setting():
+    for role in ("DISPLAY", "OUTPUT"):
+        refusal = check_settable(_port(role=role, authority=False), "n1")
         assert refusal is not None and "cannot be written" in refusal.reason
+
+
+def test_internal_state_is_a_setting_only_on_a_node_without_authority():
+    """INTERNAL is where the permission switches live (a ToolBox's
+    'Plugin authoring'), and also where String Input keeps its text box.
+    The first must stay unwritable; the second is the node's whole point."""
+    assert check_settable(_port(role="INTERNAL", authority=False), "n1") is None
+    for row in (_port(role="INTERNAL", authority=True),
+                _port(role="INTERNAL")):            # no flag: fail closed
+        refusal = check_settable(row, "n1")
+        assert refusal is not None and "grants authority" in refusal.reason
+
+
+def test_authority_is_read_off_the_ports_and_the_plugin():
+    assert not grants_authority(["string"], "weave.library.basic")
+    assert not grants_authority(["float", "dict"], "weave.library.math")
+    assert not grants_authority(["agent_message"], "weave.library.x"), (
+        "a message is content, not a grant")
+    for emits in (["silk_toolbox"], ["file_permissions", "list"],
+                  ["dirpath_list"], ["model_handle"], ["Silk_Plan"]):
+        assert grants_authority(emits, "weave.library.x"), emits
+    silk = grants_authority.__module__.rsplit(".", 2)[0]
+    assert grants_authority(["string"], f"{silk}.nodes.plan_viewer"), (
+        "every Silk node configures an agent or its tools")
+    assert not grants_authority(["string"], f"{silk}extra.nodes.x")
 
 
 def test_an_object_port_needs_a_connection():
