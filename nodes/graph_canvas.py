@@ -30,6 +30,7 @@ from typing import Any, Optional
 from PySide6.QtCore import QCoreApplication, QObject, Qt, Signal
 
 from weave.logger import get_logger
+from weave.node.core import Node
 
 from ..functions.graph_author import (
     MARK_OWNER, OP_CONNECT, OP_DESCRIBE, OP_DISCONNECT, OP_EVALUATE, OP_LIST,
@@ -45,6 +46,16 @@ from ..functions.self_modify import (
 from ..widgets.agent_access_menu import install as install_access_menu
 
 log = get_logger("SilkGraphCanvas")
+
+
+def _canvas_nodes(canvas: Any) -> list:
+    """The nodes on *canvas*, and nothing else on it.
+
+    Not "every item with a ``unique_id``": ports carry one too, and a
+    port taken for a node is described, run and found by id as if it were
+    one -- a describe that walks every port of every node as a node.
+    """
+    return [item for item in canvas.items() if isinstance(item, Node)]
 
 # The user's half of node access: the **Agent access** entry in every
 # node's right-click menu, which sets the levels the graph tools obey.
@@ -185,9 +196,7 @@ class CanvasAuthor(QObject):
         """
         agent_uid = str(getattr(self._node, "unique_id", ""))
         nodes, edges = [], []
-        for item in canvas.items():
-            if not hasattr(item, "unique_id"):
-                continue
+        for item in _canvas_nodes(canvas):
             entry = describe_instance(item)
             entry["access"] = effective_access(access_marks(item), agent_uid)
             nodes.append(entry)
@@ -388,8 +397,8 @@ class CanvasAuthor(QObject):
             if missing:
                 return {"ok": False, "error": f"no node with id {missing} on the canvas"}
         else:
-            nodes = [i for i in canvas.items() if hasattr(i, "unique_id")
-                     and getattr(i, "_is_dirty", False)]
+            nodes = [i for i in _canvas_nodes(canvas)
+                     if getattr(i, "_is_dirty", False)]
         errors, done = [], []
         for node in nodes:
             uid = str(getattr(node, "unique_id", ""))
@@ -558,7 +567,7 @@ class CanvasAuthor(QObject):
 
     @staticmethod
     def _node_by_id(canvas: Any, node_uid: str) -> Optional[Any]:
-        for item in canvas.items():
+        for item in _canvas_nodes(canvas):
             if str(getattr(item, "unique_id", "")) == node_uid:
                 return item
         return None
