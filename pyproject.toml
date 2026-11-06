@@ -45,6 +45,14 @@ mcp = ["mcp>=1.2"]
 # bitemporal pair (`as_of_valid`/`as_of_recorded`, macrame W7.1/D-174) —
 # `ledger.py` names both halves; tested against 0.16.0.
 ledger = ["macrame-db>=0.16"]
+# The knowledge graph (Knowledge Graph node, okf_* tools). OKFgraph runs as
+# its own `okf serve` process, so its ONNX Runtime and Ladybug never load
+# into Weave's; the extra only puts `okf` beside this interpreter. One of
+# the two: CPU (FP32 vectors) or GPU (CUDA, FP16). Above 0.11.0 because
+# Silk reads `pin_info`, calls `reembed` and stops the server through
+# `POST /shutdown`, none of which 0.11.0 has.
+knowledge-cpu = ["okfgraph[cpu]>0.11.0"]
+knowledge-gpu = ["okfgraph[gpu]>0.11.0"]
 # The runtime test suite (tests/, this repo). The seam tests that drive a
 # real Canvas or weave.registry live in the Weave tree's tests/ instead.
 test = ["pytest>=8"]

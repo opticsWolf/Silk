@@ -9,8 +9,9 @@ raised, so one corrupt preset can't take the whole store down.
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
-from typing import Generic, Optional, Type, TypeVar
+from typing import Any, ClassVar, Generic, Optional, Type, TypeVar
 
 from pydantic import BaseModel, Field, ValidationError
 
@@ -54,6 +55,18 @@ class ClassifierPreset(BaseModel):
     a plain dict here so this module stays importable without the classifier
     (validated when the node applies it). Secrets are never in it: the
     credential is stored by *name* (D22).
+    """
+
+    name: str
+    spec: dict = Field(default_factory=dict)
+
+
+class EnsemblePreset(BaseModel):
+    """Persisted state of a Classifier Ensemble node.
+
+    The node's whole form is an :class:`~.classifier.EnsembleSpec`, kept
+    as a plain dict here so this module stays importable without the
+    classifier (validated when the node applies it).
     """
 
     name: str
@@ -158,3 +171,136 @@ class PresetStore(Generic[PresetT]):
         del self._presets[name]
         self._flush()
         return True
+
+
+class EmbedderModelPreset(BaseModel):
+    """Remembered settings for one embedding model file (Embedder Loader).
+
+    Written on every successful load, re-applied when the same file is
+    picked again. ``name`` is the resolved absolute path (the store key).
+    """
+
+    name: str
+    filename: str = ""
+    file_size: int = 0
+    device: str = "cpu"  # "cpu" | "gpu"
+    n_ctx: int = 2048
+    n_threads: int = 8
+    n_batch: int = 512
+    use_mmap: bool = True
+
+
+class EmbedderModelStore(PresetStore[EmbedderModelPreset]):
+    """Per-model settings memory for the Embedder Loader node.
+
+    Qt-free: the node owns one on the GUI thread and writes from the
+    worker after a successful load; a lock makes that safe. Lookup is by
+    resolved path, falling back to filename + size so a moved file
+    still matches.
+    """
+
+    _preset_model: ClassVar[type[EmbedderModelPreset]] = EmbedderModelPreset
+
+    def __init__(self, directory: Optional[Path] = None) -> None:
+        super().__init__("embedder_models", EmbedderModelPreset, directory)
+        self._lock = threading.Lock()
+
+    @staticmethod
+    def key_for(path_str: str) -> str:
+        try:
+            return str(Path(path_str).expanduser().resolve())
+        except OSError:
+            return str(path_str)
+
+    def lookup(self, path_str: str) -> Optional[EmbedderModelPreset]:
+        """The remembered settings for *path_str*, or ``None``."""
+        key = self.key_for(path_str)
+        with self._lock:
+            hit = self._presets.get(key)
+            if hit is not None:
+                return hit
+            try:
+                size = Path(path_str).stat().st_size
+            except OSError:
+                return None
+            name = Path(path_str).name
+            for preset in self._presets.values():
+                if preset.filename == name and preset.file_size == size:
+                    return preset
+            return None
+
+    def remember(self, path_str: str, **settings: Any) -> EmbedderModelPreset:
+        """Store the current settings for *path_str* (rewrites the JSON)."""
+        key = self.key_for(path_str)
+        try:
+            stat = Path(path_str).stat()
+            size, filename = stat.st_size, Path(path_str).name
+        except OSError:
+            size, filename = 0, Path(path_str).name
+        preset = self._preset_model(
+            name=key, filename=filename, file_size=size, **settings
+        )
+        with self._lock:
+            self.upsert(preset)
+        return preset
+
+
+class DecisionModelPreset(EmbedderModelPreset):
+    """Remembered settings for one decision-model file (Classifier Loader).
+
+    Same fields as the embedder's (device/ctx/threads/batch/mmap); a
+    distinct model so validation and the on-disk document stay separate.
+    """
+
+
+class GGUFModelPreset(EmbedderModelPreset):
+    """Remembered settings for one chat model file (GGUF Loader).
+
+    Written on every successful load, re-applied when the same file is
+    picked again. Same key rules as the embedder's (resolved path, then
+    filename + size); only the on-disk document differs.
+    """
+
+    gpu_layers: int = -1
+    n_ctx: int = 4096
+    n_threads: int = -1
+    seed: int = -1
+    flash_attn: bool = False
+    type_k: str = "f16"
+    type_v: str = "f16"
+    embedding: bool = False
+    enable_mmproj: bool = False
+    mmproj_path: str = ""
+    enable_mtp: bool = False
+    mtp_draft_tokens: int = 2
+
+
+class GGUFModelStore(EmbedderModelStore):
+    """Per-model settings memory for the GGUF Loader node.
+
+    Same lookup rules as the embedder's; only the on-disk document
+    differs (``gguf_models.json``) so loaders never trade settings.
+    """
+
+    _preset_model: ClassVar[type[EmbedderModelPreset]] = GGUFModelPreset
+
+    def __init__(self, directory: Optional[Path] = None) -> None:
+        PresetStore.__init__(self, "gguf_models", GGUFModelPreset,
+                             directory)
+        self._lock = threading.Lock()
+
+
+class DecisionModelStore(EmbedderModelStore):
+    """Per-model settings memory for the Classifier Loader node.
+
+    Same lookup rules as the embedder's (resolved path, then filename +
+    size); only the on-disk document differs (``decision_models.json``)
+    so the two loaders never trade settings.
+    """
+
+    _preset_model: ClassVar[type[EmbedderModelPreset]] = DecisionModelPreset
+
+    def __init__(self, directory: Optional[Path] = None) -> None:
+        PresetStore.__init__(self, "decision_models", DecisionModelPreset,
+                             directory)
+        self._lock = threading.Lock()

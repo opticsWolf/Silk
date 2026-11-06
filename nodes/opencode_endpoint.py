@@ -82,8 +82,8 @@ class _OpenCodeEndpointBase(ActiveNode):
     node_subclass: ClassVar[str] = "Loaders"
     node_icon: ClassVar[Optional[str]] = "node"
     vertical_size_policy: ClassVar[VerticalSizePolicy] = VerticalSizePolicy.FIT
-    node_state_api = 1
-    node_version = 1     # bump on any state-shape change (G20)
+    node_state_api = 2
+    node_version = 2     # bump on any state-shape change (G20)
 
     #: (ok, catalogue-or-None, message), from the refresh thread.
     _catalog_ready = Signal(bool, object, str)
@@ -91,6 +91,25 @@ class _OpenCodeEndpointBase(ActiveNode):
     #: One automatic first refresh per catalogue per process, not per node:
     #: ten nodes dropped on an empty machine are one request, not ten.
     _auto_refreshed: ClassVar[set] = set()
+
+    @classmethod
+    def migrate_state(cls, state: Dict[str, Any], from_version: int) -> Dict[str, Any]:
+        """api 1 → 2: the native-tools box became the whole answer.
+
+        Before, an unticked box was overridden whenever the catalogue said
+        the model calls tools, so a saved ``supports_tools: false`` meant
+        "nobody touched it", not "fences". It is ticked here for exactly
+        those models, so an old graph keeps the transport it ran on. A
+        model the catalogue no longer knows stays as saved: there is no
+        answer left to restore.
+        """
+        values = state.get("widget_data")
+        if isinstance(values, dict) and not values.get("supports_tools"):
+            model = str(values.get("model") or "").strip()
+            entry = ModelCatalog(catalog_for(cls.catalog_key)).model(model)
+            if entry is not None and entry.tool_call:
+                values["supports_tools"] = True
+        return state
 
     def __init__(self, title: str = "OpenCode", **kwargs: Any) -> None:
         super().__init__(title=title, **kwargs)
@@ -185,8 +204,9 @@ class _OpenCodeEndpointBase(ActiveNode):
 
         self._native_tools = QCheckBox("Native tool calling")
         self._native_tools.setToolTip(
-            "Send tool schemas in the request. Turned on automatically when "
-            "the catalogue says the model calls tools; tick it to force it.")
+            "Send tool schemas in the request. Set from the catalogue when "
+            "you pick a model; untick it to use fenced tool calls instead, "
+            "which work with any model.")
         form.addRow("", self._native_tools)
         self._widget_core.register_widget(
             "supports_tools", self._native_tools, role=PortRole.INPUT,
@@ -224,6 +244,7 @@ class _OpenCodeEndpointBase(ActiveNode):
 
         self._fill_models(self._catalog.selected)
         self._sync_context_range(reset_value=True)
+        self._sync_native_tools()
         self._push_catalog_status()
 
         self._model.currentTextChanged.connect(self._on_model_changed)
@@ -322,9 +343,25 @@ class _OpenCodeEndpointBase(ActiveNode):
             text = f"{extra}\n{text}"
         self._widget_core.push_display("catalog_status", text)
 
+    def _sync_native_tools(self) -> None:
+        """Tick the box the way the catalogue answers for the model shown.
+
+        Only on a pick: afterwards the box is the person's, and an untick
+        means fences. A model the catalogue does not know, or knows
+        nothing about tool calling for, leaves the box as it is. On a
+        restore the saved value lands after the model's, so it wins.
+        """
+        entry = self._catalog.model(self._current_model())
+        if entry is None or entry.tool_call is None:
+            return
+        if self._native_tools.isChecked() != entry.tool_call:
+            # Programmatic, never user_edit=True from node code (WV403).
+            self._widget_core.apply_port_value("supports_tools", entry.tool_call)
+
     @Slot(str)
     def _on_model_changed(self, _text: str) -> None:
         self._sync_context_range(reset_value=True)
+        self._sync_native_tools()
         model_id = self._current_model()
         if model_id in self._catalog.models:
             self._catalog.set_selected(model_id)
@@ -395,6 +432,7 @@ class _OpenCodeEndpointBase(ActiveNode):
             # from node code, WV403).
             self._widget_core.apply_port_value("model", after)
             self._sync_context_range(reset_value=True)
+            self._sync_native_tools()
         else:
             self._sync_context_range(reset_value=False)
         # A new catalogue may change the window of the same model name.
@@ -433,8 +471,8 @@ class _OpenCodeEndpointBase(ActiveNode):
         if maximum and context_length > maximum:
             # A wired-in value can exceed the slider; the window cannot.
             context_length = maximum
-        if entry is not None and entry.tool_call and not native:
-            native = True
+        # The box is the answer, catalogue included: picking a model ticks
+        # it the way the catalogue says, and an untick means fences.
 
         spec = (model, credential, context_length, native)
         if self._handle is not None and spec == self._last_spec:
@@ -497,6 +535,7 @@ class SilkOpenCodeZenNode(_OpenCodeEndpointBase):
 
     catalog_key: ClassVar[str] = "opencode"
     node_name: ClassVar[Optional[str]] = "OpenCode Zen"
+    node_icon: ClassVar[Optional[str]] = "sparkles"
     node_description: ClassVar[Optional[str]] = (
         "OpenCode Zen's curated models, picked from a cached list with "
         "their context windows filled in."
@@ -515,6 +554,7 @@ class SilkOpenCodeGoNode(_OpenCodeEndpointBase):
 
     catalog_key: ClassVar[str] = "opencode-go"
     node_name: ClassVar[Optional[str]] = "OpenCode Go"
+    node_icon: ClassVar[Optional[str]] = "bolt"
     node_description: ClassVar[Optional[str]] = (
         "OpenCode Go's subscription models, picked from a cached list with "
         "their context windows filled in."

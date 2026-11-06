@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Optional
 
+from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
@@ -31,6 +32,7 @@ from PySide6.QtWidgets import (
 
 from weave.library.sync_tool_button.widgets.sync_tool_button import SyncToolButton
 from weave.logger import get_logger
+from weave.panel.mirror_contracts import MirrorContract
 
 from ..functions.presets import PresetStore
 
@@ -40,7 +42,33 @@ _PLACEHOLDER = "— presets —"
 
 
 class PresetBarWidget(QWidget):
-    """Dropdown of stored presets with +/- management buttons."""
+    """Dropdown of stored presets with +/- management buttons.
+
+    Mirrorable: the panel builds a working twin sharing the same store
+    and the same item model, so lists stay live on both surfaces. The
+    twin's buttons run the same dialogs; picking either side applies
+    into the node's widgets (same process) and the chosen name syncs
+    through the ``preset`` binding.
+    """
+
+    #: Emitted (user picks only) after a preset applied cleanly.
+    preset_chosen = Signal(str)
+
+    __mirror__ = MirrorContract(
+        clone=lambda src, _binding: PresetBarWidget.clone_of(src),
+        read_value=lambda w: w.current_name() or "",
+        write_value=lambda w, v: w.select_name(str(v or "")),
+        value_signal="preset_chosen",
+        default_datatype="str",
+    )
+
+    @classmethod
+    def clone_of(cls, src: "PresetBarWidget") -> "PresetBarWidget":
+        """A working twin: same store and callbacks, one shared list."""
+        twin = cls(src._store, src._collect, src._apply)
+        twin._combo.setModel(src._combo.model())
+        twin._combo.setCurrentIndex(src._combo.currentIndex())
+        return twin
 
     def __init__(
         self,
@@ -93,12 +121,26 @@ class PresetBarWidget(QWidget):
             index = self._combo.findText(select)
             if index >= 0:
                 self._combo.setCurrentIndex(index)
+                self.preset_chosen.emit(select)
         self._combo.blockSignals(False)
         self._btn_remove.setEnabled(bool(self._store.names()))
 
     def current_name(self) -> Optional[str]:
         text = self._combo.currentText()
         return text if text and text != _PLACEHOLDER else None
+
+    def select_name(self, name: str) -> None:
+        """Show *name* without applying it (programmatic writes only).
+
+        ``activated`` fires on user picks alone, so moving the index here
+        never re-applies -- the binding sync this serves stays one pass.
+        """
+        self._combo.blockSignals(True)
+        try:
+            idx = self._combo.findText(name) if name else -1
+            self._combo.setCurrentIndex(max(0, idx))
+        finally:
+            self._combo.blockSignals(False)
 
     # -- actions ---------------------------------------------------------
 
@@ -115,6 +157,8 @@ class PresetBarWidget(QWidget):
             self._apply(preset)
         except Exception as exc:
             log.error(f"Applying preset '{name}' failed: {exc}", exc_info=True)
+            return
+        self.preset_chosen.emit(name)
 
     def _on_add(self) -> None:
         suggested = self.current_name() or ""

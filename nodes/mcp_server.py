@@ -64,7 +64,7 @@ class SilkMCPServerNode(ActiveNode):
     node_tags: ClassVar[Optional[List[str]]] = [
         "silk", "agent", "tools", "mcp", "llm",
     ]
-    node_icon: ClassVar[Optional[str]] = "node"
+    node_icon: ClassVar[Optional[str]] = "tool"
     vertical_size_policy: ClassVar[VerticalSizePolicy] = VerticalSizePolicy.FIT
     node_state_api = 1
     node_version = 1     # bump on any state-shape change (G20)

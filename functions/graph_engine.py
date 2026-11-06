@@ -37,6 +37,34 @@ _GEN_PARAM_KEYS = (
 )
 
 
+def apply_inference_settings(handle: dict[str, Any],
+                             settings: object) -> dict[str, Any]:
+    """Stamp a wired Inference Settings dict onto a model handle.
+
+    Loaders call this with their ``inference_settings`` input so sampler
+    settings ride the model wire (``handle["gen_params"]``) to whatever
+    consumes the handle. A missing/empty/non-dict input leaves the handle
+    untouched -- the consumer's own fallbacks apply. Copied, never aliased.
+    """
+    if isinstance(settings, dict) and settings:
+        handle["gen_params"] = dict(settings)
+    return handle
+
+
+def handle_gen_params(model_handle: object) -> dict[str, Any]:
+    """The sampler overrides a model wire carries, or ``{}``.
+
+    The Agent reads these off whatever handle arrives -- direct from a
+    loader or through a fallback chain (the head carries the primary's
+    stamp, so a chain samples as its primary). Never aliases.
+    """
+    if isinstance(model_handle, dict):
+        gen = model_handle.get("gen_params")
+        if isinstance(gen, dict):
+            return dict(gen)
+    return {}
+
+
 class GraphEngine:
     """Single-turn chat engine over a ``model_handle`` graph handle."""
 
@@ -423,6 +451,11 @@ class GraphEngine:
                 messages, system_prompt=self.system_prompt,
                 tools=params.get("tools"),
             )
+            if getattr(model, "session_header", ""):
+                # A gateway that routes by conversation (OpenCode Go) gets
+                # the pool's session key; a client without one, or a local
+                # Llama, never sees the argument.
+                params["session_id"] = self.session_id
             stream = model.create_chat_completion(
                 messages=messages,
                 stream=True,

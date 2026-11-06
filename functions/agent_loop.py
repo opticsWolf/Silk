@@ -42,6 +42,7 @@ from .compaction import (
     REASON_MANUAL,
     REASON_OVERFLOW,
     REASON_PRESSURE,
+    pre_compaction_prompt,
     take_compaction_request,
 )
 from weave.logger import get_logger
@@ -132,6 +133,12 @@ class AgentLoop:
         # compacting again would spend two more prefills to be told the
         # same thing.
         self._overflow_compacted = False
+        # The round before a compaction in which the agent saves what it
+        # learned (the box's pre-compaction tool, e.g. okf_ingest): asked
+        # once per compaction, and a compact_context request made before
+        # it waits here for that round to pass.
+        self._pre_compaction_asked = False
+        self._held_compaction: Optional[str] = None
         # Chosen per run() by select_transport; fence is the safe default so
         # a direct _run_rounds call (tests) never hits an unset transport.
         self._transport: ToolTransport = FenceTransport()
@@ -346,6 +353,7 @@ class AgentLoop:
             return False
         if event is None:
             return False
+        self._pre_compaction_asked = False
         # A compaction is the one deliberate invalidation of the prefix
         # (I11), so anything remembering this run has to hear about it --
         # the event on the stream reaches a monitor, not a hook.
@@ -358,6 +366,38 @@ class AgentLoop:
             summary_ref=getattr(event, "summary_ref", ""),
         )
         yield event
+        return True
+
+    def _ask_before_compacting(self, *, requested: bool) -> bool:
+        """Give the agent one round to save its findings, if one is due.
+
+        Due when the box names a pre-compaction tool this run may call
+        (:func:`~.compaction.pre_compaction_prompt` checks the box and the
+        role) and a compaction is about to happen: *requested* by the model,
+        or by pressure as the compactor measures it. The prompt goes in as
+        a user turn and the compaction waits a round; the next round
+        compacts without asking again. An overflow never comes here -- the
+        backend has already refused the prompt, and another round on it
+        would only be refused again.
+        """
+        compactor = self.compactor
+        if compactor is None or self._pre_compaction_asked:
+            return False
+        prompt = pre_compaction_prompt(self.toolbox)
+        if prompt is None:
+            return False
+        if not requested:
+            should = getattr(compactor, "should_compact", None)
+            if not getattr(compactor, "auto", True) or not callable(should):
+                return False
+            try:
+                if not should(self.engine, context_length=self.context_length()):
+                    return False
+            except Exception:  # noqa: BLE001 - a probe never fails a run
+                return False
+        self.engine.append_message("user", prompt)
+        self._pre_compaction_asked = True
+        log.info("Context compaction deferred one round for the pre-compaction tool.")
         return True
 
     def _stopped_by_budget(
@@ -553,8 +593,15 @@ class AgentLoop:
             #    The model may also have asked for it last round, through
             #    the compact_context tool; that request stands in for the
             #    pressure check, since it compacts whatever the pressure.
+            #    Either way, a box with a pre-compaction tool (okf_ingest)
+            #    first gets a round for the agent to save what it learned.
             requested = take_compaction_request(self.toolbox)
-            if requested is not None:
+            if requested is None:
+                requested = self._held_compaction
+            self._held_compaction = None
+            if self._ask_before_compacting(requested=requested is not None):
+                self._held_compaction = requested
+            elif requested is not None:
                 yield from self._maybe_compact(
                     reason=REASON_MANUAL, force=True, focus=requested or None,
                 )

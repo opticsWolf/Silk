@@ -8,7 +8,17 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
 
-Nodes (under ``nodes/``): GGUF model loader (llama.cpp pool), Silk ToolBox
+Nodes (under ``nodes/``): GGUF model loader (llama.cpp pool), embedder
+loader (CPU-first embedding pool with per-model settings memory),
+classifier loader (Laya-style /v1/systemone pool as a classifier model,
+also CPU-first), Model
+Endpoint (remote OpenAI-compatible model with per-provider memory) and
+its Endpoint/Model split (provider info on a wire, model choice after
+it), OpenCode Zen/Go catalogue nodes, Jev loader (hosted decision model),
+HF Cache (local hub-cache browser, filepath out), HF Download (Hub search
++ resumable downloads into the cache or any folder),
+Silk Classifier (typed triage over decision and judge models, human as the
+final link), Classifier Ensemble (up to three classifiers as one verdict), Silk ToolBox
 (sandboxed file/search tools with hard role enforcement), Silk Role
 (declarative agent configuration), Silk Agent (the autonomous tool-calling
 loop with Exec trigger/done ports for chaining agent networks), and a chat

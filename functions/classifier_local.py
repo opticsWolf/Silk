@@ -85,6 +85,18 @@ def judge_client(judge_model: Any) -> Any:
     return client
 
 
+#: Bands id for a judge with no file behind it.
+LOCAL_JUDGE_MODEL = "local/judge"
+
+
+def judge_model_id(judge_model: Any) -> str:
+    """``local/<file stem>``: bands are calibrated per judge *file*."""
+    from pathlib import Path
+    pool = judge_model.get("pool") if isinstance(judge_model, dict) else judge_model
+    path = getattr(pool, "model_path", "") or ""
+    return f"local/{Path(path).stem}" if path else LOCAL_JUDGE_MODEL
+
+
 def refuse_self_grading(judge_model: Any, agent_model: Any) -> None:
     """Raise when the judge is the model the agent runs on (C3).
 

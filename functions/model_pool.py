@@ -36,8 +36,15 @@ from weave.logger import get_logger
 from .credentials import missing_credential, resolve_credential
 from .prefix_stats import LogDrain, PrefixMeter
 from .session_affinity import SessionAffinityGate
+from .version import __version__
 
 log = get_logger("SilkModelPool")
+
+#: Sent on every request to a model server. urllib's own default,
+#: ``Python-urllib/3.x``, is banned outright by Cloudflare-fronted gateways
+#: (OpenCode Zen and Go answer it with 403 "error code: 1010"), which reads
+#: exactly like a refused key.
+USER_AGENT = f"silk/{__version__}"
 
 # ── Dependency guards ────────────────────────────────────────────────────────
 # The loader/tests import these to degrade gracefully. LLAMA_CPP_AVAILABLE is the
@@ -99,8 +106,17 @@ _SERVER_MODEL_KEYS = (
     # right default for a chat model: embeddings are the vector half of
     # memory (SS17) and want their own, much smaller, model.
     "embedding",
+    # A server started with a vision projector accepts images; without one
+    # a vision model serves text only. The loader auto-detects
+    # ``mmproj*.gguf`` next to the model -- absent/None stays omitted, so
+    # A server started with vision or prediction extras needs keys a
+    # 2024-era config never had: the projector path, and MTP's draft
+    # spec (``--spec-type draft-mtp`` / ``--spec-draft-n-max``). They ride
+    # the same omitted-when-off rule, so older llama-cpp-python builds
+    # never see them -- at the cost that MTP is silently off until the
+    # binding learns the keys (the loader's tooltip says so).
+    "mmproj", "spec_type", "spec_draft_n_max",
 )
-
 #: How long to wait for the server to answer ``/v1/models`` before giving up.
 _READY_TIMEOUT_S = 120.0
 #: How long the server may take to terminate before it is killed.
@@ -134,12 +150,18 @@ class OpenAICompatClient:
     def __init__(
         self, base_url: str, model_alias: str = "default",
         credential: str = "", credential_header: str = "Authorization",
-        credential_prefix: str = "Bearer ",
+        credential_prefix: str = "Bearer ", session_header: str = "",
     ) -> None:
         self.base_url = base_url
         self.model_alias = model_alias
         self.credential = credential
-        self._headers = {"Content-Type": "application/json"}
+        #: The header a gateway reads a conversation id from, or "" for a
+        #: server that has none. OpenCode Go refuses requests without one
+        #: (``x-opencode-session``): it routes and caches by it. The id is
+        #: per request, because one client serves every engine on a handle.
+        self.session_header = session_header
+        self._headers = {"Content-Type": "application/json",
+                         "User-Agent": USER_AGENT}
         secret = resolve_credential(credential)
         if credential and not secret:
             raise RuntimeError(missing_credential(credential))
@@ -156,7 +178,8 @@ class OpenAICompatClient:
         return dict(self._headers)
 
     def create_chat_completion(
-        self, messages: List[Dict[str, Any]], stream: bool = False, **kwargs: Any,
+        self, messages: List[Dict[str, Any]], stream: bool = False,
+        session_id: Optional[str] = None, **kwargs: Any,
     ) -> Any:
         url = f"{self.base_url}/chat/completions"
         payload: Dict[str, Any] = {
@@ -166,9 +189,12 @@ class OpenAICompatClient:
             if value is not None:
                 payload[key] = value
 
+        headers = self.headers()
+        if self.session_header and session_id:
+            headers[self.session_header] = str(session_id)
         req = urllib.request.Request(
             url, data=json.dumps(payload).encode("utf-8"),
-            headers=self.headers(),
+            headers=headers,
         )
 
         # NOTE: do NOT wrap the streaming response in `with` — returning the

@@ -63,6 +63,9 @@ from ..functions.tools.graph_authoring import attach_graph_tools
 from ..functions.import_reach import import_reach_warning
 from ..functions.self_modify import user_plugin_root
 from ..functions.tools.recall_tool import attach_recall_tool
+from ..functions.tools.okf_tools import (
+    DEFAULT_OKF_LEVEL, OKF_LEVELS, attach_okf_tools, coerce_level,
+)
 from ..functions.embeddings import embedder_for
 from ..functions.tools.toolchains import attach_toolchain_tools
 from ..functions.tools.task_tracker import attach_task_tools
@@ -96,8 +99,8 @@ class SilkToolBoxNode(ActiveNode):
     node_tags: ClassVar[Optional[List[str]]] = ["silk", "agent", "tools", "sandbox", "llm"]
     node_icon: ClassVar[Optional[str]] = "grid-dots"
     vertical_size_policy: ClassVar[VerticalSizePolicy] = VerticalSizePolicy.FIT
-    node_state_api = 4   # owns a hand-written state dict
-    node_version = 4     # bump on any state-shape change (G20)
+    node_state_api = 5   # owns a hand-written state dict
+    node_version = 5     # bump on any state-shape change (G20)
 
     def __init__(self, title: str = "Silk ToolBox", **kwargs: Any) -> None:
         super().__init__(title=title, **kwargs)
@@ -121,6 +124,12 @@ class SilkToolBoxNode(ActiveNode):
         # what it has always been -- so this port adds a capability and
         # never changes one.
         self.add_input("embedding_model", datatype="model_handle")
+        # A served knowledge graph (OKFgraph), owned by a Knowledge Graph
+        # node upstream: wired, the ticked okf tools up to the access
+        # level (the gear on the knowledge row) are attached, and with
+        # okf_ingest the agent is asked to ingest its findings before
+        # each compaction. It embeds with its own model.
+        self.add_input("knowledge", datatype="okf_graph")
         self.add_output("toolbox", datatype="silk_toolbox")
         self.add_output("root_paths", datatype="dirpath_list")
 
@@ -156,6 +165,25 @@ class SilkToolBoxNode(ActiveNode):
             "placeable_nodes", self._node_whitelist, role=PortRole.INTERNAL,
             datatype="list", default=[], add_to_layout=False,
         )
+        # The knowledge graph's access level, the ceiling every ToolSet
+        # derived from this box can only lower. Behind the gear on the
+        # knowledge row, for the same reason as the whitelist: it is the
+        # grant those tools run under.
+        self._knowledge_level = QComboBox()
+        self._knowledge_level.addItems(list(OKF_LEVELS))
+        self._knowledge_level.setToolTip(
+            "read: search, read, traverse. write: also okf_ingest (adds, "
+            "never changes). curate: also update, supersede and delete "
+            "(soft, recoverable for 24 h).")
+        self._knowledge_level.intro = (  # type: ignore[attr-defined]
+            "What agents may do to the knowledge graph. The graph is shared "
+            "with you and every other run; a ToolSet can lower this, never "
+            "raise it.")
+        self._widget_core.register_widget(
+            "knowledge_level", self._knowledge_level, role=PortRole.INTERNAL,
+            datatype="string", default=DEFAULT_OKF_LEVEL, add_to_layout=False,
+        )
+        self._knowledge_level.setCurrentText(DEFAULT_OKF_LEVEL)
         self._config_dialogs: Dict[str, QDialog] = {}
 
         # Infrastructure hooks: part of the recipe, so every derived
@@ -248,7 +276,13 @@ class SilkToolBoxNode(ActiveNode):
 
     @staticmethod
     def migrate_state(state: Dict[str, Any], from_version: int) -> Dict[str, Any]:
-        """api 1 → 4.
+        """api 1 → 5.
+
+        4 → 5: the knowledge tools became a group of their own, with an
+        access level (``knowledge_level``). Nothing to translate: an absent
+        level is ``write``, which is exactly what the four tools a wired
+        graph used to attach could do, and the three curating tools arrive
+        as never-offered -- ticked, but above that level.
 
         3 → 4: compaction moved onto the ToolBox. Before it, every run
         compacted with the defaults whatever the box said; now the
@@ -316,9 +350,10 @@ class SilkToolBoxNode(ActiveNode):
     def _open_group_config(self, category: str) -> None:
         """Open the settings behind a category row's gear.
 
-        Only graph authoring has any, for now. Its whitelist is modal on
-        purpose: it is a grant, and a grant edited in a panel that can
-        drift out of view is a grant nobody re-reads.
+        Graph authoring's whitelist and the knowledge graph's access
+        level. Both are modal on purpose: each is a grant, and a grant
+        edited in a panel that can drift out of view is a grant nobody
+        re-reads.
         """
         widget = self._config_widget(category)
         if widget is None:
@@ -328,12 +363,23 @@ class SilkToolBoxNode(ActiveNode):
             dialog = QDialog()
             dialog.setWindowTitle(self._config_title(category))
             layout = QVBoxLayout(dialog)
-            layout.addWidget(widget)
+            layout.setContentsMargins(12, 12, 12, 12)
+            layout.setSpacing(8)
+            intro = getattr(widget, "intro", "")
+            if intro:
+                label = QLabel(intro)
+                label.setWordWrap(True)
+                layout.addWidget(label)
+            layout.addWidget(widget, 1)
             buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
             buttons.rejected.connect(dialog.reject)
             buttons.accepted.connect(dialog.accept)
             layout.addWidget(buttons)
-            dialog.resize(420, 480)
+            if widget is self._node_whitelist:
+                dialog.setMinimumSize(380, 420)
+                dialog.resize(520, 640)
+            else:
+                dialog.setMinimumWidth(380)
             self._config_dialogs[category] = dialog
         dialog.show()
         dialog.raise_()
@@ -343,6 +389,8 @@ class SilkToolBoxNode(ActiveNode):
         """The widget that configures *category*, if there is one."""
         if category in categories_of("graph_authoring"):
             return self._node_whitelist
+        if category in categories_of("knowledge"):
+            return self._knowledge_level
         return None
 
     @staticmethod
@@ -519,6 +567,15 @@ class SilkToolBoxNode(ActiveNode):
                 attacher = partial(
                     attach_recall_tool,
                     embedder=embedder_for(inputs.get("embedding_model")),
+                )
+            elif group == "knowledge":
+                # Like MCP: a handle on a server the Knowledge Graph node
+                # owns, closed over so a ToolSet replaying the recipe talks
+                # to the same process rather than opening the file again.
+                # Unwired, the attacher registers nothing.
+                attacher = partial(
+                    attach_okf_tools, graph=inputs.get("knowledge"),
+                    level=coerce_level(inputs.get("knowledge_level")),
                 )
             else:
                 attacher = GROUP_ATTACHERS[group]

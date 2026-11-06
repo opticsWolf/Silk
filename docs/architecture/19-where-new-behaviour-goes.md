@@ -27,7 +27,7 @@
 | Show or withdraw a durable grant | the Grant Manager dock (`widgets/grant_manager.py`) over `GrantStore.projects()` / `.all()` — read the file every refresh, and only ever delete (§22 q1) |
 | Centralise answering N agents' approval prompts | the Decision Inbox dock (`widgets/decision_inbox.py`) over `functions/decision_registry.py` — never a node (D59, D51, I12) |
 | See what N independent agents are doing | a `Silk Task Hub` node fed from `Silk ToolBox.root_paths`; it reads the plan stores, never the agents (D58) |
-| Point agents at a *specific* plan | a `Silk Task` node into the ToolBox node's `plan` input (and the Plan Viewer's `plan_ref`); leave both unwired to keep newest-under-root shared discovery (D23) |
+| Point agents at a *specific* plan | a `Silk Plan` node (class `SilkTaskNode`) into the ToolBox node's `plan` input (and the Plan Viewer's `plan_ref`), its `root_paths` fed from the folder list behind the ToolBox's `sandbox_roots`; leave both unwired to keep newest-under-root shared discovery (D23) |
 | Repair or refuse a model's tool arguments before the tool runs | a `wrap_tool_validate` middleware — the one surviving `wrap_*` on the model side; it may re-supply `raw_args` or raise, and raising ends the call, not the run (§22 q2) |
 | See what the model was actually told | read `EventStart.system_prompt` off the typed event in-process; the `events` port carries only `system_prompt_chars`, because a prompt is content (§22 q3) |
 | Stop spill files accumulating in a project | nothing — `attach_spill_hook` sweeps by age then size at run *start*, and only files it wrote; tune `retain_days` / `retain_bytes` on the `spill` catalog hook (§22 q4) |

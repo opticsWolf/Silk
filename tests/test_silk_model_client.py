@@ -16,20 +16,24 @@ alternative is a 401 from the backend three layers away from its cause.
 
 from __future__ import annotations
 
+import io
 import json
 
 import pytest
 
 
-from silk.functions import credentials
+from silk.functions import credentials, model_pool
 from silk.functions.embeddings import ServerEmbedder, embedder_for
-from silk.functions.model_pool import OpenAICompatClient
+from silk.functions.model_pool import USER_AGENT, OpenAICompatClient
 
 
-def test_no_credential_means_the_headers_are_what_they_always_were():
+def test_no_credential_means_no_authorization_header():
     client = OpenAICompatClient("http://127.0.0.1:8080/v1")
 
-    assert client.headers() == {"Content-Type": "application/json"}
+    # The User-Agent is Silk's own, not urllib's: Cloudflare-fronted
+    # gateways ban `Python-urllib/3.x` with a 403 that reads like a bad key.
+    assert client.headers() == {"Content-Type": "application/json",
+                                "User-Agent": USER_AGENT}
 
 
 def test_a_named_credential_is_resolved_from_the_environment(monkeypatch):
@@ -66,6 +70,30 @@ def test_the_secrets_file_is_the_other_place_a_key_may_live(monkeypatch, tmp_pat
     client = OpenAICompatClient("https://api.example/v1", credential="LITELLM_KEY")
 
     assert client.headers()["Authorization"] == "Bearer sk-file"
+
+
+def test_a_session_id_is_sent_only_where_a_header_is_configured(monkeypatch):
+    sent = []
+
+    def fake_urlopen(request, timeout=None):
+        sent.append(({k.lower(): v for k, v in request.header_items()},
+                     json.loads(request.data)))
+        return io.BytesIO(b'{"choices": []}')
+
+    monkeypatch.setattr(model_pool.urllib.request, "urlopen", fake_urlopen)
+    routed = OpenAICompatClient("https://gw/v1", session_header="x-opencode-session")
+    plain = OpenAICompatClient("http://127.0.0.1:8080/v1")
+
+    routed.create_chat_completion([], session_id="conv-1")
+    plain.create_chat_completion([], session_id="conv-1")
+
+    (routed_headers, routed_body), (plain_headers, plain_body) = sent
+    assert routed_headers["x-opencode-session"] == "conv-1"
+    assert "x-opencode-session" not in plain_headers
+    # A header, never a body field: llama.cpp would reject the unknown key.
+    assert "session_id" not in routed_body and "session_id" not in plain_body
+    # Per request, not per client: the client's own headers are unchanged.
+    assert "x-opencode-session" not in routed.headers()
 
 
 def test_headers_are_a_copy_so_one_request_cannot_edit_the_next(monkeypatch):

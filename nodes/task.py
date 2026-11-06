@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Silk Task Node.
+"""Silk Plan Node.
+
+Shown as **Silk Plan**; it was "Silk Task" until the name was found to
+promise the wrong thing -- it makes no task, it says which *plan* the task
+tools use. The class stays ``SilkTaskNode`` and the module ``task``,
+because a saved graph and a whitelist name a node by its class and suite.
 
 Names the plan an agent works on, instead of letting it be inferred
 (spec D23). Without this node the task store picks the newest
@@ -16,6 +21,13 @@ than a filename.
 
 Discovery-by-newest is kept as the unnamed case, because it is also the
 mechanism by which several agents deliberately share one plan.
+
+Wiring: ``plan`` goes to the ToolBox node's ``plan`` and the Plan Viewer's
+``plan_ref``. Feed ``root_paths`` from the folder list that feeds the
+ToolBox's ``sandbox_roots`` -- *not* from the ToolBox's ``root_paths``:
+the ToolBox takes this node's ``plan``, so that wire closes a loop, and
+the engine breaks a loop with the last cached value, which on a first
+evaluation is no root at all.
 """
 
 from typing import Any, ClassVar, Dict, List, Optional
@@ -53,7 +65,7 @@ class SilkTaskNode(ActiveNode):
 
     node_class: ClassVar[str] = "Silk AI"
     node_subclass: ClassVar[str] = "Agents"
-    node_name: ClassVar[Optional[str]] = "Silk Task"
+    node_name: ClassVar[Optional[str]] = "Silk Plan"
     node_description: ClassVar[Optional[str]] = (
         "Names the plan agents work on — the plan file and its id — so the "
         "store never has to guess which plan a root means."
@@ -66,7 +78,7 @@ class SilkTaskNode(ActiveNode):
     node_state_api = 1
     node_version = 1     # bump on any state-shape change (G20)
 
-    def __init__(self, title: str = "Silk Task", **kwargs: Any) -> None:
+    def __init__(self, title: str = "Silk Plan", **kwargs: Any) -> None:
         super().__init__(title=title, **kwargs)
 
         self.add_input("root", datatype="string")
@@ -116,8 +128,10 @@ class SilkTaskNode(ActiveNode):
     def resolve_root(inputs: Dict[str, Any]) -> str:
         """The directory the plan lives under.
 
-        The ToolBox node's ``root_paths`` output is the natural source, so
+        Wire the folder list that feeds the ToolBox's ``sandbox_roots``, so
         the plan lands inside the sandbox ceiling rather than beside it.
+        Not the ToolBox's ``root_paths``: that is downstream of this node's
+        own ``plan`` (see the module docstring).
         """
         roots = [str(p).strip() for p in (inputs.get("root_paths") or [])
                  if str(p).strip()]
@@ -167,7 +181,8 @@ class SilkTaskNode(ActiveNode):
             return {"plan": None}
         if not root:
             self._sync_rows = []
-            self._sync_status = "Connect a root (or the ToolBox root_paths)."
+            self._sync_status = ("Connect a root, or the folder list that "
+                                 "feeds the ToolBox's sandbox_roots.")
             return {"plan": None}
 
         try:

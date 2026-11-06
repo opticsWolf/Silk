@@ -143,12 +143,21 @@ worker inherits the whitelist through its toolset, and the history ledger
 
 ### `widgets/node_whitelist.py` + the ToolBox node (D71)
 
-`NodeWhitelistWidget` is a checkable tree of registered node classes grouped
-by category — the same shape as the tool tree — bound to the ToolBox node's
-`placeable_nodes` port. Its value is a sorted list of class names, so the
-grant travels in the saved graph and in a preset; unlike file grants (D35) it
-carries no secret and no filesystem authority. There is no "allow all"
-checkbox: selecting everything is possible, but it has to be a deliberate act.
+`NodeWhitelistWidget` is a checkable tree of registered node classes in the
+levels of the canvas's *Browse Nodes* menu — category, the nodes placed
+directly in it, then its subcategories — bound to the ToolBox node's
+`placeable_nodes` port and shown in a dialog behind the gear on the `graph`
+tool category. A node row is ticked or not; a level row is ticked, unticked
+or partly ticked, counts what is ticked beneath it, and ticks or unticks all
+of it. A filter narrows the tree, and the right-click menu selects all, none
+or the inverse — over the whole tree or the level under the cursor, and only
+over the nodes the filter shows. Its value is a sorted list of class names,
+so the grant travels in the saved graph and in a preset; unlike file grants
+(D35) it carries no secret and no filesystem authority. There is no "allow
+all" value: *Select All* names every class shown, one by one, which has to be
+a deliberate act and does not reach a class registered later. A ticked class
+the registry no longer has is listed under *Not registered*, where unticking
+it drops it.
 
 The tree subscribes to `NODE_REGISTRY`'s listener and coalesces a burst of
 registrations into one rebuild (D74), so a suite hot-loaded into the running
@@ -177,7 +186,8 @@ setter over `WidgetCore` bindings, and the narrowing is where the safety is:
   could grant itself authority by ticking a box. `grants_authority` tells
   them apart by the node rather than the widget: a node from the Silk
   package, or one with an output in `AUTHORITY_TYPES` (a toolbox, toolset,
-  role, plan, model, permissions, roots, MCP servers, toolchains), keeps its
+  role, plan, model, permissions, roots, MCP servers, toolchains, knowledge
+  graph), keeps its
   INTERNAL widgets locked. Both resolvers (the canvas and the control seam)
   put the answer on each setting row, and a row without one is refused, so
   a resolver that forgets it fails closed. Both roles stay *readable*: `list_node_settings` returns every widget

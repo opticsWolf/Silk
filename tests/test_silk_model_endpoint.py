@@ -11,9 +11,13 @@ reachable from the handle, which is what a saved graph is built from.
 
 from __future__ import annotations
 
+import io
+import urllib.error
+
 import pytest
 
 from silk.functions import model_endpoint as me
+from silk.functions import model_pool as mp
 from silk.functions.embeddings import ServerEmbedder, embedder_for
 from silk.functions.graph_engine import GraphEngine
 from silk.functions.model_endpoint import (
@@ -107,6 +111,50 @@ def test_nothing_listed_and_nothing_chosen_is_a_dead_end_with_advice(serves):
     assert handle is None and "type the model name" in status
 
 
+# ── the listing request itself ───────────────────────────────────────────
+
+def test_the_listing_names_silk_even_when_the_caller_passes_only_a_key(monkeypatch):
+    """The catalogue refresh builds its own headers: just Authorization.
+
+    Without a User-Agent urllib sends `Python-urllib/3.x`, which OpenCode's
+    Cloudflare front bans with 403 "error code: 1010" -- with or without a
+    valid key.
+    """
+    sent = {}
+
+    class _Response(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def fake_urlopen(request, timeout=None):
+        sent.update({k.lower(): v for k, v in request.header_items()})
+        return _Response(b'{"data": [{"id": "m"}]}')
+
+    monkeypatch.setattr(me.urllib.request, "urlopen", fake_urlopen)
+    assert me.list_model_specs("https://gw/v1", {"Authorization": "Bearer k"}) == {
+        "m": {"id": "m"}}
+    assert sent["user-agent"] == me.USER_AGENT
+    assert sent["authorization"] == "Bearer k"
+
+
+def test_a_cloudflare_1010_is_not_blamed_on_the_key(monkeypatch):
+    def fake_urlopen(request, timeout=None):
+        raise urllib.error.HTTPError(
+            request.full_url, 403, "Forbidden", {},
+            io.BytesIO(b"error code: 1010"))
+
+    monkeypatch.setattr(me.urllib.request, "urlopen", fake_urlopen)
+    with pytest.raises(RuntimeError) as caught:
+        me.list_model_specs("https://gw/v1")
+    assert "1010" in str(caught.value)
+    assert "refused the credentials" not in str(caught.value), (
+        "the key was never looked at; sending someone to rotate it is wrong"
+    )
+
+
 # ── the handle ───────────────────────────────────────────────────────────
 
 def test_the_handle_is_the_same_wire_the_loader_emits(serves):
@@ -172,6 +220,56 @@ def test_the_engine_still_refuses_a_handle_with_no_backend():
         GraphEngine({"model": object()})
 
 
+# ── a gateway that routes by conversation ────────────────────────────────
+
+def _capture_chat(monkeypatch):
+    """Answer one streamed chat request and keep the headers it carried."""
+    sent = {}
+
+    def fake_urlopen(request, timeout=None):
+        sent.update({k.lower(): v for k, v in request.header_items()})
+        return io.BytesIO(b'data: {"choices": [{"delta": {"content": "ok"}, '
+                          b'"finish_reason": "stop"}]}\n\ndata: [DONE]\n\n')
+
+    monkeypatch.setattr(mp.urllib.request, "urlopen", fake_urlopen)
+    return sent
+
+
+@pytest.mark.parametrize("url, provider", [
+    ("https://opencode.ai/zen/go/v1", "opencode-go"),
+    ("https://opencode.ai/zen/v1", "opencode"),
+    # Pasted into the generic node: the host is enough.
+    ("https://opencode.ai/zen/go/v1", "custom"),
+])
+def test_opencode_gets_the_engine_session_on_every_request(
+        serves, monkeypatch, url, provider):
+    """Go refuses chat without it ("MissingSessionID"); it routes and caches
+    by conversation, so it is the agent's session key, stable across turns."""
+    serves(["m"])
+    handle, _, _ = connect(url, "m", provider=provider)
+    sent = _capture_chat(monkeypatch)
+
+    engine = GraphEngine(handle, session_id="conv-1")
+    engine.append_message("user", "hi")
+    assert "".join(engine.stream_response({})) == "ok"
+
+    assert sent["x-opencode-session"] == "conv-1"
+
+
+def test_other_endpoints_are_not_sent_a_session_header(serves, monkeypatch):
+    serves(["m"])
+    handle, _, _ = connect("https://openrouter.ai/api/v1", "m",
+                           provider="openrouter")
+    sent = _capture_chat(monkeypatch)
+
+    engine = GraphEngine(handle, session_id="conv-1")
+    engine.append_message("user", "hi")
+    list(engine.stream_response({}))
+
+    assert "x-opencode-session" not in sent
+    assert "session_id" not in sent, "and nothing leaks into the payload path"
+
+
 def test_a_remote_handle_embeds_over_http_not_in_process(serves):
     """The client is an HTTP proxy, not a Llama: it has no create_embedding."""
     serves(["m"])
@@ -207,6 +305,57 @@ def test_the_port_accepts_its_own_default():
     port = PortRegistry._by_name["model_handle"]
     assert port.validator(port.default_factory())
     assert port.validator(None)
+
+
+def test_the_classifier_model_port_tells_decision_from_chat():
+    from weave.node.port_registry import PortRegistry
+
+    import silk.nodes.silk_ports  # noqa: F401
+
+    port = PortRegistry._by_name["classifier_model"]
+    assert port.validator({"backend": "systemone", "role": "decision",
+                           "pool": object()})
+    assert port.validator({"backend": "systemone", "role": "decision",
+                           "model": "jev/jev-1.13.0",
+                           "url": "https://example.invalid/v1"})
+    assert not port.validator({"backend": "systemone",
+                               "role": "decision"}), "neither pool nor url"
+    assert not port.validator({"backend": "openai", "model": object()}), \
+        "a chat handle is not a classifier model"
+    assert not port.validator({"backend": "systemone", "pool": object()}), \
+        "no role, no deal"
+    assert port.validator(port.default_factory())
+    assert port.validator(None)
+
+
+def test_the_endpoint_dict_carries_names_never_values():
+    from silk.functions.model_endpoint import endpoint_dict, split_endpoint
+    handle = endpoint_dict("OpenRouter", "https://openrouter.ai/api/v1/",
+                           "OPENROUTER_API_KEY")
+    assert handle == {"provider": "openrouter",
+                      "base_url": "https://openrouter.ai/api/v1/",
+                      "credential": "OPENROUTER_API_KEY"}
+    assert split_endpoint(handle) == handle
+    assert split_endpoint({"provider": "x"}) is None, "no URL, no endpoint"
+    assert split_endpoint(None) is None
+    assert split_endpoint({}) is None
+
+
+def test_the_endpoint_port_accepts_what_the_endpoint_node_emits():
+    from weave.node.port_registry import PortRegistry
+
+    import silk.nodes.silk_ports  # noqa: F401
+
+    port = PortRegistry._by_name["endpoint"]
+    assert port.validator({"provider": "openrouter",
+                           "base_url": "https://openrouter.ai/api/v1"})
+    assert not port.validator({"provider": "openrouter"}), "no URL"
+    assert not port.validator({"base_url": "http://x/v1"}), "no provider"
+    assert port.validator(port.default_factory())
+    assert port.validator(None)
+    label = port.formatter({"provider": "openrouter",
+                            "base_url": "https://openrouter.ai/api/v1"})
+    assert "openrouter" in label and "openrouter.ai" in label
 
 
 def test_the_port_label_names_the_backend_and_the_model():
@@ -249,3 +398,14 @@ def test_native_tools_reach_the_engine_when_asked_for(serves):
         "arrive under this name the transport silently stays on fences"
     )
     assert "native tools" in status, "and a person can see which protocol"
+
+
+@pytest.mark.parametrize("asked, expected", [
+    (None, True),    # nobody answered: the gateway's word
+    (False, False),  # a person's "no" stands against it
+    (True, True),
+])
+def test_the_gateway_answers_only_when_nobody_else_did(serves, asked, expected):
+    serves(["m"], specs={"m": {"supported_parameters": ["tools", "seed"]}})
+    handle, _, _ = connect("http://host/v1", "m", supports_tools=asked)
+    assert bool(handle.get("supports_tools")) is expected

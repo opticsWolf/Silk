@@ -772,6 +772,12 @@ def _estimate_chars(text: str) -> int:
 COMPACTION_CONFIG_ATTR = "compaction_config"
 COMPACTION_REQUESTS_ATTR = "compaction_requests"
 
+#: Where a tool pack names the tool the agent should use before a
+#: compaction, and what to tell it: ``(tool_name, prompt)``. The knowledge
+#: graph pack sets it to ``okf_ingest``, so the agent writes its findings
+#: into the graph before the turns that hold them are summarized away.
+PRE_COMPACTION_ATTR = "pre_compaction"
+
 
 def compactor_for(toolbox: Any, role: Any = None) -> Compactor:
     """The run's compactor, configured from its toolbox and its role.
@@ -821,3 +827,34 @@ def take_compaction_request(toolbox: Any) -> Optional[str]:
     focus = next((f for f in reversed(pending) if f), "")
     pending.clear()
     return focus
+
+
+def set_pre_compaction(toolbox: Any, tool: str, prompt: str) -> None:
+    """Ask for one round with *tool* before each compaction of a run.
+
+    Set by the pack that registers *tool*, on the toolbox, so a ToolSet
+    replaying the recipe carries it along. Whether the round happens is
+    :func:`pre_compaction_prompt`'s call, made when it would happen.
+    """
+    setattr(toolbox, PRE_COMPACTION_ATTR, (str(tool), str(prompt)))
+
+
+def pre_compaction_prompt(toolbox: Any) -> Optional[str]:
+    """What to tell the agent before compacting, or ``None`` to just compact.
+
+    ``None`` unless a pack asked for the round *and* its tool would run if
+    called: it is in this box (a ToolSet that left it out leaves the
+    marker behind with the recipe) and the active role permits it. Asked
+    at the moment of compaction rather than at build time, because the
+    role is the run's, not the box's.
+    """
+    spec = getattr(toolbox, PRE_COMPACTION_ATTR, None) if toolbox is not None else None
+    if not spec:
+        return None
+    tool, prompt = spec
+    if tool not in (getattr(toolbox, "tools", None) or {}):
+        return None
+    permits = getattr(toolbox, "role_permits", None)
+    if callable(permits) and not permits(tool):
+        return None
+    return prompt

@@ -185,7 +185,21 @@ def embedder_for(handle: Any, name: str = "") -> Optional[Embedder]:
     keyword search, exactly as it was. A handle is only ever *offered*
     here; whether the model behind it can actually embed is answered by
     the first request, not guessed from the file name.
+
+    A served OKFgraph (:class:`silk.functions.okf_graph.OkfGraph`) is
+    also an embedder source (0.12): the ledger rides the graph's own
+    pinned encoder over ``POST /ops/embed``, and one model host serves
+    both memory and search. Late import -- okf_graph imports this
+    module's base class, not the other way round.
     """
+    if hasattr(handle, "client") and hasattr(handle, "spec"):
+        # duck: an OkfGraph handle (absent in plain Silk -- then the
+        # handle could never have been built, so this is unreachable)
+        try:
+            from .okf_graph import OkfEmbedder
+        except ImportError:
+            return None
+        return OkfEmbedder(handle, name=name)
     if not isinstance(handle, dict) or not handle.get("backend"):
         return None
     model = handle.get("model")

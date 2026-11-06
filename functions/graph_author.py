@@ -90,6 +90,7 @@ AUTHORITY_TYPES = frozenset({
     "silk_toolbox", "silk_toolset", "silk_role", "silk_classifier",
     "silk_plan", "silk_workers", "model_handle",
     "file_permissions", "dirpath_list", "mcp_servers", "toolchains",
+    "okf_graph",
 })
 
 #: This plugin's own package, however it was imported (``weave.plugins.silk``

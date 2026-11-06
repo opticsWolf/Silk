@@ -68,7 +68,7 @@ class SilkModelFallbackNode(ActiveNode):
         "silk", "llm", "fallback", "failover", "resilience", "chain",
         "model", "inference",
     ]
-    node_icon: ClassVar[Optional[str]] = "node"
+    node_icon: ClassVar[Optional[str]] = "lifebuoy"
     vertical_size_policy: ClassVar[VerticalSizePolicy] = VerticalSizePolicy.FIT
     node_state_api = 1
     node_version = 1     # bump on any state-shape change (G20)

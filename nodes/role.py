@@ -63,7 +63,10 @@ class SilkRoleNode(ActiveNode):
     node_tags: ClassVar[Optional[List[str]]] = ["silk", "agent", "role", "persona", "llm"]
     node_icon: ClassVar[Optional[str]] = "text-recognition"
     vertical_size_policy: ClassVar[VerticalSizePolicy] = VerticalSizePolicy.FIT
-    node_state_api = 1   # owns a hand-written state dict
+    node_state_api = 2   # owns a hand-written state dict
+    # 1 = the shape this spec settled on. 2 registers the preset bar
+    # (`preset` binding) so the mirror panel builds a working twin.
+    # Additive: older states have no entry and restore unselected.
     node_version = 1     # bump on any state-shape change (G20)
 
     def __init__(self, title: str = "Silk Role", **kwargs: Any) -> None:
@@ -97,6 +100,10 @@ class SilkRoleNode(ActiveNode):
             apply=self._apply_preset,
         )
         form.addRow("Preset:", self._preset_bar)
+        self._widget_core.register_widget(
+            "preset", self._preset_bar, role=PortRole.INTERNAL,
+            datatype="str", default="", add_to_layout=False,
+        )
 
         # ── Widgets ──
         self._edit_id = QLineEdit()
@@ -274,6 +281,13 @@ class SilkRoleNode(ActiveNode):
         return {"role": role, "permissions": grants}
 
     # ── State ───────────────────────────────────────────────────────
+
+    @classmethod
+    def migrate_state(cls, state: Dict[str, Any],
+                      from_version: int) -> Dict[str, Any]:
+        """api 1 → 2: the preset binding is new; older states restore
+        with the placeholder selected."""
+        return state
 
     def restore_state(self, state: Dict[str, Any]) -> None:
         # 1. Restore values silently (prevents eval storms & false undo history)

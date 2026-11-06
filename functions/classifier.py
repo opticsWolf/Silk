@@ -44,9 +44,12 @@ import time
 import urllib.request
 from collections import OrderedDict
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Literal, Optional, Protocol, Sequence
 
 from pydantic import BaseModel, Field, field_validator
+
+from .systemone import SystemOneClient
 
 MODES = ("off", "shadow", "live")
 PURPOSES = ("gate", "hook", "tool")
@@ -161,30 +164,78 @@ def _estimate_tokens(state: Any, questions: dict) -> int:
     return max(1, len(json.dumps([state, questions], ensure_ascii=False, default=str)) // 4)
 
 
-class JevBackend:
-    """Hosted Jev. ``http(url, headers, body) -> dict`` is injectable for tests."""
+class SystemOneBackend:
+    """One ``/v1/systemone`` endpoint, hosted or local.
+
+    Jev and Laya are interchangeable here: same questions, same answers,
+    same usage shape. Only the URL, the credential, the model id (the
+    bands key) and the egress flag differ.
+
+    ``http(url, headers, body) -> dict`` is injectable for tests, and
+    ``client`` (anything with ``decide(state, questions, timeout)``)
+    adapts a pool-backed decision model to the same shape.
+    """
+
+    def __init__(self, *, key: Optional[str] = None,
+                 model: str = "systemone/1",
+                 url: str = "https://api.typesafe.ai/v1/systemone",
+                 timeout: float = 4.0, egress: bool = True,
+                 name: str = "systemone",
+                 http: Optional[Callable[[str, dict, dict, float], dict]] = None,
+                 client: Any = None) -> None:
+        if model.endswith("latest"):
+            raise ValueError("pin a model version: bands are calibrated per model")
+        self.name, self.model, self.url, self.timeout = name, model, url, timeout
+        self.egress = egress
+        self._key = key
+        if client is not None:
+            self._http = _pool_http(client)
+            self._needs_key = False
+        else:
+            self._http = http or _urllib_post
+            self._needs_key = http is None
+
+    def answer(self, state: Any, questions: dict) -> tuple[dict, int]:
+        if self._needs_key and not self._key:
+            raise ClassifierError(f"no key configured for {self.name}")
+        body = {"model": self.model, "state": state, "questions": questions}
+        resp = self._http(self.url, {"Authorization": f"Bearer {self._key}",
+                                     "Content-Type": "application/json"}, body, self.timeout)
+        used = int((resp.get("usage") or {}).get("input_tokens")
+                   or _estimate_tokens(state, questions))
+        if self.name == "jev" and resp.get("model"):
+            # Hosted Jev echoes its canonical model id; the bands key
+            # follows it. Pool adapters never send "model".
+            self.model = "jev/" + str(resp["model"]).removeprefix("jev/")
+        return resp["answers"], used
+
+
+class JevBackend(SystemOneBackend):
+    """Hosted Jev: one ``/v1/systemone`` endpoint among others.
+
+    Kept with its original signature, wire format and egress so existing
+    specs, presets and tests keep working; new code reaches for
+    ``SystemOneBackend`` directly.
+    """
 
     egress = True
 
     def __init__(self, *, key: Optional[str], model: str = "jev/jev-1.13.0",
-                 url: str = "https://api.typesafe.ai/v1/systemone", timeout: float = 4.0,
+                 url: str = "https://api.typesafe.ai/v1/systemone",
+                 timeout: float = 4.0,
                  http: Optional[Callable[[str, dict, dict, float], dict]] = None) -> None:
-        if model.endswith("jev-latest"):
-            raise ValueError("pin a Jev version: bands are calibrated per model")
-        self.name, self.model, self.url, self.timeout = "jev", model, url, timeout
-        self._key = key
-        self._http = http or _urllib_post
+        super().__init__(key=key, model=model, url=url, timeout=timeout,
+                         egress=True, name="jev", http=http)
 
-    def answer(self, state: Any, questions: dict) -> tuple[dict, int]:
-        if not self._key:
-            raise ClassifierError("no Jev key configured")
-        body = {"model": self.model, "state": state, "questions": questions}
-        resp = self._http(self.url, {"Authorization": f"Bearer {self._key}",
-                                     "Content-Type": "application/json"}, body, self.timeout)
-        used = int((resp.get("usage") or {}).get("input_tokens") or _estimate_tokens(state, questions))
-        if resp.get("model"):
-            self.model = "jev/" + str(resp["model"]).removeprefix("jev/")
-        return resp["answers"], used
+
+def _pool_http(client: Any) -> Callable[[str, dict, dict, float], dict]:
+    """Adapt a decision pool (``decide(state, questions, timeout)``) to the
+    ``http(url, headers, body)`` shape backends use."""
+    def post(url: str, headers: dict, body: dict, timeout: float) -> dict:
+        return {"answers": client.decide(body["state"], body["questions"],
+                                          timeout=timeout),
+                "usage": {}}
+    return post
 
 
 def _urllib_post(url: str, headers: dict, body: dict, timeout: float) -> dict:
@@ -435,7 +486,7 @@ class ChainClassifier:
                 tried.append(f"{b.name}: {type(exc).__name__}: {exc}")
                 continue
             self.breaker.ok(b.name)
-            cost = used * JEV_PRICE_PER_MTOK / 1e6 if b.name == "jev" else 0.0
+            cost = used * JEV_PRICE_PER_MTOK / 1e6 if b.egress else 0.0
             v = Verdict(answers, b.name, b.model, purpose, False, used, cost, "", tried)
             self.cache.put(key, v)
             self.meter.add(v)
@@ -457,10 +508,17 @@ class BandsConfig(BaseModel):
 
 
 class BackendConfig(BaseModel):
-    kind: Literal["jev", "local", "fake"]
+    # ``jev`` and ``systemone`` are the same backend class (one
+    # /v1/systemone endpoint each): ``jev`` is the hosted product with
+    # its egress, ``systemone`` a decision-model endpoint that is local
+    # by default and hosted only when ``egress`` says so. ``key_name`` is
+    # the per-backend credential, falling back to the spec default.
+    kind: Literal["jev", "systemone", "local", "fake"]
     model: str = ""
     url: str = "https://api.typesafe.ai/v1/systemone"
     timeout_s: float = Field(4.0, gt=0, le=30)
+    egress: Optional[bool] = None  # None: jev True, everything else False
+    key_name: Optional[str] = None  # None: use the spec default
 
     @field_validator("model")
     @classmethod
@@ -481,27 +539,82 @@ class ClassifierSpec(BaseModel):
     redact: list[str] = Field(default_factory=lambda: list(DEFAULT_REDACT))
     bands: dict[str, BandsConfig] = Field(default_factory=dict)   # per model id
     default_bands: Optional[BandsConfig] = None   # None: an uncalibrated model never skips
-    tool_calls_per_run: int = Field(10, ge=0)
+    tool_calls_per_run: int = Field(100, ge=0)
     tool_items_per_call: int = Field(50, ge=1, le=500)
     cache_ttl_s: float = Field(600.0, ge=0)
     breaker_threshold: int = Field(3, ge=1)
     breaker_cooldown_s: float = Field(60.0, ge=0)
-    key_name: str = "jev"
+    key_name: str = "JEV_API_KEY"
 
     def bands_for(self, model: str) -> Optional[BandsConfig]:
         return self.bands.get(model, self.default_bands)
 
 
+def decision_member(handle: Any, *,
+                    timeout: float = 4.0) -> Optional[tuple[str, "BackendConfig", dict]]:
+    """A wired classifier-model handle as (bands id, spec entry, build kwarg).
+
+    Pool-backed (Classifier Loader): the id is ``local/<file stem>``, the
+    entry is plain, and the kwarg carries a client for it -- answering
+    stays local, keyless, without egress. Hosted (Jev Loader): the id,
+    URL and credential name come from the handle and egress is on; a
+    key that does not resolve fails at answer time, recorded in the
+    verdict's ``tried`` list, never at build time.
+
+    ``None`` when the handle is not a classifier model (unwired, or a
+    chat handle on the wrong port -- the port type refuses those on the
+    canvas; this only meets ``None`` and hand-built dicts in tests).
+    """
+    if not isinstance(handle, dict) or not handle \
+            or handle.get("backend") != "systemone":
+        return None
+    pool = handle.get("pool")
+    if pool is not None:
+        path = getattr(pool, "model_path", "") or ""
+        model_id = f"local/{Path(path).stem}" if path else "local/decision"
+        try:
+            client = SystemOneClient(pool.base_url, pool.model_alias)
+        except AttributeError:
+            return None
+        return model_id, BackendConfig(kind="systemone", model=model_id,
+                                       egress=False), {"systemone": client}
+    url = str(handle.get("url") or "").strip().rstrip("/")
+    if not url:
+        return None
+    model_id = str(handle.get("model") or "").strip() or "systemone/1"
+    credential = str(handle.get("credential") or "").strip()
+    entry = BackendConfig(kind="systemone", model=model_id, url=url,
+                          timeout=timeout,
+                          key_name=credential or None, egress=True)
+    return model_id, entry, {}
+
+
 def build_classifier(spec: ClassifierSpec, *, secrets: Callable[[str], Optional[str]] = lambda n: None,
                      local_scorer: Optional[Scorer] = None,
+                     systemone: Any = None,
                      fake: Optional[Callable[[Any, dict], dict]] = None,
                      http: Optional[Callable] = None,
                      clock: Callable[[], float] = time.monotonic) -> ChainClassifier:
     backends: list = []
     for b in spec.backends:
+        secret = secrets(b.key_name or spec.key_name)
         if b.kind == "jev":
-            backends.append(JevBackend(key=secrets(spec.key_name), model=b.model or "jev/jev-1.13.0",
+            backends.append(JevBackend(key=secret, model=b.model or "jev/jev-1.13.0",
                                        url=b.url, timeout=b.timeout_s, http=http))
+        elif b.kind == "systemone":
+            if systemone is not None:
+                # A wired decision pool answers locally: no key, no egress.
+                backends.append(SystemOneBackend(
+                    client=systemone, model=b.model or "local/decision",
+                    url=b.url, timeout=b.timeout_s, egress=False))
+            else:
+                # Hosted endpoint (wired Jev loader or hand-written spec).
+                # A missing key is an answer-time failure, recorded in the
+                # verdict's tried list -- never a build error.
+                backends.append(SystemOneBackend(
+                    key=secret, model=b.model or "systemone/1",
+                    url=b.url, timeout=b.timeout_s,
+                    egress=bool(b.egress), http=http))
         elif b.kind == "local":
             if local_scorer is None:
                 continue                  # no judge model loaded: link skipped, not an error
@@ -546,3 +659,293 @@ class RunClassifier:
     @property
     def meter(self) -> Meter:
         return self.handle.classifier.meter
+
+
+# ── ensembles: several classifiers, one verdict ────────────────────────
+
+def combine_answers(questions: dict,
+                    verdicts: list[Verdict]) -> tuple[dict, str]:
+    """Several ok verdicts on the same questions as one answer set.
+
+    Equal weights: every member counts once. Per type: ``choice`` is a
+    probability-weighted vote (the winner's share, times the members'
+    mean certainty, is the combined confidence); ``score`` and ``noul``
+    are means whose confidence is discounted by the spread, so
+    disagreeing members tank below ``min_confidence`` and the human is
+    asked. The combined model id joins the member ids, sorted -- it
+    needs its own bands row, exactly like any other model.
+    """
+    oks = [v for v in verdicts if v.ok and v.answers]
+    if not oks:
+        raise ClassifierError("nothing to combine: no member answered")
+    if len(oks) == 1:
+        return dict(oks[0].answers), oks[0].model
+    models = sorted({v.model for v in oks if v.model}) or ["ensemble"]
+    combined: dict[str, Any] = {}
+    for qid, member_answers in _answers_by_question(oks).items():
+        question = questions.get(qid) if isinstance(questions, dict) else None
+        qtype = (question.get("type") if isinstance(question, dict) else None)
+        qtype = qtype or member_answers[0][1].get("type")
+        if qtype == "choice":
+            combined[qid] = _combine_choice(member_answers)
+        elif qtype == "score":
+            scale = _score_scale(question)
+            combined[qid] = _combine_scored(member_answers, scale, "score")
+        else:
+            combined[qid] = _combine_scored(member_answers, 1.0, "noul")
+    return combined, "+".join(models)
+
+
+def _answers_by_question(
+        verdicts: list[Verdict]) -> dict[str, list[tuple[Verdict, dict]]]:
+    """Member answers grouped by question, in member order."""
+    grouped: dict[str, list[tuple[Verdict, dict]]] = {}
+    for v in verdicts:
+        for qid, answer in v.answers.items():
+            if isinstance(answer, dict):
+                grouped.setdefault(qid, []).append((v, answer))
+    return grouped
+
+
+def _mean_confidence(member_answers: list[tuple[Verdict, dict]]) -> float:
+    """Mean stated certainty. Missing is 0: a member that states no
+    confidence earns no early stop and drags the combination."""
+    confs = [float(a.get("confidence", 0.0) or 0.0)
+             for _, a in member_answers]
+    return sum(confs) / len(confs) if confs else 0.0
+
+
+def _combine_choice(member_answers: list[tuple[Verdict, dict]]) -> dict:
+    options: dict[str, float] = {}
+    for _, a in member_answers:
+        probs = a.get("probabilities")
+        if isinstance(probs, dict):
+            for option, prob in probs.items():
+                try:
+                    options[str(option)] = options.get(str(option), 0.0) + float(prob)
+                except (TypeError, ValueError):
+                    continue
+    n = len(member_answers)
+    averaged = {option: total / n for option, total in options.items()}
+    winner = max(sorted(averaged), key=averaged.__getitem__) if averaged else ""
+    if not winner:
+        fallback = str(member_answers[0][1].get("choice") or "")
+        return {"type": "choice", "choice": fallback,
+                "probabilities": {}, "confidence": 0.0}
+    return {"type": "choice", "choice": winner,
+            "probabilities": averaged,
+            "confidence": averaged[winner] * _mean_confidence(member_answers)}
+
+
+def _score_scale(question: Any) -> float:
+    criteria = question.get("criteria") if isinstance(question, dict) else None
+    if isinstance(criteria, (list, tuple)) and len(criteria) > 1:
+        return float(len(criteria) - 1)
+    return 0.0
+
+
+def _combine_scored(member_answers: list[tuple[Verdict, dict]],
+                    scale: float, qtype: str) -> dict:
+    key = "score" if qtype == "score" else "noul"
+    values = []
+    for _, a in member_answers:
+        try:
+            values.append(float(a.get(key, 0.0)))
+        except (TypeError, ValueError):
+            values.append(0.0)
+    mean = sum(values) / len(values)
+    spread = (max(values) - min(values)) / scale if scale > 0 else 0.0
+    spread = min(max(spread, 0.0), 1.0)
+    value = min(max(mean, 0.0), scale) if qtype == "score" and scale > 0 \
+        else min(max(mean, 0.0), 1.0)
+    return {"type": qtype, key: value,
+            "confidence": _mean_confidence(member_answers) * (1.0 - spread)}
+
+
+class EnsembleClassifier:
+    """Several member chains asked as one, by policy.
+
+    Members are ``(label, chain)`` pairs in input order; ``a``/``b``/``c``
+    on the canvas. A member whose mode is ``off`` is skipped. Policies:
+    ``first`` returns the first ok verdict untouched; ``consensus`` asks
+    everybody (in threads) and combines; ``cascade`` asks in order and
+    stops early when every answer's confidence clears ``agreement``.
+    Early stops and single answers keep the member's verdict whole --
+    member model id, member bands -- and only a real combination mints
+    the joined id, which needs its own bands row.
+    """
+
+    name = "ensemble"
+
+    def __init__(self, members: Sequence[tuple[str, Any]], *, mode: str = "shadow",
+                 policy: str = "cascade", agreement: float = 0.7,
+                 fallback: Any = None) -> None:
+        if policy not in ("first", "consensus", "cascade"):
+            raise ClassifierError(f"unknown ensemble policy {policy!r}")
+        self.members = list(members)
+        self.mode = mode
+        self.policy = policy
+        self.agreement = agreement
+        #: A judge chain asked only when no decision member answered --
+        #: the fallback, never a voter (its entropy-derived confidence
+        #: must not dilute two agreeing decision models).
+        self.fallback = fallback
+        self.meter = Meter()
+
+    @property
+    def backends(self) -> list:
+        """Member links flattened, for stats that name what answered."""
+        found = []
+        for _, chain in self.members:
+            for backend in getattr(chain, "backends", []):
+                found.append(backend)
+        return found
+
+    def _active(self) -> list[tuple[str, Any]]:
+        return [(label, chain) for label, chain in self.members
+                if getattr(chain, "mode", "shadow") != "off"]
+
+    def ask(self, state: Any, questions: dict, *, purpose: str) -> Verdict:
+        if purpose not in PURPOSES:
+            raise ValueError(purpose)
+        validate_questions(questions)
+        if self.mode == "off":
+            v = Verdict({}, purpose=purpose, error="ensemble is off")
+            self.meter.add(v)
+            return v
+        if self.policy == "consensus":
+            return self._ask_consensus(state, questions, purpose=purpose)
+        return self._ask_sequential(state, questions, purpose=purpose)
+
+    # ── policies ──
+
+    def _ask_sequential(self, state: Any, questions: dict, *, purpose: str) -> Verdict:
+        tried: list[str] = []
+        oks: list[Verdict] = []
+        for label, chain in self._active():
+            try:
+                v = chain.ask(state, questions, purpose=purpose)
+            except Exception as exc:      # a broken member, not a broken ensemble
+                tried.append(f"member {label}: {type(exc).__name__}: {exc}")
+                continue
+            tried.extend(f"member {label}: {entry}" for entry in v.tried)
+            if not v.ok:
+                continue
+            oks.append(v)
+            if self.policy == "first":
+                return self._record(_with_tried(v, tried), purpose)
+            if self._clears(v, self.agreement):
+                return self._record(_with_tried(v, tried), purpose)
+        return self._finish(oks, tried, purpose, questions, state)
+
+    def _ask_consensus(self, state: Any, questions: dict, *, purpose: str) -> Verdict:
+        active = self._active()
+        results: list[Any] = [None] * len(active)
+
+        def _ask_one(index: int, chain: Any) -> None:
+            try:
+                results[index] = chain.ask(state, questions, purpose=purpose)
+            except Exception as exc:  # noqa: BLE001 - one member's failure
+                results[index] = exc
+
+        threads = [threading.Thread(target=_ask_one, args=(i, chain), daemon=True,
+                                    name=f"silk-ensemble-{i}")
+                   for i, (_, chain) in enumerate(active)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        tried: list[str] = []
+        oks: list[Verdict] = []
+        for (label, _), result in zip(active, results, strict=True):
+            if isinstance(result, Exception):
+                tried.append(f"member {label}: {type(result).__name__}: {result}")
+            elif result is not None:
+                tried.extend(f"member {label}: {entry}" for entry in result.tried)
+                if result.ok:
+                    oks.append(result)
+        return self._finish(oks, tried, purpose, questions, state)
+
+    def _finish(self, oks: list[Verdict], tried: list[str],
+              purpose: str, questions: dict, state: Any) -> Verdict:
+        if not oks:
+            if self.fallback is not None:
+                try:
+                    v = self.fallback.ask(state, questions, purpose=purpose)
+                except Exception as exc:  # noqa: BLE001 - a broken fallback
+                    tried.append(f"fallback: {type(exc).__name__}: {exc}")
+                    v = None
+                if v is not None and v.ok:
+                    return self._record(_with_tried(v, tried), purpose)
+                if v is not None:
+                    tried.extend(f"fallback: {entry}" for entry in v.tried)
+            v = Verdict({}, purpose=purpose,
+                        error="no ensemble member answered", tried=tried)
+            return self._record(v, purpose)
+        if len(oks) == 1:
+            return self._record(_with_tried(oks[0], tried), purpose)
+        answers, model = combine_answers(questions, oks)
+        v = Verdict(answers, self.name, model, purpose, False,
+                    sum(v.input_tokens for v in oks),
+                    round(sum(v.cost_usd for v in oks), 8), "", tried)
+        return self._record(v, purpose)
+
+    @staticmethod
+    def _clears(verdict: Verdict, agreement: float) -> bool:
+        """Every answer states confidence at or above the threshold."""
+        if not verdict.answers:
+            return False
+        for answer in verdict.answers.values():
+            try:
+                if float(answer.get("confidence", 0.0) or 0.0) < agreement:
+                    return False
+            except (TypeError, ValueError, AttributeError):
+                return False
+        return True
+
+    def _record(self, v: Verdict, purpose: str) -> Verdict:
+        v.purpose = purpose
+        self.meter.add(v)
+        return v
+
+
+def _with_tried(v: Verdict, tried: list[str]) -> Verdict:
+    """The verdict with the ensemble's full narrative attached."""
+    return Verdict(v.answers, v.backend, v.model, v.purpose, v.cached,
+                   v.input_tokens, v.cost_usd, v.error, list(tried))
+
+
+class EnsembleSpec(BaseModel):
+    """What an Ensemble node stores. Member chains arrive by wire."""
+    policy: Literal["first", "consensus", "cascade"] = "cascade"
+    agreement: float = Field(0.7, ge=0, le=1)
+    mode: Literal["off", "shadow", "live"] = "shadow"
+    bands: dict[str, BandsConfig] = Field(default_factory=dict)
+    tool_calls_per_run: int = Field(100, ge=0)
+    tool_items_per_call: int = Field(50, ge=1, le=500)
+
+    def bands_for(self, model: str) -> Optional[BandsConfig]:
+        return self.bands.get(model)
+
+
+def build_ensemble(spec: EnsembleSpec,
+                   members: Sequence[tuple[str, Any]],
+                   fallback: Any = None) -> EnsembleClassifier:
+    """An ensemble from a spec, labelled member chains, and an optional
+    judge chain asked only when no decision member answered."""
+    return EnsembleClassifier(
+        list(members), mode=spec.mode,
+        policy=spec.policy, agreement=spec.agreement, fallback=fallback)
+
+
+@dataclass
+class EnsembleHandle(ClassifierHandle):
+    """The Ensemble node's ``classifier`` value: a ClassifierHandle whose
+    chain is an :class:`EnsembleClassifier`.
+
+    A subclass on purpose: the gate, hooks and tool only ever check
+    ``isinstance(handle, ClassifierHandle)`` and then use ``for_run`` +
+    ``spec``. ``members`` names the wired slots; ``judge_model`` (from
+    the base) carries the fallback judge for the self-grading refusal.
+    """
+    members: tuple = ()

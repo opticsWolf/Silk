@@ -78,7 +78,7 @@ from ..functions.decision_seam import (
     DecisionSeam,
 )
 from ..functions.grants import SCOPE_ALWAYS, SCOPE_ONCE, SCOPE_RUN
-from ..functions.graph_engine import GraphEngine
+from ..functions.graph_engine import GraphEngine, handle_gen_params
 from ..functions.remember import RunIdentity, bind_run_identity
 from ..functions.cost_ledger import record_run
 from ..functions.port_text import text_input
@@ -124,16 +124,17 @@ log = get_logger("SilkAgent")
 @register_node
 class SilkAgentNode(ThreadedManualNode):
     """Autonomous tool-calling agent over model + toolbox + role."""
-    node_state_api = 1   # owns a hand-written state dict
+    node_state_api = 2   # owns a hand-written state dict
     # Bumped on any change to what this node persists or how its
     # ports are shaped; `node_state_api` is what says old state can
-    # no longer be restored (G20). 1 = the shape this spec settled on.
-    # 2: the `event_log` port (T7, D85). Same `node_state_api`: an older
-    # state simply has no entry for it and restores with the box off,
-    # which is also the default.
-    # 3: the port and box are gone -- the run log is the ToolBox's
-    # `run_log` hook. A saved `event_log` is ignored, and said so once.
-    node_version = 3
+    # no longer be restored (G20).
+    # 1 = the shape this spec settled on (the `event_log` port and box
+    # came and went under it -- an older state simply has no entry and
+    # restores with defaults, which the removal honors too).
+    # 2: the `inference_settings` port is gone -- sampler settings ride
+    # the model wire now (the loader stamps handle["gen_params"]). A wire
+    # into it is dropped on load; re-draw from the loader instead.
+    node_version = 4
 
     # Weave declares `_widget_core` as `WidgetCoreLike` -- the subset the
     # *dataflow engine* relies on. A node uses the widget-facing whole
@@ -201,9 +202,6 @@ class SilkAgentNode(ThreadedManualNode):
         # prompt is given, and its provenance/correlation flow to the outbox.
         self.add_input("inbox", datatype="agent_message")
         self.add_input("run", datatype="exec")  # pulse → auto-execute (§13)
-        self.add_input(
-            "inference_settings", datatype="dict",
-        )  # optional gen_params dict from an Inference Settings node
         # The last link of the ToolSet → Role → Agent chain (D16). Whatever
         # arrives here narrows the toolset's sandbox for this run and only
         # this run; it can never widen it, and it cannot switch confinement
@@ -384,6 +382,19 @@ class SilkAgentNode(ThreadedManualNode):
         return super().eventFilter(obj, event)
 
     # ── State persistence ────────────────────────────────────────────
+
+    @classmethod
+    def migrate_state(cls, state: Dict[str, Any],
+                      from_version: int) -> Dict[str, Any]:
+        """api 1 → 2: drop any residue of the removed ``inference_settings``
+        port; the dict now rides the model wire from the loader, so an old
+        wire into the agent is dropped on load and re-drawn there.
+        """
+        if from_version < 2:
+            values = state.get("widget_data")
+            if isinstance(values, dict):
+                values.pop("inference_settings", None)
+        return state
 
     def get_state(self) -> Dict[str, Any]:
         state = super().get_state()
@@ -911,17 +922,15 @@ class SilkAgentNode(ThreadedManualNode):
             )
 
             # Build gen_params from internal defaults (no limit on tokens).
-            # When an Inference Settings node is wired, its dict overrides
-            # these defaults entirely.
+            # Sampling travels on the model wire now: the loader stamps a
+            # wired Inference Settings dict onto handle["gen_params"], and
+            # it wins over these fallbacks. The role still fills gaps.
             gen_params: Dict[str, Any] = {
                 "temperature": 0.7,
             }
 
-            # Merge external inference settings (from an Inference Settings
-            # node) — they override the agent's internal fallback defaults.
-            external_settings = inputs.get("inference_settings")
-            if isinstance(external_settings, dict):
-                gen_params.update(external_settings)
+            model_gen = handle_gen_params(model_handle)
+            gen_params.update(model_gen)
 
             if binding is not None:
                 gen_params = binding.effective_gen_params(gen_params)

@@ -44,7 +44,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from weave.logger import get_logger
 
 from .credentials import missing_credential
-from .model_pool import OpenAICompatClient
+from .model_pool import USER_AGENT, OpenAICompatClient
 from .pricing import price_from_spec
 
 __all__ = [
@@ -52,11 +52,13 @@ __all__ = [
     "PROVIDERS",
     "Provider",
     "connect",
+    "endpoint_dict",
     "list_model_specs",
     "list_models",
     "normalise_base_url",
     "provider_for",
     "provider_keys",
+    "split_endpoint",
 ]
 
 log = get_logger("SilkModelEndpoint")
@@ -70,6 +72,10 @@ BACKEND = "openai"
 #: Generous for a cold local server, short enough that a wrong URL is a
 #: mistake you find out about rather than a node that sits there.
 PROBE_TIMEOUT_S = 20.0
+
+#: OpenCode routes and caches by conversation, and Go refuses a chat
+#: request without this header ("MissingSessionID").
+OPENCODE_SESSION_HEADER = "x-opencode-session"
 
 
 @dataclass(frozen=True)
@@ -86,6 +92,8 @@ class Provider:
     base_url: str
     credential: str = ""
     note: str = ""
+    #: The header the gateway reads a conversation id from, if it wants one.
+    session_header: str = ""
 
 
 #: The presets, local first: a local server is the case with no bill and
@@ -115,11 +123,13 @@ PROVIDERS: Tuple[Provider, ...] = (
     Provider("opencode", "OpenCode Zen", "https://opencode.ai/zen/v1",
              "OPENCODE_API_KEY",
              "OpenCode's pay-as-you-go gateway. The OpenCode Zen node adds "
-             "a model dropdown and context lengths from a cached catalogue."),
+             "a model dropdown and context lengths from a cached catalogue.",
+             OPENCODE_SESSION_HEADER),
     Provider("opencode-go", "OpenCode Go", "https://opencode.ai/zen/go/v1",
              "OPENCODE_API_KEY",
              "OpenCode's subscription plan. The OpenCode Go node adds a "
-             "model dropdown and context lengths from a cached catalogue."),
+             "model dropdown and context lengths from a cached catalogue.",
+             OPENCODE_SESSION_HEADER),
 )
 
 _BY_KEY: Dict[str, Provider] = {p.key: p for p in PROVIDERS}
@@ -138,6 +148,35 @@ def provider_for(key: str) -> Provider:
     what actually matters.
     """
     return _BY_KEY.get(str(key or "").strip().lower(), _BY_KEY["custom"])
+
+
+def endpoint_dict(provider: str, base_url: str, credential: str = "") -> Dict[str, str]:
+    """The ``endpoint`` wire value: what an Endpoint node forwards.
+
+    Qt-free, so nodes and tests share it. The credential travels by
+    name (D22) -- resolved at connect time, never carried as a value.
+    """
+    return {
+        "provider": str(provider or "custom").strip().lower() or "custom",
+        "base_url": str(base_url or "").strip(),
+        "credential": str(credential or "").strip(),
+    }
+
+
+def split_endpoint(value: Any) -> Optional[Dict[str, str]]:
+    """An ``endpoint`` input as a dict, or ``None`` when unusable.
+
+    Lenient on purpose: the port validator already refuses malformed
+    wires on the canvas, so this only meets ``None``, the unwired, and
+    hand-built dicts in tests.
+    """
+    if not isinstance(value, dict) or not value:
+        return None
+    base_url = str(value.get("base_url") or "").strip()
+    if not base_url:
+        return None
+    return endpoint_dict(value.get("provider"), base_url,
+                         str(value.get("credential") or ""))
 
 
 def normalise_base_url(url: str) -> str:
@@ -184,12 +223,20 @@ def list_model_specs(
     learn something the first one already carried.
     """
     url = f"{normalise_base_url(base_url)}/models"
-    request = urllib.request.Request(url, headers=headers or {})
+    # The catalogue refresh passes only its Authorization header.
+    request = urllib.request.Request(
+        url, headers={"User-Agent": USER_AGENT, **(headers or {})})
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             payload = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         detail = _http_detail(exc)
+        if exc.code == 403 and "error code: 1010" in detail:
+            # Cloudflare judging the client, before the key is looked at.
+            raise RuntimeError(
+                f"{url} blocked this client before checking any key "
+                f"(Cloudflare error 1010: the User-Agent was refused)."
+            ) from exc
         if exc.code in (401, 403):
             raise RuntimeError(
                 f"{url} refused the credentials ({exc.code}). The key is "
@@ -227,7 +274,7 @@ def connect(
     credential: str = "",
     context_length: int = 0,
     provider: str = "custom",
-    supports_tools: bool = False,
+    supports_tools: Optional[bool] = None,
     timeout: float = PROBE_TIMEOUT_S,
 ) -> Tuple[Optional[Dict[str, Any]], str, List[str]]:
     """Build a model handle for a remote endpoint.
@@ -247,10 +294,13 @@ def connect(
         return None, "No URL. Pick a preset, or type the endpoint's base URL.", []
 
     name = str(credential or "").strip()
+    # By preset, or by host for a Custom URL someone pasted from OpenCode.
+    session_header = provider_for(provider).session_header or (
+        OPENCODE_SESSION_HEADER if "://opencode.ai/" in url else "")
     try:
         client = OpenAICompatClient(
             url, model_alias=str(model or "").strip() or "default",
-            credential=name,
+            credential=name, session_header=session_header,
         )
     except RuntimeError:
         # The one failure that is about the user's machine, not the
@@ -314,10 +364,11 @@ def connect(
         advertised = spec.get("context_length")
         if isinstance(advertised, int) and advertised > 0:
             context_length = advertised
-    if not supports_tools:
-        # The gateway's own answer to the question the checkbox asks. Only
-        # ever turns it *on*: a person who unticked it did so for a
-        # reason, and a catalogue cannot see a proxy in the way.
+    if supports_tools is None:
+        # Nobody answered, so the gateway's own answer to the question the
+        # checkbox asks. True or False is a person's answer and stands: a
+        # catalogue cannot see a proxy in the way, or a model that calls
+        # tools badly in practice.
         params = spec.get("supported_parameters")
         supports_tools = isinstance(params, (list, tuple)) and "tools" in params
     # Only when it is known. `GraphEngine.context_length` prefers an
@@ -333,8 +384,8 @@ def connect(
         handle["supports_tools"] = True
 
     return (handle,
-            _status(url, chosen, name, models, context_length, supports_tools,
-                    price),
+            _status(url, chosen, name, models, context_length,
+                    bool(supports_tools), price),
             models)
 
 

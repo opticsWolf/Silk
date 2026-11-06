@@ -16,7 +16,7 @@ presets (JSON, pydantic-validated on load).
 
 from typing import Any, ClassVar, Dict, List, Optional
 
-from PySide6.QtWidgets import QFormLayout, QLabel
+from PySide6.QtWidgets import QComboBox, QFormLayout, QLabel
 
 from weave.widgetcore import WidgetCore, PortRole
 from weave.node.base import ActiveNode
@@ -27,6 +27,7 @@ from weave.logger import get_logger
 from .silk_ports import FILE_PERMISSIONS_TYPE, SILK_TOOLSET_TYPE  # noqa: F401
 from ..functions.file_grants import FileGrant, FileGrants
 from ..functions.presets import PresetStore, ToolSetPreset
+from ..functions.tools.okf_tools import OKF_LEVELS, OKF_TOOLS, narrow_okf_level
 from ..functions.toolset_build import build_toolset, split_by_ceiling, tool_catalog
 from ..widgets.preset_bar import PresetBarWidget
 from ..widgets.tool_tree import ToolDetailWidget, ToolTreeWidget
@@ -54,8 +55,16 @@ class SilkToolSetNode(ActiveNode):
     node_tags: ClassVar[Optional[List[str]]] = ["silk", "agent", "tools", "toolset", "llm"]
     node_icon: ClassVar[Optional[str]] = "slice"
     vertical_size_policy: ClassVar[VerticalSizePolicy] = VerticalSizePolicy.FIT
-    node_state_api = 1   # owns a hand-written state dict
-    node_version = 1     # bump on any state-shape change (G20)
+    node_state_api = 3   # owns a hand-written state dict
+    # 1 = the shape this spec settled on. 2 registers the preset bar
+    # (`preset` binding) so the mirror panel builds a working twin.
+    # Additive: older states have no entry and restore unselected.
+    # 3 adds the knowledge-graph level (`knowledge_level`), also additive:
+    # absent, the toolset keeps the ToolBox's level.
+    node_version = 2     # bump on any state-shape change (G20)
+
+    #: The level combo's first entry: no narrowing.
+    _LEVEL_AS_TOOLBOX = "as ToolBox"
 
     def __init__(self, title: str = "Silk ToolSet", **kwargs: Any) -> None:
         super().__init__(title=title, **kwargs)
@@ -88,6 +97,10 @@ class SilkToolSetNode(ActiveNode):
             apply=self._apply_preset,
         )
         form.addRow("Preset:", self._preset_bar)
+        self._widget_core.register_widget(
+            "preset", self._preset_bar, role=PortRole.INTERNAL,
+            datatype="str", default="", add_to_layout=False,
+        )
 
         # ── Tool selection tree ──
         self._tool_tree = ToolTreeWidget(checkable=True)
@@ -107,6 +120,22 @@ class SilkToolSetNode(ActiveNode):
         )
         # UI-local wiring: focused tree row drives the detail preview.
         self._tool_tree.tool_focused.connect(self._detail.show_tool)
+
+        # What this toolset's agents may do to the knowledge graph. Only
+        # ever lower than the ToolBox's level (the ToolBox is the grant);
+        # picking a higher one keeps the ToolBox's.
+        self._knowledge_level = QComboBox()
+        self._knowledge_level.addItems([self._LEVEL_AS_TOOLBOX, *OKF_LEVELS])
+        self._knowledge_level.setToolTip(
+            "Lower the knowledge graph's access for this toolset. read: "
+            "search, read, traverse. write: also okf_ingest. curate: also "
+            "update, supersede and delete. Never above the ToolBox's level.")
+        form.addRow("Knowledge:", self._knowledge_level)
+        self._widget_core.register_widget(
+            "knowledge_level", self._knowledge_level, role=PortRole.INTERNAL,
+            datatype="string", default=self._LEVEL_AS_TOOLBOX,
+            add_to_layout=False,
+        )
 
         self._label_status = QLabel("No toolbox connected.")
         self._label_status.setWordWrap(True)
@@ -151,8 +180,20 @@ class SilkToolSetNode(ActiveNode):
             self._sync_status = str(exc)
             return {"toolset": None, "permissions": None}
 
+        wanted_level = str(inputs.get("knowledge_level") or "")
+        level_note = ""
+        if wanted_level in OKF_LEVELS:
+            effective_level = narrow_okf_level(toolset, wanted_level)
+            if effective_level:
+                level_note = f" · knowledge: {effective_level}"
+                if effective_level != wanted_level:
+                    level_note += " (the ToolBox's ceiling)"
+
         available = {e["name"] for e in self._sync_catalog}
-        selected = sorted(set(checked) & available)
+        # What the toolset really carries: a narrowed level drops okf
+        # tools that are ticked and offered by the ToolBox.
+        dropped = {n for n in OKF_TOOLS if n not in toolset.tools}
+        selected = sorted((set(checked) & available) - dropped)
         # Preset fallback transparency: names checked (e.g. from a preset)
         # but absent from this toolbox stay remembered and re-activate if
         # the tool returns — report them instead of silently ignoring.
@@ -177,7 +218,8 @@ class SilkToolSetNode(ActiveNode):
                 )
         self._sync_status = (
             f"{len(selected)}/{len(self._sync_catalog)} tools selected"
-            f"{sandbox_note}: {', '.join(selected) if selected else 'none'}"
+            f"{sandbox_note}{level_note}: "
+            f"{', '.join(selected) if selected else 'none'}"
         )
         effective = FileGrants.coerce(permissions)
         if effective is not None:
@@ -191,6 +233,13 @@ class SilkToolSetNode(ActiveNode):
         return {"toolset": toolset, "permissions": effective}
 
     # ── State ───────────────────────────────────────────────────────
+
+    def migrate_state(cls, state: Dict[str, Any],
+                      from_version: int) -> Dict[str, Any]:
+        """api 1 → 2: the preset binding is new; older states restore
+        with the placeholder selected. 2 → 3: the knowledge level is new;
+        older states restore "as ToolBox", which is what they did."""
+        return state
 
     def restore_state(self, state: Dict[str, Any]) -> None:
         # 1. Restore values silently (prevents eval storms & false undo history)

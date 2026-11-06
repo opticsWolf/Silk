@@ -19,13 +19,15 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from pydantic import ValidationError
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import Qt, QObject, Signal
 from PySide6.QtGui import QColor, QBrush
 from PySide6.QtWidgets import (
+    QComboBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
     QPushButton,
+    QStyledItemDelegate,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -38,7 +40,8 @@ from ..functions.classifier import BandsConfig
 
 #: (column header, BandsConfig field, tooltip)
 COLUMNS = (
-    ("Model", None, "Versioned model id the bands were calibrated for."),
+    ("Model", None, "Who the row trusts: pick a wired id from the list, "
+     "or type a versioned model id."),
     ("Reversible ≥", "reversible", "Skip only if P(reversible) is at least this."),
     ("In scope ≥", "in_scope", "Skip only if P(in scope of the task) is at least this."),
     ("Consistent ≥", "consistent", "Skip only if P(consistent with prior decisions) is at least this."),
@@ -60,6 +63,37 @@ def _row_bands(cells: List[str]) -> BandsConfig:
         elif text:
             raw[field] = float(text)
     return BandsConfig.model_validate(raw)
+
+
+class _ModelDelegate(QStyledItemDelegate):
+    """Editable drop-down for the Model column.
+
+    Offers the ids the node knows can answer (wired handles, ensemble
+    joins) first, then whatever the row already says -- typing a new id
+    always works, so pre-calibrating an unwired model stays possible.
+    """
+
+    def __init__(self, table: "BandsTableWidget") -> None:
+        super().__init__(table.table_widget())
+        self._owner = table
+
+    def createEditor(self, parent, _option, index):
+        box = QComboBox(parent)
+        box.setEditable(True)
+        current = (index.data() or "").strip()
+        seen: List[str] = []
+        for m in self._owner.known_models() + ([current] if current else []):
+            if m not in seen:
+                seen.append(m)
+                box.addItem(m)
+        box.setCurrentText(current)
+        return box
+
+    def setEditorData(self, editor, index) -> None:
+        editor.setCurrentText((index.data() or "").strip())
+
+    def setModelData(self, editor, model, index) -> None:
+        model.setData(index, editor.currentText().strip(), Qt.EditRole)
 
 
 class BandsTableWidget(CompositeValueWidget):
@@ -97,7 +131,31 @@ class BandsTableWidget(CompositeValueWidget):
         self._btn_add.clicked.connect(lambda: self.add_model(""))
         self._btn_remove.clicked.connect(self._remove_selected)
         self._table.itemChanged.connect(self._on_edit)
+        self._table.setItemDelegateForColumn(0, _ModelDelegate(self))
         self._invalid: set[int] = set()
+        self._known: List[str] = []
+
+    # -- known ids --------------------------------------------------------
+    def table_widget(self):
+        """The inner table (delegate parent)."""
+        return self._table
+
+    def known_models(self) -> List[str]:
+        """Ids the node says can answer (wired handles, ensemble joins)."""
+        return list(self._known)
+
+    def set_known_models(self, models) -> None:
+        """Refresh the offered ids and the hint; the rows are untouched.
+
+        No ``bands_changed`` emit: the value did not change, so this never
+        re-triggers an evaluation (the node calls it after every compute).
+        """
+        known = sorted({s for m in (models or [])
+                        for s in [str(m).strip()] if s})
+        if known == self._known:
+            return
+        self._known = known
+        self._refresh_hint()
 
     # -- editing ------------------------------------------------------------
     def add_model(self, model: str, bands: Optional[BandsConfig] = None) -> int:
@@ -131,12 +189,26 @@ class BandsTableWidget(CompositeValueWidget):
 
     def _changed(self) -> None:
         self._validate_rows()
-        n = len(self._read())
-        self._hint.setText(
-            "No calibrated model: the classifier scores, but never skips a question."
-            if n == 0 else
-            f"{n} calibrated model(s). Any other model answers but never skips.")
+        self._refresh_hint()
         self.bands_changed.emit()
+
+    def _refresh_hint(self) -> None:
+        rows = self._read()
+        missing = [m for m in self._known if m not in rows]
+        show = ", ".join(missing[:6]) + (" …" if len(missing) > 6 else "")
+        if not rows and not missing:
+            text = ("No calibrated model: the classifier scores, but never "
+                    "skips a question.")
+        elif not rows:
+            text = ("No calibrated model: the classifier scores, but never skips. "
+                    f"{show} can answer -- add a row per id to allow skipping.")
+        elif not missing:
+            text = (f"{len(rows)} calibrated model(s). Any other model answers "
+                    "but never skips.")
+        else:
+            text = (f"{len(rows)} calibrated model(s). {show} can answer but never "
+                    "skip -- add a row per id to allow skipping.")
+        self._hint.setText(text)
 
     def _validate_rows(self) -> None:
         self._invalid.clear()

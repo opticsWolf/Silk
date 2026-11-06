@@ -2,9 +2,10 @@
 """Agent Inference Settings Node.
 
 Constructs a ``gen_params`` dictionary from UI controls and emits it on an
-output port.  Only keys that match ``GraphEngine._GEN_PARAM_KEYS`` are
+output port. Only keys that match ``GraphEngine._GEN_PARAM_KEYS`` are
 included, so the dict flows directly through ``stream_response`` without
-silent drops.
+silent drops. Wires into a model loader's ``inference_settings`` inlet --
+sampling is configured at the model, not at the run.
 
 Checkbox-gated parameters are only included when the box is checked; an
 unchecked box means "use llama.cpp's own default" (key absent from dict).
@@ -46,7 +47,7 @@ _VALID_GEN_KEYS = frozenset((
 
 @register_node
 class AgentInferenceSettingsNode(ActiveNode):
-    """Generates a gen_params dictionary for Agent nodes."""
+    """Generates a gen_params dictionary for model loaders."""
     # Weave declares `_widget_core` as `WidgetCoreLike` -- the subset the
     # *dataflow engine* relies on. A node uses the widget-facing whole
     # (`register_widget`, `push_display`, `apply_port_value`), which is
@@ -58,7 +59,7 @@ class AgentInferenceSettingsNode(ActiveNode):
     node_subclass: ClassVar[str] = "Configuration"
     node_name: ClassVar[Optional[str]] = "Inference Settings"
     node_description: ClassVar[Optional[str]] = (
-        "Configures sampling and generation parameters for an agent. "
+        "Configures sampling and generation parameters for a model loader. "
         "Save and recall configurations as named presets."
     )
     node_tags: ClassVar[Optional[List[str]]] = [
@@ -66,6 +67,18 @@ class AgentInferenceSettingsNode(ActiveNode):
     ]
     node_icon: ClassVar[Optional[str]] = "brackets-contain"
     vertical_size_policy: ClassVar[VerticalSizePolicy] = VerticalSizePolicy.FIT
+
+    # Base api is 1; 2 registers the preset bar (`preset` binding) so the
+    # mirror panel builds a working twin. Additive: older states simply
+    # have no entry and restore with the placeholder selected.
+    node_state_api = 2
+
+    @classmethod
+    def migrate_state(cls, state: Dict[str, Any],
+                      from_version: int) -> Dict[str, Any]:
+        """api 1 → 2: nothing persisted changes; the preset binding
+        defaults to unselected."""
+        return state
 
     def __init__(self, title: str = "Inference Settings", **kwargs: Any) -> None:
         super().__init__(title=title, **kwargs)
@@ -94,6 +107,10 @@ class AgentInferenceSettingsNode(ActiveNode):
         preset_row_layout.setContentsMargins(0, 0, 0, 0)
         preset_row_layout.addWidget(self._preset_bar)
         main_layout.addWidget(preset_row)
+        self._widget_core.register_widget(
+            "preset", self._preset_bar, role=PortRole.INTERNAL,
+            datatype="str", default="", add_to_layout=False,
+        )
 
         # ── Settings Group ──
         grp_settings = QGroupBox("Settings")

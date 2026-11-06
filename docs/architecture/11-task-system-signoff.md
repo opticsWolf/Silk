@@ -66,7 +66,8 @@ class PlanRef:
 save/load), a path string (root only), or `None`; `store()` builds the
 store it names; `is_explicit` distinguishes a named plan from shared
 discovery. It travels the graph as the `silk_plan` port type: the
-`Silk Task` node emits it, the ToolBox node forwards it to
+`Silk Plan` node (class `SilkTaskNode`; shown as *Silk Task* until it was
+renamed for making no task) emits it, the ToolBox node forwards it to
 `attach_task_tools(plan=ref)` **through its build recipe** — so a derived
 ToolSet replays the same reference rather than re-discovering — and the
 Plan Viewer's `plan_ref` input outranks its `root`.

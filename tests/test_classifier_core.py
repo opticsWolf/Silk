@@ -136,7 +136,7 @@ def test_jev_needs_a_pinned_model_and_a_key():
         BackendConfig(kind="jev", model="jev/jev-latest")
     c = ChainClassifier([JevBackend(key=None)], mode="live", egress_allowed=True)
     v = c.ask("s", NOUL, purpose="gate")
-    assert not v.ok and "no Jev key" in v.tried[0]
+    assert not v.ok and "no key configured for jev" in v.tried[0]
 
 
 def test_local_judge_scores_by_log_probability():

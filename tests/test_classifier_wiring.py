@@ -405,18 +405,20 @@ def gather(node, wired=None):
     core = node._widget_core
     inputs = {name: core.get_port_value(name) for name in core.bindings()}
     inputs["judge_model"] = None
+    inputs["classifier_model"] = None
     inputs.update(wired or {})
     return inputs
 
 
 def test_node_ports_and_safe_defaults(node):
-    assert ports(node.inputs) == {"judge_model": "model_handle"}
+    assert ports(node.inputs) == {"classifier_model": "classifier_model",
+                                   "judge_model": "model_handle"}
     assert ports(node.outputs) == {"classifier": "silk_classifier", "stats": "dict"}
     out = node.compute(gather(node))
     h = out["classifier"]
     assert isinstance(h, ClassifierHandle) and h.spec.mode == "shadow"
     assert h.spec.egress_allowed is False and h.spec.bands == {}
-    assert out["stats"]["backends"] == ["jev"]           # no judge wired: no local link
+    assert out["stats"]["backends"] == ["systemone"]  # placeholders skip: human decides
 
 
 def test_node_rebuilds_the_handle_only_when_the_form_changes(node):
@@ -428,13 +430,35 @@ def test_node_rebuilds_the_handle_only_when_the_form_changes(node):
     assert c is not a and c.spec.egress_allowed is True
 
 
+def test_node_with_a_decision_model_adds_the_systemone_link(node):
+    pool = NS(model_path="/models/laya-decision.gguf",
+              base_url="http://127.0.0.1:9/v1", model_alias="default")
+    out = node.compute(gather(node, {"classifier_model": {
+        "backend": "systemone", "role": "decision", "pool": pool}}))
+    assert out["stats"]["backends"] == ["systemone"]  # no judge: no local link
+    link = out["classifier"].classifier.backends[0]
+    assert link.model == "local/laya-decision" and link.egress is False
+
+
+def test_node_with_a_hosted_jev_handle_adds_the_hosted_link(node, monkeypatch):
+    handle = {"backend": "systemone", "role": "decision",
+              "model": "jev/jev-1.14.0",
+              "url": "https://example.invalid/v1/systemone",
+              "credential": "JEV_API_KEY", "egress": True}
+    out = node.compute(gather(node, {"classifier_model": handle}))
+    assert out["stats"]["backends"] == ["systemone"]  # no pool: no local links
+    link = out["classifier"].classifier.backends[0]
+    assert link.model == "jev/jev-1.14.0" and link.egress is True
+    assert link.url == "https://example.invalid/v1/systemone"
+
+
 def test_node_with_a_judge_model_adds_the_local_link(node):
     pool = NS(model_path="/models/qwen3-1.7b-judge.gguf",
               client=NS(base_url="http://127.0.0.1:9/v1", model_alias="judge",
                         headers=lambda: {}))
     out = node.compute(gather(node, {"judge_model": {"backend": "gguf", "pool": pool}}))
-    assert out["stats"]["backends"] == ["jev", "local"]
-    local = out["classifier"].classifier.backends[1]
+    assert out["stats"]["backends"] == ["local", "systemone"]  # decision placeholder skips
+    local = out["classifier"].classifier.backends[0]
     assert local.model == "local/qwen3-1.7b-judge"
     assert out["classifier"].judge_model["pool"] is pool
 
@@ -456,16 +480,50 @@ def test_thresholds_table_validates_per_model(node):
 
 def test_presets_roundtrip_the_whole_form(node):
     node.combo_mode.setCurrentIndex(2)
-    node.edit_model.setText("jev/jev-1.14.0")
-    node.bands_table.add_model("jev/jev-1.14.0", BandsConfig(in_scope=0.9))
+    node.bands_table.add_model("local/laya-decision", BandsConfig(in_scope=0.9))
     saved = node._collect_preset()
     node.combo_mode.setCurrentIndex(0)
     node.bands_table.set_bands({})
     from silk.functions.presets import ClassifierPreset
     node._apply_preset(ClassifierPreset(name="p", **saved))
     spec = node.compute(gather(node))["classifier"].spec
-    assert spec.mode == "live" and spec.backends[0].model == "jev/jev-1.14.0"
-    assert spec.bands_for("jev/jev-1.14.0").in_scope == 0.9
+    assert spec.mode == "live" and [b.kind for b in spec.backends] == ["local", "systemone"]
+    assert spec.bands_for("local/laya-decision").in_scope == 0.9
+
+
+def test_the_bands_table_offers_wired_ids(node):
+    decision = {"backend": "systemone", "role": "decision",
+                "pool": NS(model_path="/models/laya-decision.gguf",
+                           base_url="http://127.0.0.1:9/v1", model_alias="default")}
+    judge = {"backend": "gguf",
+             "pool": NS(model_path="/models/qwen3-1.7b-judge.gguf",
+                        client=NS(base_url="http://127.0.0.1:9/v1"))}
+    node.compute(gather(node, {"classifier_model": decision,
+                               "judge_model": judge}))
+    assert node._pending_known == ["local/laya-decision",
+                                   "local/qwen3-1.7b-judge"]
+    node.on_evaluate_finished()
+    table = node.bands_table
+    assert table.known_models() == ["local/laya-decision",
+                                    "local/qwen3-1.7b-judge"]
+    assert "local/laya-decision" in table._hint.text()
+    table.add_model("local/laya-decision", BandsConfig(in_scope=0.9))
+    assert "local/laya-decision" not in table._hint.text()
+    assert "local/qwen3-1.7b-judge" in table._hint.text()
+
+
+def test_the_model_cell_offers_known_ids_but_stays_typable(node):
+    from PySide6.QtWidgets import QStyleOptionViewItem
+    table = node.bands_table
+    table.set_known_models(["local/laya-decision"])
+    table.add_model("custom/typed-id", BandsConfig(in_scope=0.9))
+    inner = table.table_widget()
+    delegate = inner.itemDelegateForColumn(0)
+    editor = delegate.createEditor(
+        inner, QStyleOptionViewItem(), inner.model().index(0, 0))
+    assert editor.isEditable()
+    assert [editor.itemText(i) for i in range(editor.count())] == \
+        ["local/laya-decision", "custom/typed-id"]
 
 
 def test_port_type_is_registered():

@@ -75,14 +75,53 @@ def test_a_lower_context_is_stored_per_model(node, catalog_dir):
 
 def test_the_handle_carries_the_window_and_the_tools_flag(node):
     out = node.compute({"model": "kimi-k2.5", "credential": "OPENCODE_API_KEY",
-                        "context_length": 100000, "supports_tools": False})
+                        "context_length": 100000, "supports_tools": True})
     handle = out["model_obj"]
     assert handle is not None
     assert handle["context_length"] == 100000
-    assert handle["supports_tools"] is True, "the catalogue says it calls tools"
+    assert handle["supports_tools"] is True
     assert handle["provider"] == "opencode-go"
     assert handle["base_url"] == "https://opencode.ai/zen/go/v1"
     assert "pricing" not in handle, "Go is a subscription"
+
+
+# ── the native-tools box is the answer ───────────────────────────────────
+
+def test_picking_a_tool_calling_model_ticks_the_box(node):
+    node._model.setCurrentText("kimi-k2.5")
+    assert node._native_tools.isChecked(), "the catalogue says it calls tools"
+
+
+def test_a_model_the_catalogue_says_nothing_about_leaves_the_box(node):
+    node._model.setCurrentText("kimi-k2.5")
+    node._model.setCurrentText("glm-5")   # tool_call unknown
+    assert node._native_tools.isChecked(), "no answer is not a 'no'"
+
+
+def test_an_untick_means_fences_even_where_the_catalogue_says_tools(node):
+    """The box used to be overridden by the catalogue, so it could not
+    say "this model calls tools badly, use fences"."""
+    out = node.compute({"model": "kimi-k2.5", "credential": "OPENCODE_API_KEY",
+                        "supports_tools": False})
+    handle = out["model_obj"]
+    assert handle is not None
+    assert "supports_tools" not in handle
+    assert "native tools" not in node._sync_status
+
+
+@pytest.mark.parametrize("model, saved, expected", [
+    ("kimi-k2.5", False, True),   # the old override ran it native
+    ("glm-5", False, False),      # no answer then, none now
+    ("glm-5", True, True),        # a tick was always a tick
+    ("gone-model", False, False),  # nothing left to ask
+])
+def test_an_old_graph_keeps_the_transport_it_ran_on(catalog_dir, model, saved,
+                                                    expected):
+    from silk.nodes.opencode_endpoint import SilkOpenCodeGoNode
+
+    state = {"widget_data": {"model": model, "supports_tools": saved}}
+    migrated = SilkOpenCodeGoNode.migrate_state(state, 1)
+    assert migrated["widget_data"]["supports_tools"] is expected
 
 
 def test_a_wired_context_cannot_exceed_the_window(node):

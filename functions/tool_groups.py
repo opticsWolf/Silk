@@ -37,6 +37,8 @@ from .tools.graph_authoring import attach_graph_tools
 from .tools.node_dev_tools import attach_node_dev_tools
 from .tools.context_tools import attach_context_tools
 from .tools.recall_tool import attach_recall_tool
+from .tools.okf_tools import attach_okf_tools
+from .tools.web_tools import attach_web_tools
 from .tools.ripgrep_tool import attach_ripgrep_tools
 from .tools.suite_tools import attach_suite_tools
 from .tools.task_tracker import attach_task_tools
@@ -58,6 +60,14 @@ GROUP_ATTACHERS: Dict[str, Callable[..., None]] = {
     # signed off; its floor asks before code loads into Weave, every time.
     "node_dev": attach_node_dev_tools,
     "recall": attach_recall_tool,
+    # The OKFgraph knowledge graph a Knowledge Graph node serves. Listed
+    # always, attached only while a graph is wired to the box's
+    # `knowledge` input; its access level is the gear on its row.
+    "knowledge": attach_okf_tools,
+    # The public web via gossamer (soft dependency: without it the group
+    # probes to empty and the tree simply doesn't list it). Unticked by
+    # default -- the tick is the off-machine grant.
+    "web": attach_web_tools,
     # The model's own request for a compaction (spec §12, T8 option B);
     # the automatic kind is the ToolBox's auto_compact hook.
     "context": attach_context_tools,
@@ -70,8 +80,11 @@ WRITING_GROUPS: frozenset[str] = frozenset({"file_write", "file_manipulate"})
 
 #: What a fresh node starts with ticked. Reading and searching a folder
 #: you just wired is the request; writing to it is a different one, and
-#: graph authoring and plugin authoring are different ones again.
-DEFAULT_GROUPS: frozenset[str] = frozenset({"file_read", "ripgrep"})
+#: graph authoring and plugin authoring are different ones again. The
+#: knowledge tools are ticked because wiring a graph is the request for
+#: them -- unwired they attach nothing, and the access level (``write``
+#: by default) keeps the curating ones out until it is raised.
+DEFAULT_GROUPS: frozenset[str] = frozenset({"file_read", "ripgrep", "knowledge"})
 
 #: Groups that carry configuration of their own, and the label the tree
 #: shows on the row that opens it. Graph authoring's whitelist is not a
@@ -79,6 +92,7 @@ DEFAULT_GROUPS: frozenset[str] = frozenset({"file_read", "ripgrep"})
 #: it governs rather than in a field elsewhere on the node.
 GROUP_CONFIG_LABELS: Dict[str, str] = {
     "graph_authoring": "Allowed node classes…",
+    "knowledge": "Knowledge graph access…",
 }
 
 
@@ -93,6 +107,9 @@ def _probe_kwargs(group: str) -> Dict[str, Any]:
     """
     if group == "graph_authoring":
         return {"whitelist": ()}
+    if group == "knowledge":
+        # No graph to call: list every tool, whatever level is granted.
+        return {"catalog_only": True}
     return {}
 
 

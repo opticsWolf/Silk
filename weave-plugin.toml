@@ -39,7 +39,9 @@ module = "silk"
 contract = "weave-node 1.0"
 nodes = [
     "AgentInferenceSettingsNode", "ChatDisplayNode", "GGUFLNode", "PoolMonitorNode",
-    "SilkAgentNode", "SilkClassifierNode", "SilkHookMonitorNode", "SilkMCPAggregatorNode",
+    "SilkAgentNode", "SilkClassifierNode", "SilkHFCacheNode",
+    "SilkHFDownloadNode", "SilkHookMonitorNode", "SilkKnowledgeGraphNode",
+    "SilkMCPAggregatorNode",
     "SilkMCPServerNode", "SilkModelEndpointNode", "SilkModelFallbackNode",
     "SilkOpenCodeGoNode", "SilkOpenCodeZenNode", "SilkOrchestratorNode",
     "SilkPlanViewerNode", "SilkRoleNode", "SilkTaskHubNode",

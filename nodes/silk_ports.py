@@ -28,6 +28,19 @@ Types:
                       than discovered by mtime (D23)
     silk_classifier   a ClassifierHandle: the Classifier node's backend chain,
                       spec and meter; each run takes ``for_run`` (D-S8)
+    classifier_model  a decision backend as a handle: a Classifier Loader's
+                      pool (``backend: systemone`` + ``pool``) or a Jev
+                      Loader's hosted endpoint (``backend: systemone`` +
+                      ``url``). Answers typed questions; never chats.
+                      The Classifier and Ensemble nodes take these, never
+                      a chat ``model_handle``.
+    okf_graph         an OkfGraph: a served OKFgraph knowledge graph, owned
+                      by the Knowledge Graph node
+    endpoint          provider info (provider key, base URL, credential
+                      *name*) from an Endpoint node -- what a Model node
+                      connects through. A handle to a configuration, not
+                      to a connection: nothing is probed until the Model
+                      node asks.
 """
 from __future__ import annotations
 
@@ -284,7 +297,71 @@ if "silk_classifier" not in PortRegistry._by_name:
         casts_to={},
     )
 
+# A served knowledge graph: an OkfGraph from the Knowledge Graph node, which
+# owns the `okf serve` process (or attached to one already running). A
+# handle like mcp_servers -- the ToolBox registers tools over it and never
+# starts a server of its own.
+if "okf_graph" not in PortRegistry._by_name:
+    PortRegistry.register(
+        name="okf_graph",
+        python_type=object,
+        color_index=104,
+        type_id=None,
+        default=lambda: None,
+        validator=lambda v: v is None or (hasattr(v, "call") and hasattr(v, "spec")),
+        formatter=lambda v: (
+            f"<Knowledge graph: {getattr(getattr(v, 'spec', None), 'db_path', '?')}>"
+            if v is not None else "<no knowledge graph>"
+        ),
+        casts_to={},
+    )
+
 MODEL_HANDLE_TYPE = PortRegistry._by_name["model_handle"]
+# Provider info on a wire: what an Endpoint node selected, what a Model
+# node connects through. The credential travels by name (D22); the Model
+# node resolves it at connect time. Absence passes for the same reason it
+# does on model_handle: an unwired port must not invalidate the node.
+if "endpoint" not in PortRegistry._by_name:
+    PortRegistry.register(
+        name="endpoint",
+        python_type=dict,
+        color_index=81,
+        type_id=None,
+        default=lambda: None,
+        validator=lambda v: v is None or (isinstance(v, dict)
+                            and (not v or (bool(v.get("provider"))
+                                 and bool(v.get("base_url"))))),
+        formatter=lambda v: (
+            f"<Endpoint: {v.get('provider', '?')} @ "
+            f"{str(v.get('base_url') or '?').split('://', 1)[-1]}>"
+            if isinstance(v, dict) and v else "<no endpoint>"
+        ),
+        casts_to={},
+    )
+
+# A decision backend on a wire: what a Classifier Loader or a Jev Loader
+# emits, what the Classifier and Ensemble nodes take. Stricter than
+# model_handle on purpose: a chat client or pool can never land where a
+# typed-questions backend is expected. Absence passes for the same reason
+# it does on model_handle: an unwired port must not invalidate the node.
+if "classifier_model" not in PortRegistry._by_name:
+    PortRegistry.register(
+        name="classifier_model",
+        python_type=dict,
+        color_index=172,
+        type_id=None,
+        default=lambda: None,
+        validator=lambda v: v is None or (isinstance(v, dict)
+                            and (not v or (v.get("backend") == "systemone"
+                                 and v.get("role") == "decision"
+                                 and ("pool" in v or "url" in v)))),
+        formatter=lambda v: (
+            f"<Classifier model: {v.get('model') or 'local pool'}>"
+            if isinstance(v, dict) and v else "<no classifier model>"
+        ),
+        casts_to={},
+    )
+
 SILK_TOOLBOX_TYPE = PortRegistry._by_name["silk_toolbox"]
 SILK_TOOLSET_TYPE = PortRegistry._by_name["silk_toolset"]
 SILK_ROLE_TYPE = PortRegistry._by_name["silk_role"]
@@ -296,3 +373,6 @@ SILK_WORKERS_TYPE = PortRegistry._by_name["silk_workers"]
 MCP_SERVERS_TYPE = PortRegistry._by_name["mcp_servers"]
 SILK_PLAN_TYPE = PortRegistry._by_name["silk_plan"]
 SILK_CLASSIFIER_TYPE = PortRegistry._by_name["silk_classifier"]
+OKF_GRAPH_TYPE = PortRegistry._by_name["okf_graph"]
+ENDPOINT_HANDLE_TYPE = PortRegistry._by_name["endpoint"]
+CLASSIFIER_MODEL_TYPE = PortRegistry._by_name["classifier_model"]

@@ -274,7 +274,7 @@ how people learn to switch hooks off wholesale. Each default degrades on
 its own when a dependency is missing — `remember` without the `ledger`
 extra logs that it did not attach rather than failing the build.
 
-Wiring a `Silk Task` node into `plan` names the plan the task tools work
+Wiring a `Silk Plan` node into `plan` names the plan the task tools work
 on. Left unwired, they discover the newest plan under the sandbox root —
 which is how several agents share one plan, and why two unrelated plans in
 one root used to find each other (D23).
@@ -362,19 +362,32 @@ not cost a handshake.
 | in | `mcp_in` | `mcp_servers` |
 | out | `mcp` | `mcp_servers` |
 
-### Silk Task — `nodes/task.py` *(Silk AI / Agents)*
+### Silk Plan — `nodes/task.py` *(Silk AI / Agents)*
 Names the plan agents work on, so the store never has to guess which plan a
 root means (D23). Lists the plans that already exist under the root with
 their goal and open-task count; `(new plan)` plus a name creates one at a
 path you can find again, `(newest under root)` keeps shared discovery.
 
+Shown as *Silk Plan*; it was called *Silk Task*, though it makes no task. A
+**plan** is a goal, its acceptance criteria and a list of **tasks**, stored
+as one `plan-*.db` under a sandbox root; this node says which plan. The
+class is still `SilkTaskNode`, which is what saved graphs and the
+graph-authoring whitelist refer to.
+
 | Direction | Port | Type |
 |---|---|---|
 | in | `root` | `string` |
-| in | `root_paths` | `dirpath_list` (the ToolBox's sandbox ceiling) |
+| in | `root_paths` | `dirpath_list` (the folder list that feeds the ToolBox's `sandbox_roots`) |
 | in | `plan_choice` | `string` |
 | in | `plan_name` | `string` |
 | out | `plan` | `silk_plan` |
+
+Wire `plan` to the ToolBox's `plan` and to the Plan Viewer's `plan_ref`.
+Feed `root_paths` from the same **Folder List** that feeds the ToolBox's
+`sandbox_roots` — not from the ToolBox's `root_paths`. The ToolBox takes
+this node's `plan`, so that wire closes a loop, and the engine breaks a loop
+with the last cached value: on a first evaluation the plan is named under
+no root at all.
 
 ### Toolchain — `nodes/toolchain.py`
 Configures a set of external toolchains — Python interpreters/venvs, ruff,
@@ -590,6 +603,18 @@ Sources are tried in order: an explicit `plan` snapshot, then `plan_ref`,
 then `root`. The reference outranks the root because a root only says
 *where* to look, and looking picks the newest plan there.
 
+No input is required; one source plus `event` is the usual wiring:
+
+- **A named plan:** `Silk Plan.plan` → `plan_ref`. The reference carries
+  its root, so `root` stays unwired.
+- **No Silk Plan node:** the folder path → `root`; the newest plan there
+  is shown.
+- **Live updates:** an Agent's `events` → `event`. Only `plan.summary`
+  events are read, and their snapshot is shown as is — it outranks
+  `plan_ref` — so give each agent its own viewer, or use the Task Hub for
+  several.
+- `plan` is for a snapshot you already hold; most graphs leave it unwired.
+
 ### Task Hub — `nodes/task_hub.py` *(Silk AI / Display)*
 The multi-agent progress board (D58). Scans **every** `plan-*.db` under the
 graph's sandbox roots and renders one section per plan, tasks grouped by
@@ -604,9 +629,14 @@ has always recorded and no view has ever shown.
 | out | `plans_json` | `dict` |
 | out | `pending` | `int` |
 
-`pending` is how many agents are blocked on a decision right now. The hub
-may **count** those; only the asking node — or its dock mirror — may answer
-one (D59). There are no Approve/Reject buttons here: D31–D33 deleted parked
+`pending` is how many agents are blocked on a decision right now. That is
+all `event` is for: it reads `decision.request` / `decision.response` and
+the end of a run, and does **not** redraw the board. The board re-reads the
+plan files when `refresh` pulses or `roots` changes, so wire an agent's
+`done` (or a timer) to `refresh` to see it move. The ToolBox's `root_paths`
+is the right source for `roots` here: the hub feeds nothing back, so there
+is no loop. The hub may **count** decisions; only the asking node — or its
+dock mirror — may answer one (D59). There are no Approve/Reject buttons here: D31–D33 deleted parked
 sign-off, so a task change is decided during the turn, not held in a row.
 
 ### Chat Log Display — `nodes/chat_display.py` *(Silk AI / Display)*
@@ -646,9 +676,9 @@ first:
 ```
 [Silk MCP Server] ─mcp─▶ [Silk MCP Aggregator] ─mcp─┐
                                                     ▼
-[Silk Task] ─plan──────────────────────────────────┐
+[Silk Plan] ─plan──────────────────────────────────┐
                                                     ▼
-[Toolchain] ─toolchains─▶ [Silk ToolBox] ◀──sandbox_roots (dirpath_list)
+[Toolchain] ─toolchains─▶ [Silk ToolBox] ◀──sandbox_roots ─ [Folder List]
                               │ silk_toolbox
                               ▼
                          [Silk ToolSet] ◀──permissions (optional)
@@ -665,4 +695,17 @@ first:
                                 │          ├─▶ [Task Hub] ◀─root_paths─ [Silk ToolBox]
                                 │          └─▶ [Plan Viewer]
                                 └─ done (exec) ─▶ [Pool Monitor] .refresh
+                                                  [Task Hub] .refresh
+```
+
+The plan wiring on its own, because the obvious version is a loop:
+
+```
+[Folder List] ─folders─┬─▶ [Silk ToolBox] .sandbox_roots
+                       └─▶ [Silk Plan] .root_paths      (not ToolBox.root_paths)
+[Silk Plan] ─plan──────┬─▶ [Silk ToolBox] .plan
+                       └─▶ [Plan Viewer] .plan_ref
+[Silk Agent] ─events───┬─▶ [Plan Viewer] .event        (live redraw)
+                       └─▶ [Task Hub] .event           (pending count only)
+[Silk Agent] ─done─────▶ [Task Hub] .refresh           (redraws the board)
 ```
