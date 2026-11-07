@@ -15,9 +15,9 @@ every evaluation and says when the settings would break it:
 
 * the graph was already embedded some other way (the CLI, another harness,
   an older setting) -- a warning, and the **Re-embed** button;
-* the settings were changed *here*, on a graph that matched the old ones --
-  the graph is re-embedded under the new settings right away, since that
-  is what changing them means. OKFgraph keeps the database file as a
+* the wired model was changed, on a graph that matched the old one --
+  the graph is re-embedded with the new model right away, since that
+  is what changing it means. OKFgraph keeps the database file as a
   backup until the rebuild succeeds.
 
 A server someone else started keeps its own settings: the node attaches,
@@ -36,7 +36,34 @@ List the ToolBox takes), the node looks in every root for OKFgraph's
 database field takes the first one found -- or, with none, a new
 ``<first root>/.okfgraph/okfgraph.db`` -- and the rest wait in the
 dropdown. Bundles default to ``.okfgraph/bundle`` beside the database.
+
+**Models on wires.** The node has no model fields: the models come from
+loader nodes, and the Embedder row picks which wire embeds.
+
+* ``embedder`` -- the Embedder Loader's ``model_obj`` (a GGUF model on
+  Silk's llama.cpp server). okf embeds through that server on its
+  external lane. Everything okf must be told about the model is read
+  from the GGUF file, never typed: the family (``nomic-v1.5`` when it is
+  one, which brings okf's prefixes; otherwise the model's own name), the
+  pooling the server applies (``<arch>.pooling_type``) and the width
+  (``<arch>.embedding_length``). The pin is ``gguf/<file stem>``.
+* ``onnx_embedder`` -- an ONNX Embedder node's choice, which okf loads
+  with embroider in its own process (device, precision, cache folder).
+* ``reranker`` -- an ONNX Reranker node's cross-encoder (or any external
+  ``/v1/rerank`` host described on that port). Rerank writes no vectors,
+  so changing it restarts the server and never re-embeds.
+
+With no embedder wired the graph keeps the model it was last embedded
+with -- unplugging a loader is not a request to re-embed. A GGUF model
+lives in Silk's server, so a graph embedded with one waits for it to be
+wired again rather than being served without it.
 """
+
+import os
+import re
+import time
+from functools import lru_cache
+from pathlib import Path
 
 from typing import Any, ClassVar, Dict, List, Optional, Tuple
 from dataclasses import replace
@@ -54,19 +81,29 @@ from weave.logger import get_logger
 from weave.library.sync_tool_button.widgets.sync_tool_button import SyncToolButton
 from weave.widgets.path_history_picker import PathHistoryPicker
 
-from .silk_ports import OKF_GRAPH_TYPE  # noqa: F401
+from .silk_ports import (  # noqa: F401
+    MODEL_HANDLE_TYPE, OKF_GRAPH_TYPE, ONNX_EMBEDDER_TYPE, RERANKER_MODEL_TYPE,
+)
 from ..functions.port_text import text_input
+from ..functions.gguf_meta import EmbeddingMeta, read_embedding_meta
 from ..functions.okf_graph import (
-    DEVICES, KNOWN_MODELS, LADDER_DIMS, OkfError, OkfGraph, OkfSpec,
+    DEFAULT_EMBED_MODEL, DEVICES, DIM_RANGE, EMBED_PRECISIONS, FAMILY_LADDERS,
+    LADDER_DIMS, RERANK_PRECISIONS, OkfError, OkfGraph, OkfSpec,
     default_bundle_root, default_db_path, default_executable, find_databases,
-    mismatch_text,
+    mismatch_text, model_cache,
 )
 
 log = get_logger("SilkKnowledgeGraphNode")
 
+#: The Embedder row: which wire supplies the embedding model.
+EMBED_SOURCES = ("onnx", "gguf")
+
 #: The settings that decide what the vectors are made with.
-_EMBED_KEYS = ("device", "model_id", "embedding_dim", "backend",
+_EMBED_KEYS = ("device", "model_id", "embedding_dim", "precision", "backend",
                "embed_family", "endpoint_url")
+
+#: An OkfSpec with every default, for settings saved before a key existed.
+_DEFAULT_SPEC = OkfSpec(db_path="")
 
 
 @register_node
@@ -91,13 +128,18 @@ class SilkKnowledgeGraphNode(ThreadedNode):
     ]
     node_icon: ClassVar[Optional[str]] = "binary-tree-2"
     vertical_size_policy: ClassVar[VerticalSizePolicy] = VerticalSizePolicy.FIT
-    node_state_api = 3   # owns a hand-written state dict
+    node_state_api = 6   # owns a hand-written state dict
     # 1 = string line edit. 2 makes `db_path` a filepath picker
     # (BIDIRECTIONAL, save mode): values persist as before, wires now
     # carry the filepath type HF/model ports plug straight into. 3: the
     # pickers keep a history (`db_history`, `bundle_history`), and
     # `bundle_root` is a folder (dirpath) rather than a string.
-    node_version = 3     # 3: roots discovery, history pickers, threaded
+    # 4: the embedder / onnx_embedder / reranker inputs and `embed_pooling`.
+    # 5: the model comes from the wires alone. The Device, Model, Backend,
+    # endpoint and Lane rows (and their inputs) are gone; `embed_source`
+    # (auto / onnx / gguf) picks the wire. 6: no auto; a wired reranker
+    # reranks every search, none wired reranks none.
+    node_version = 6     # 3: roots discovery, history pickers, threaded
 
     #: Live re-embed progress, from the worker to the status label.
     _progress_text = Signal(str)
@@ -109,6 +151,10 @@ class SilkKnowledgeGraphNode(ThreadedNode):
         # Where to look for a graph: the same roots the ToolBox is
         # sandboxed to, so the project's graph is found without a path.
         self.add_input("roots", datatype="dirpath_list")
+        # The models, from loader nodes (see the module docstring).
+        self.add_input("embedder", datatype="model_handle")
+        self.add_input("onnx_embedder", datatype="onnx_embedder")
+        self.add_input("reranker", datatype="reranker_model")
         self.add_output("knowledge", datatype="okf_graph")
 
         # ── Layout & WidgetCore ──
@@ -148,58 +194,45 @@ class SilkKnowledgeGraphNode(ThreadedNode):
         )
         self.add_input("bundle_root", datatype="dirpath")
 
-        self._device = QComboBox()
-        self._device.addItems(list(DEVICES))
-        self._device.setToolTip(
-            "Where the embedding model runs. 'cuda' needs the knowledge-gpu "
-            "extra; 'auto' takes the GPU when one answers. CPU vectors are "
-            "FP32 and GPU vectors FP16, so switching re-embeds the graph.")
-        form.addRow("Device:", self._device)
-        self._widget_core.register_widget(
-            "device", self._device, role=PortRole.INPUT,
-            datatype="string", default="auto", add_to_layout=False,
-        )
-        self.add_input("device", datatype="string")
-
-        model_row = QHBoxLayout()
-        self._model = QComboBox()
-        # Editable: a model OKFgraph's registry gained since this list was
-        # written is usable by typing its id.
-        self._model.setEditable(True)
-        self._model.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
-        self._model.addItems(list(KNOWN_MODELS))
-        self._model.setToolTip(
-            "The embedding model. A graph keeps the model it was embedded "
-            "with; changing it here re-embeds the graph (0.12 does that in "
-            "place, re-pinning; no fresh database needed unless the width "
-            "below changes).")
-        model_row.addWidget(self._model, stretch=1)
+        embed_row = QHBoxLayout()
+        self._embed_source = QComboBox()
+        self._embed_source.addItems(list(EMBED_SOURCES))
+        self._embed_source.setToolTip(
+            "Which embedding model makes the graph's vectors.\n"
+            "onnx: the ONNX Embedder on onnx_embedder, which okf runs itself "
+            "(embroider). Unwired: the ONNX model the graph was last "
+            "embedded with, else okf's default.\n"
+            "gguf: the Embedder Loader's model_obj on embedder, served by "
+            "Silk's llama.cpp server and started when the graph needs it. "
+            "Its family, pooling and width are read from the GGUF file.\n"
+            "Switching lanes re-embeds the graph.")
+        embed_row.addWidget(self._embed_source, stretch=1)
         self._btn_reembed = SyncToolButton(
             initial_text="Re-embed", initial_icon="refresh",
             show_label=False, dimensions=24,
         )
         self._btn_reembed.set_tooltip(
-            "Rebuild every vector with this device and model; press again "
+            "Rebuild every vector with the chosen embedder; press again "
             "while it runs to stop it. A stopped re-embed keeps the old "
             "pin, and the next one continues where it stopped.")
         self._btn_reembed.clicked.connect(self._on_reembed)
-        model_row.addWidget(self._btn_reembed)
-        form.addRow("Model:", model_row)
+        embed_row.addWidget(self._btn_reembed)
+        form.addRow("Embedder:", embed_row)
         self._widget_core.register_widget(
-            "model_id", self._model, role=PortRole.INPUT,
-            datatype="string", default=KNOWN_MODELS[0], policy=debounced(600),
-            add_to_layout=False,
+            "embed_source", self._embed_source, role=PortRole.INPUT,
+            datatype="string", default="onnx", add_to_layout=False,
         )
-        self.add_input("model_id", datatype="string")
+        self.add_input("embed_source", datatype="string")
 
         self._dim = QComboBox()
         self._dim.addItems([str(d) for d in LADDER_DIMS])
         self._dim.setCurrentText("512")
         self._dim.setToolTip(
-            "Vector width (a Matryoshka ladder step). Applies when the graph "
-            "is created; once it has vectors the width is what they were made "
-            "at -- okfgraph reports it pinned below, and changing it needs a "
-            "fresh database by design (a re-embed cannot move widths).")
+            "Vector width (a Matryoshka step) for ONNX models and for GGUF "
+            "families okf has a ladder for (nomic-v1.5, up to 768). Any "
+            "other GGUF embedder is stored at its own width. Applies when "
+            "the graph is created; a re-embed cannot move widths, so a new "
+            "width needs a fresh database.")
         form.addRow("Vector dim:", self._dim)
         self._widget_core.register_widget(
             "embedding_dim", self._dim, role=PortRole.INPUT,
@@ -207,37 +240,6 @@ class SilkKnowledgeGraphNode(ThreadedNode):
             add_to_layout=False,
         )
         self.add_input("embedding_dim", datatype="string")
-
-        ext_row = QHBoxLayout()
-        self._backend = QComboBox()
-        self._backend.addItems(["embroider", "external"])
-        self._backend.setToolTip(
-            "The embedding lane. 'embroider' = OKFgraph's own ONNX crate "
-            "(Jina v5; downloads on first use). 'external' = an OpenAI-shaped "
-            "POST /v1/embeddings host you point at: llama.cpp with "
-            "--embeddings, LM Studio, TEI -- declared family and endpoint, "
-            "never probed into shape.")
-        ext_row.addWidget(self._backend, stretch=1)
-        self._endpoint = QLineEdit("")
-        self._endpoint.setPlaceholderText("http://127.0.0.1:8931 (external lane)")
-        self._endpoint.setToolTip(
-            "Backend 'external' only: the embed server's base URL -- okfgraph "
-            "appends /v1/embeddings. The model field above becomes the wire's "
-            "model id and the family below flavours the prefixes/contract.")
-        ext_row.addWidget(self._endpoint, stretch=1)
-        form.addRow("Backend:", ext_row)
-        self._widget_core.register_widget(
-            "backend", self._backend, role=PortRole.INPUT,
-            datatype="string", default="embroider", policy=debounced(600),
-            add_to_layout=False,
-        )
-        self.add_input("backend", datatype="string")
-        self._widget_core.register_widget(
-            "endpoint_url", self._endpoint, role=PortRole.INPUT,
-            datatype="string", default="", policy=debounced(600),
-            add_to_layout=False,
-        )
-        self.add_input("endpoint_url", datatype="string")
 
         self._executable = QLineEdit("")
         self._executable.setPlaceholderText(
@@ -252,35 +254,6 @@ class SilkKnowledgeGraphNode(ThreadedNode):
             add_to_layout=False,
         )
         self.add_input("executable", datatype="string")
-
-        fam_row = QHBoxLayout()
-        self._family = QLineEdit("")
-        self._family.setPlaceholderText("nomic-v1.5 (declared family)")
-        self._family.setToolTip(
-            "Backend 'external' only: the declared embedding family -- drives "
-            "pooling, per-side prefixes and the Matryoshka ladder inside "
-            "okfgraph. Declared, never guessed; 'nomic-v1.5' is the built-in "
-            "reference (native 768, search_query:/search_document:).")
-        fam_row.addWidget(self._family, stretch=1)
-        self._api_key_env = QLineEdit("")
-        self._api_key_env.setPlaceholderText("API key env var (optional)")
-        self._api_key_env.setToolTip(
-            "Backend 'external' only: name of an environment variable that "
-            "holds the endpoint's bearer key. The value is never stored here.")
-        fam_row.addWidget(self._api_key_env, stretch=1)
-        form.addRow("Lane:", fam_row)
-        self._widget_core.register_widget(
-            "embed_family", self._family, role=PortRole.INPUT,
-            datatype="string", default="", policy=debounced(600),
-            add_to_layout=False,
-        )
-        self.add_input("embed_family", datatype="string")
-        self._widget_core.register_widget(
-            "api_key_env", self._api_key_env, role=PortRole.INPUT,
-            datatype="string", default="", policy=debounced(600),
-            add_to_layout=False,
-        )
-        self.add_input("api_key_env", datatype="string")
 
         self._label_status = QLabel("Not running.")
         self._label_status.setWordWrap(True)
@@ -303,6 +276,11 @@ class SilkKnowledgeGraphNode(ThreadedNode):
         self._stopped_for: Optional[Tuple[str, ...]] = None
         self._user_stopped = False
         self._last_reembed = ""
+        # The last model-cache answer: (key, report, when asked).
+        self._model_cache: Tuple[Tuple[str, ...], Dict[str, Any], float] = ((), {}, 0.0)
+        # Set by compute when no working graph comes out of it; the node
+        # turns red until an evaluation serves one again.
+        self._failed = False
         # Set by cleanup: a worker still finishing must not leave a
         # server behind for a node that is gone.
         self._closed = False
@@ -370,8 +348,24 @@ class SilkKnowledgeGraphNode(ThreadedNode):
     @classmethod
     def migrate_state(cls, state: Dict[str, Any],
                       from_version: int) -> Dict[str, Any]:
-        """api 1 → 3: the pickers persist the same string values, the
-        histories are new (absent = empty). Older states restore untouched."""
+        """api 1 → 6: the pickers persist the same string values, the
+        histories are new (absent = empty). 4 adds the model inputs.
+
+        5 dropped the model fields and 6 the ``auto`` lane: a scene keeps
+        the lane its graph was on -- ``gguf`` for the external lane (the
+        old ``backend`` row, or what ``applied`` last served), ``onnx``
+        otherwise. The other dropped values are ignored on restore; the
+        graph's model carries over in ``applied``, which is what an
+        unwired ONNX lane serves.
+        """
+        if from_version < 6:
+            widgets = state.get("widget_data")
+            applied = state.get("applied")
+            if isinstance(widgets, dict) and widgets.get("embed_source") not in EMBED_SOURCES:
+                external = (widgets.get("backend") == "external"
+                            or (isinstance(applied, dict)
+                                and applied.get("backend") == "external"))
+                widgets["embed_source"] = "gguf" if external else "onnx"
         return state
 
     def restore_state(self, state: Dict[str, Any]) -> None:
@@ -408,9 +402,19 @@ class SilkKnowledgeGraphNode(ThreadedNode):
         return db_path, bundle, found
 
     @staticmethod
-    def spec_from(inputs: Dict[str, Any]) -> OkfSpec:
-        device = text_input(inputs, "device", "auto")
-        backend = text_input(inputs, "backend", "embroider")
+    def embed_source(inputs: Dict[str, Any]) -> str:
+        """``gguf`` or ``onnx``: the lane the Embedder row picks."""
+        chosen = text_input(inputs, "embed_source", "onnx")
+        return chosen if chosen in EMBED_SOURCES else "onnx"
+
+    @staticmethod
+    def spec_from(inputs: Dict[str, Any],
+                  applied: Optional[Dict[str, str]] = None) -> OkfSpec:
+        """The server spec: paths from *inputs*, the model from the wires.
+
+        With no embedder wired on the ONNX lane, the model the graph was
+        last embedded with (*applied*), else okf's default.
+        """
         raw_dim = text_input(inputs, "embedding_dim", "512").strip()
         try:
             dim = int(raw_dim)
@@ -418,29 +422,64 @@ class SilkKnowledgeGraphNode(ThreadedNode):
             dim = 512
         if dim not in LADDER_DIMS:
             dim = 512
+        applied = applied or {}
         spec = OkfSpec(
             db_path=text_input(inputs, "db_path"),
             executable=text_input(inputs, "executable"),
             bundle_root=text_input(inputs, "bundle_root"),
-            device=device if device in DEVICES else "auto",
-            model_id=text_input(inputs, "model_id"),
             embedding_dim=dim,
-            backend=backend if backend in ("embroider", "external") else "embroider",
-            embed_family=text_input(inputs, "embed_family", ""),
-            endpoint_url=text_input(inputs, "endpoint_url", ""),
-            api_key_env=text_input(inputs, "api_key_env", ""),
         )
-        # Honest external lane: drop the external-only rows when the
-        # lane is the default crate; the family label rides otherwise.
-        if spec.backend == "embroider":
-            spec = replace(spec, embed_family="", endpoint_url="",
-                           api_key_env="")
-        elif not spec.embed_family.strip() or not spec.endpoint_url.strip():
-            # An external lane without its declared contract would boot
-            # refusals; keep the crate lane instead of a broken state.
-            spec = replace(spec, backend="embroider", embed_family="",
-                           endpoint_url="", api_key_env="")
-        return spec
+        if SilkKnowledgeGraphNode.embed_source(inputs) == "gguf":
+            gguf = _gguf_embedder(inputs.get("embedder"))
+            if gguf.get("endpoint_url"):
+                # Silk's llama.cpp server, on okf's external lane. The
+                # server answers any model name with the one it has loaded,
+                # so the wire's name can be the pin: stable across ports
+                # and restarts.
+                spec = replace(
+                    spec, backend="external", endpoint_url=gguf["endpoint_url"],
+                    model_id=gguf["model_id"], embed_family=gguf["family"],
+                    embed_pooling=gguf["pooling"],
+                    embedding_dim=_gguf_dim(gguf, dim),
+                    embed_counter="gguf-meta", embed_counter_gguf=gguf["path"],
+                )
+        else:
+            onnx = _onnx_description(inputs.get("onnx_embedder"))
+            if onnx is None and applied.get("backend", "embroider") == "embroider":
+                onnx = applied
+            if onnx:
+                # An empty model id in a saved record is okf's own default:
+                # what graphs made before Silk had one were embedded with.
+                spec = replace(
+                    spec, model_id=str(onnx.get("model_id") or ""),
+                    device=_choice(onnx.get("device"), DEVICES),
+                    precision=_choice(onnx.get("precision"), EMBED_PRECISIONS),
+                    cache_dir=str(onnx.get("cache_dir") or ""),
+                )
+            else:
+                spec = replace(spec, model_id=DEFAULT_EMBED_MODEL)
+        return _with_reranker(spec, inputs.get("reranker"))
+
+    @staticmethod
+    def wiring_problem(inputs: Dict[str, Any]) -> str:
+        """Why the wired models cannot be used as they are, or ``""``."""
+        handle = inputs.get("embedder")
+        if SilkKnowledgeGraphNode.embed_source(inputs) == "onnx" or not handle:
+            return ""
+        gguf = _gguf_embedder(handle)
+        if gguf.get("error"):
+            return f"The embedder's server did not start: {gguf['error']}"
+        if not gguf:
+            return ("The embedder input takes the Embedder Loader's model_obj "
+                    "(a GGUF embedding model on Silk's llama.cpp server); "
+                    "this model handle is not one.")
+        width = gguf["width"]
+        if (gguf["family"] not in FAMILY_LADDERS and width
+                and not DIM_RANGE[0] <= width <= DIM_RANGE[1]):
+            return (f"{gguf['model_id']} makes {width}-dim vectors; okf stores "
+                    f"{DIM_RANGE[0]} to {DIM_RANGE[1]}. Load a smaller "
+                    "embedding model.")
+        return ""
 
     @staticmethod
     def _embed_key(spec: OkfSpec) -> Tuple[str, ...]:
@@ -451,7 +490,8 @@ class SilkKnowledgeGraphNode(ThreadedNode):
         applied = self._applied
         if applied.get("db_path") != spec.db_path:
             return False
-        before = tuple(applied.get(k, "") for k in _EMBED_KEYS)
+        before = tuple(applied.get(k, str(getattr(_DEFAULT_SPEC, k)))
+                       for k in _EMBED_KEYS)
         now = tuple(str(getattr(spec, k)) for k in _EMBED_KEYS)
         return before != now
 
@@ -459,8 +499,38 @@ class SilkKnowledgeGraphNode(ThreadedNode):
         db_path, bundle, found = self.resolve_paths(inputs)
         self._sync_found = found
         self._sync_paths = (db_path, bundle)
-        spec = self.spec_from(dict(inputs, db_path=db_path, bundle_root=bundle))
+        # Red unless this evaluation serves a graph that can search.
+        self._failed = True
+        problem = self.wiring_problem(inputs)
+        if problem:
+            # Not served on a guess: a graph embedded with the wrong model
+            # is pinned to it, and undoing that is a re-embed.
+            self._discard_graph()
+            self._sync_status = problem
+            return {"knowledge": None}
+        spec = self.spec_from(dict(inputs, db_path=db_path, bundle_root=bundle),
+                              self._applied)
         reembed_requested, self._reembed_requested = self._reembed_requested, False
+        source = self.embed_source(inputs)
+        wired = _wired_embedder(inputs, source)
+        if source == "gguf" and not wired:
+            # A GGUF model lives in Silk's server: without it there is
+            # nothing to embed queries with, and serving the graph on
+            # another model would mean re-embedding all of it.
+            self._discard_graph()
+            if (self._applied.get("backend") == "external"
+                    and self._applied.get("db_path") == spec.db_path):
+                self._sync_status = (
+                    f"Waiting for the embedder: this graph was embedded with "
+                    f"{self._applied.get('model_id') or 'a GGUF model'}, which "
+                    "is not wired (or its loader unloaded it). Wire the "
+                    "Embedder Loader's model_obj again, or set the Embedder "
+                    "row to onnx to re-embed with an ONNX model.")
+            else:
+                self._sync_status = (
+                    "The Embedder row is gguf: wire the Embedder Loader's "
+                    "model_obj into embedder.")
+            return {"knowledge": None}
 
         # Restart only when the settings actually changed: the device and
         # the model are server flags, and a graph re-evaluates for every
@@ -471,6 +541,7 @@ class SilkKnowledgeGraphNode(ThreadedNode):
             self._graph = graph = None
 
         if not spec.db_path:
+            self._failed = False   # a new node, not a broken one
             self._sync_status = (
                 "Choose a database file for the graph, or wire roots to "
                 "find (or create) one in <root>/.okfgraph.")
@@ -485,25 +556,53 @@ class SilkKnowledgeGraphNode(ThreadedNode):
                 self._sync_status = _error_text("Not running", exc)
                 return {"knowledge": None}
             self._graph = graph
-        if self._closed:
-            self._discard_graph()
-            return {"knowledge": None}
-        if self.is_compute_cancelled():
+        if self._closed or self.is_compute_cancelled():
+            self._failed = False
+            if self._closed:
+                self._discard_graph()
+                return {"knowledge": None}
             return {"knowledge": graph}
 
-        lines = [graph.describe()]
+        try:
+            pins = graph.pins()
+        except OkfError as exc:
+            self._sync_status = "\n".join([
+                graph.describe(), *_model_lines(spec, wired),
+                _error_text("! Could not read the embedding pin", exc)])
+            return {"knowledge": graph}
+
+        kept = ""
+        adopted = (_adopt_pinned_model(spec, pins)
+                   if not wired and graph.owned
+                   and self._applied.get("db_path") != spec.db_path else None)
+        if adopted is not None:
+            # A graph this node has not served before, embedded with
+            # another model: keep that model rather than re-embed it (or
+            # leave it unsearchable) because Silk's default changed.
+            graph.close()
+            self._graph = graph = None
+            try:
+                graph = OkfGraph.open(adopted, should_stop=self.is_compute_cancelled)
+                pins = graph.pins()
+            except OkfError as exc:
+                self._discard_graph()
+                self._sync_status = _error_text("Not running", exc)
+                return {"knowledge": None}
+            self._graph, spec = graph, adopted
+            kept = (f"Kept {spec.model_id}: the graph was embedded with it. "
+                    f"New graphs get {DEFAULT_EMBED_MODEL}.")
+
+        lines = [graph.describe(), *_model_lines(spec, wired)]
+        if kept:
+            lines.append(kept)
+        if spec.backend == "embroider" and graph.owned:
+            lines.extend(self._cache_lines(spec))
         if self._last_reembed:
             lines.append(self._last_reembed)
         if not graph.owned:
             lines.append(
                 "Attached to a server started elsewhere: its device and model "
                 "apply, not the ones set here.")
-        try:
-            pins = graph.pins()
-        except OkfError as exc:
-            lines.append(_error_text("! Could not read the embedding pin", exc))
-            self._sync_status = "\n".join(lines)
-            return {"knowledge": graph}
 
         mismatch = mismatch_text(pins)
         stopped = self._stopped_for == self._embed_key(spec)
@@ -532,12 +631,15 @@ class SilkKnowledgeGraphNode(ThreadedNode):
                 "ingest fail until it is re-embedded: press Re-embed, or set "
                 "them back.")
         else:
+            self._failed = False
             self._last_reembed = ""
             self._stopped_for = None
             self._applied = {
                 "db_path": spec.db_path, "device": spec.device,
                 "model_id": spec.model_id, "embedding_dim": spec.embedding_dim,
-                "backend": spec.backend, "embed_family": spec.embed_family,
+                "precision": spec.precision, "cache_dir": spec.cache_dir,
+                "backend": spec.backend,
+                "source": "wire" if wired else "fields", "embed_family": spec.embed_family,
                 "endpoint_url": spec.endpoint_url,
             }
         self._sync_status = "\n".join(lines)
@@ -613,6 +715,22 @@ class SilkKnowledgeGraphNode(ThreadedNode):
         self._offer_paths()
         if hasattr(self, "_sync_status"):
             self._widget_core.push_display("status", self._sync_status)
+        if self._failed:
+            # Visual only: the wire still carries None (or the mismatched
+            # graph), and the next evaluation that serves one clears it.
+            self._enter_error_state()
+
+    def _cache_lines(self, spec: OkfSpec) -> List[str]:
+        """Whether the embedding model is downloaded; asked once per
+        model, and again a minute later while it is not."""
+        key = (spec.resolved_executable(), spec.model_id, spec.device,
+               spec.precision, spec.cache_dir)
+        old_key, report, when = self._model_cache
+        if key != old_key or (not report.get("cached")
+                              and time.monotonic() - when > 60.0):
+            report = model_cache(spec)
+            self._model_cache = (key, report, time.monotonic())
+        return _cache_text(report)
 
     def _offer_paths(self) -> None:
         """Fill an empty field with what compute chose; list the rest.
@@ -642,6 +760,175 @@ class SilkKnowledgeGraphNode(ThreadedNode):
         self.cancel_compute()
         self._discard_graph()
         super().cleanup()
+
+
+def _choice(value: Any, choices: Tuple[str, ...]) -> str:
+    text = str(value or "").strip().lower()
+    return text if text in choices else "auto"
+
+
+def _onnx_description(value: Any) -> Optional[Dict[str, Any]]:
+    """An ONNX Embedder node's wire value, or ``None``."""
+    if isinstance(value, dict) and value.get("runtime") == "embroider":
+        return value
+    return None
+
+
+@lru_cache(maxsize=32)
+def _embedding_meta_cached(path: str, _mtime: float) -> EmbeddingMeta:
+    try:
+        return read_embedding_meta(path)
+    except (OSError, ValueError):
+        return EmbeddingMeta()
+
+
+def _embedding_meta(path: str) -> EmbeddingMeta:
+    """The GGUF's embedding identity, read once per file version."""
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        return EmbeddingMeta()
+    return _embedding_meta_cached(path, mtime)
+
+
+def _family_for(name: Optional[str], path: str) -> str:
+    """okf's family label for a GGUF: ``nomic-v1.5`` when it is one (okf
+    has its prefixes and ladder), else the model's own name, made a legal
+    label (no ``/``)."""
+    text = (name or Path(path).stem).lower().replace("_", "-")
+    if "nomic-embed-text-v1.5" in text or "nomic-embed-text-v1-5" in text:
+        return "nomic-v1.5"
+    return re.sub(r"[^a-z0-9.-]+", "-", text).strip("-.")[:64] or "gguf"
+
+
+def _gguf_dim(gguf: Dict[str, Any], dim: int) -> int:
+    """The width to store: the row's step where the family has a ladder,
+    else the model's own width (okf cannot shorten it)."""
+    ladder = FAMILY_LADDERS.get(gguf["family"])
+    if ladder:
+        return dim if dim in ladder else ladder[-1]
+    return int(gguf["width"] or dim)
+
+
+def _gguf_embedder(handle: Any) -> Dict[str, Any]:
+    """``{endpoint_url, model_id, path, family, pooling, width}`` for an
+    Embedder Loader handle.
+
+    Empty for anything else: a chat model's pool, a remote endpoint, or
+    nothing wired. okf appends ``/v1/embeddings`` to the endpoint itself,
+    so the pool's ``.../v1`` base loses its suffix here. The family,
+    pooling and width come from the GGUF file (``width`` 0 when it does
+    not say); llama.cpp pools by the file's own key, so that is what the
+    vectors are.
+    """
+    if not (isinstance(handle, dict) and handle.get("backend") == "gguf"
+            and handle.get("role") == "embedding"):
+        return {}
+    pool = handle.get("pool")
+    if pool is None:
+        return {}
+    try:
+        # Asking for the address starts a lazy pool's server: this is the
+        # demand the Embedder Loader waits for.
+        base = pool.base_url
+        base = str(base() if callable(base) else base).rstrip("/")
+        path = str(pool.model_path)
+    except Exception as exc:  # noqa: BLE001 - reported, never raised
+        return {"error": str(exc) or type(exc).__name__}
+    if base.endswith("/v1"):
+        base = base[: -len("/v1")]
+    if not base or not path:
+        return {}
+    meta = _embedding_meta(path)
+    return {"endpoint_url": base, "model_id": f"gguf/{Path(path).stem}",
+            "path": path, "family": _family_for(meta.name, path),
+            "pooling": meta.pooling or "mean", "width": meta.width or 0}
+
+
+def _wired_embedder(inputs: Dict[str, Any], source: str) -> str:
+    """The wire that supplies the model on *source*'s lane, or ``""``."""
+    if source == "gguf":
+        return "gguf" if _gguf_embedder(inputs.get("embedder")).get("endpoint_url") else ""
+    return "onnx" if _onnx_description(inputs.get("onnx_embedder")) else ""
+
+
+def _model_lines(spec: OkfSpec, wired: str) -> List[str]:
+    """What embeds and what reranks."""
+    lines: List[str] = []
+    if wired == "gguf":
+        lines.append(
+            f"Embedding through the wired GGUF embedder {spec.model_id} "
+            f"(from its file: family {spec.embed_family}, "
+            f"{spec.embed_pooling} pooling, {spec.embedding_dim} dims); it "
+            "must stay loaded for search and ingest to work.")
+    elif wired == "onnx":
+        lines.append(
+            f"Embedding with the wired ONNX model {spec.model_id or 'default'} "
+            f"on {spec.device} ({spec.precision}).")
+    else:
+        lines.append(
+            f"No embedder wired: okf loads "
+            f"{spec.model_id or 'its default model (jina v5 small)'} itself, on "
+            f"{spec.device}. Wire an ONNX Embedder or Embedder Loader to "
+            "change it.")
+    if spec.rerank_model_id:
+        where = (f"at {spec.rerank_endpoint_url}" if spec.rerank_backend == "external"
+                 else f"on {spec.rerank_device} ({spec.rerank_precision})")
+        lines.append(f"Reranking every search with {spec.rerank_model_id} {where}.")
+    else:
+        lines.append("No reranker wired: searches are not reranked.")
+    return lines
+
+
+def _with_reranker(spec: OkfSpec, reranker: Any) -> OkfSpec:
+    """*spec* with the wired reranker's rows; unchanged when none is."""
+    if not (isinstance(reranker, dict) and reranker.get("role") == "rerank"):
+        return spec
+    model_id = str(reranker.get("model_id") or "")
+    if reranker.get("runtime") == "external" and reranker.get("endpoint_url"):
+        return replace(
+            spec, rerank_backend="external", rerank_model_id=model_id,
+            rerank_endpoint_url=str(reranker.get("endpoint_url") or ""),
+            rerank_family=str(reranker.get("family") or ""),
+            rerank_api_key_env=str(reranker.get("api_key_env") or ""),
+        )
+    if reranker.get("runtime") != "embroider":
+        return spec
+    return replace(
+        spec, rerank_backend="embroider", rerank_model_id=model_id,
+        rerank_device=_choice(reranker.get("device"), DEVICES),
+        rerank_precision=_choice(reranker.get("precision"), RERANK_PRECISIONS),
+        # One cache per server: the embedder's folder, if it named one.
+        cache_dir=spec.cache_dir or str(reranker.get("cache_dir") or ""),
+    )
+
+
+def _adopt_pinned_model(spec: OkfSpec, pins: Dict[str, Any]) -> Optional[OkfSpec]:
+    """*spec* on the ONNX model the graph is pinned to, when only the
+    model disagrees and that model is one embroider loads; else None."""
+    pinned = pins.get("pinned") or {}
+    model = str(pinned.get("model_id") or "")
+    fields = [str(f) for f in (pins.get("mismatch") or ())]
+    if (pins.get("empty") or not model or model == spec.model_id
+            or model.startswith("gguf/") or fields != ["model_id"]):
+        return None
+    return replace(spec, model_id=model)
+
+
+def _cache_text(report: Dict[str, Any]) -> List[str]:
+    """The model-cache line, or nothing when okf could not be asked."""
+    if not report:
+        return []
+    model = report.get("model_id") or "The embedding model"
+    where = report.get("cache_dir") or "the Hugging Face cache"
+    if report.get("cached"):
+        size = (report.get("disk_usage_bytes") or 0) / 1024 ** 3
+        return [f"Model files: {report.get('repo') or model} "
+                f"({report.get('precision')}, {size:.2f} GB) in {where}."]
+    return [f"Not downloaded yet: {report.get('repo') or model} "
+            f"({report.get('precision')}). The first ingest or search fetches "
+            f"it from Hugging Face into {where}; offline, both fail until it "
+            "is there."]
 
 
 def _error_text(what: str, exc: OkfError) -> str:

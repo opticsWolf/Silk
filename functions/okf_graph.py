@@ -66,12 +66,44 @@ log = get_logger("SilkOkfGraph")
 #: GPU runtime is installed and a GPU answers, else the CPU.
 DEVICES = ("auto", "cpu", "cuda")
 
-#: The text models OKFgraph's registry knows, default first. An empty
-#: model id means "OKFgraph's default", which is the first of these.
+#: The model a new graph is embedded with when nothing is wired: Silk's
+#: default, not okf's (okf's is the jina small model). embroider >= 0.13
+#: (mean pooling + Gemma prompts, native 768).
+DEFAULT_EMBED_MODEL = "google/embeddinggemma-2"
+
+#: The text models OKFgraph's registry knows, Silk's default first. An
+#: empty model id still means "OKFgraph's default" (the jina small one),
+#: which is what graphs built before Silk had its own default use.
 KNOWN_MODELS = (
+    DEFAULT_EMBED_MODEL,
     "jinaai/jina-embeddings-v5-text-small-retrieval",
     "jinaai/jina-embeddings-v5-text-nano-retrieval",
 )
+
+#: The cross-encoders embroider ships, default first (okfgraph's
+#: ``DEFAULT_RERANK_MODEL_ID``).
+KNOWN_RERANK_MODELS = (
+    "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1",
+)
+
+#: Precisions ``okf`` accepts per stage. ``auto`` follows the device
+#: (FP32 on CPU, FP16 on a GPU); an explicit one is part of the pin.
+EMBED_PRECISIONS = ("auto", "fp32", "fp16", "int8")
+RERANK_PRECISIONS = ("auto", "fp32", "q8")
+
+#: How the external lane pools token vectors; declared, never probed.
+POOLINGS = ("mean", "last", "cls")
+
+#: The families okfgraph has a built-in prefix table for. Any other
+#: family name is legal and embeds without prefixes.
+FAMILY_PREFIXES = ("nomic-v1.5",)
+
+#: The Matryoshka steps okfgraph knows for a family on the external lane;
+#: any other family is served at its model's own width.
+FAMILY_LADDERS = {"nomic-v1.5": (64, 128, 256, 512, 768)}
+
+#: The widths okf accepts at all (a ladder step is only recommended).
+DIM_RANGE = (32, 1024)
 
 #: How long an ordinary op may take. Ingest embeds, so it is not instant,
 #: but a hung server must not hold an agent's tool call forever.
@@ -129,6 +161,16 @@ class OkfSpec:
     vector width (a Matryoshka step); it applies when the graph is created
     and is refused as a re-embed once it has vectors (okfgraph reports the
     pinned width; a change needs a fresh database by design).
+
+    ``embed_pooling`` / ``embed_counter`` / ``embed_counter_gguf`` are the
+    rest of that declaration: a GGUF embedder from Silk's loader counts
+    tokens from its own file (``gguf-meta``), because the Python
+    ``llama_cpp.server`` serves no root ``/tokenize``.
+
+    The ``rerank_*`` rows choose the second retrieval stage. ``embroider``
+    (the default) is a cross-encoder in okf's own process; ``external`` is
+    a ``POST /v1/rerank`` host. Rerank writes no vectors, so none of it is
+    pinned: changing it restarts the server and nothing else.
     """
 
     db_path: str
@@ -137,10 +179,22 @@ class OkfSpec:
     device: str = "auto"
     model_id: str = ""
     embedding_dim: int = 512
+    precision: str = "auto"
+    cache_dir: str = ""
     backend: str = "embroider"
     embed_family: str = ""
     endpoint_url: str = ""
     api_key_env: str = ""
+    embed_pooling: str = "mean"
+    embed_counter: str = ""
+    embed_counter_gguf: str = ""
+    rerank_backend: str = "embroider"
+    rerank_model_id: str = ""
+    rerank_device: str = "auto"
+    rerank_precision: str = "auto"
+    rerank_endpoint_url: str = ""
+    rerank_family: str = ""
+    rerank_api_key_env: str = ""
     allow_repin: bool = False
 
     def resolved_executable(self) -> str:
@@ -155,7 +209,9 @@ class OkfSpec:
             args += ["--device", self.device]
         if self.model_id.strip():
             args += ["--model-id", self.model_id.strip()]
-        if self.embedding_dim in LADDER_DIMS and self.embedding_dim != 512:
+        # A GGUF embedder's own width (384, say) is legal, if off-ladder.
+        if (DIM_RANGE[0] <= self.embedding_dim <= DIM_RANGE[1]
+                and self.embedding_dim != 512):
             args += ["--embedding-dim", str(self.embedding_dim)]
         return args
 
@@ -165,14 +221,42 @@ class OkfSpec:
         and the re-embed escape. Empty dict: launch inherits nothing
         beyond the process environment (the default crate lane)."""
         env: dict[str, str] = {}
+        if self.precision in EMBED_PRECISIONS and self.precision != "auto":
+            env["OKFGRAPH_PRECISION"] = self.precision
+        if self.cache_dir.strip():
+            env["OKFGRAPH_CACHE_DIR"] = self.cache_dir.strip()
         if self.backend == "external":
             env["OKFGRAPH_BACKEND"] = "external"
             if self.endpoint_url.strip():
                 env["OKFGRAPH_ENDPOINT_URL"] = self.endpoint_url.strip()
-            if self.embed_family.strip():
-                env["OKFGRAPH_EMBED_FAMILY"] = self.embed_family.strip()
+            family = self.embed_family.strip()
+            if family:
+                env["OKFGRAPH_EMBED_FAMILY"] = family
+                if family in FAMILY_PREFIXES:
+                    env["OKFGRAPH_EMBED_PREFIXES"] = family
             if self.api_key_env.strip():
                 env["OKFGRAPH_API_KEY_ENV"] = self.api_key_env.strip()
+            if self.embed_pooling in POOLINGS:
+                env["OKFGRAPH_EMBED_POOLING"] = self.embed_pooling
+            if self.embed_counter.strip():
+                env["OKFGRAPH_EMBED_COUNTER"] = self.embed_counter.strip()
+            if self.embed_counter_gguf.strip():
+                env["OKFGRAPH_EMBED_COUNTER_GGUF"] = self.embed_counter_gguf.strip()
+        if self.rerank_model_id.strip():
+            env["OKFGRAPH_RERANK_MODEL_ID"] = self.rerank_model_id.strip()
+        if self.rerank_backend == "external":
+            env["OKFGRAPH_RERANK_BACKEND"] = "external"
+            for key, value in (("OKFGRAPH_RERANK_ENDPOINT_URL", self.rerank_endpoint_url),
+                               ("OKFGRAPH_RERANK_FAMILY", self.rerank_family),
+                               ("OKFGRAPH_RERANK_API_KEY_ENV", self.rerank_api_key_env)):
+                if value.strip():
+                    env[key] = value.strip()
+        else:
+            if self.rerank_device in DEVICES and self.rerank_device != "auto":
+                env["OKFGRAPH_RERANK_DEVICE"] = self.rerank_device
+            if (self.rerank_precision in RERANK_PRECISIONS
+                    and self.rerank_precision != "auto"):
+                env["OKFGRAPH_RERANK_PRECISION"] = self.rerank_precision
         if self.allow_repin:
             env["OKFGRAPH_ALLOW_REPIN"] = "1"
         return env
@@ -663,6 +747,32 @@ def mismatch_text(pins: dict) -> str:
         want = configured.get(f"expected_{name}", configured.get(name))
         parts.append(f"{name}: graph has {pinned.get(name)!s}, settings give {want!s}")
     return "; ".join(parts)
+
+
+def model_cache(spec: OkfSpec, timeout: float = 60.0) -> dict:
+    """``okf model-info`` for *spec*'s embedding model, or ``{}``.
+
+    Offline by construction (embroider's cache walker): whether the files
+    ``okf serve`` would open are in the hub cache (``cached``), which repo
+    and precision that resolves to, ``cache_dir`` and ``disk_usage_bytes``.
+    Only the embroider lane has a cache to ask about; ``{}`` too when okf
+    cannot be run or answers with an error.
+    """
+    exe = spec.resolved_executable()
+    if not exe or spec.backend != "embroider":
+        return {}
+    argv = [exe, "model-info", *spec.settings_args(), "--json"]
+    flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+    try:
+        done = subprocess.run(
+            argv, capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=timeout, stdin=subprocess.DEVNULL,
+            env={**os.environ, **spec.launch_env()}, creationflags=flags)
+        envelope = json.loads(done.stdout or "{}")
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return {}
+    data = envelope.get("data") if isinstance(envelope, dict) and envelope.get("ok") else None
+    return dict(data) if isinstance(data, dict) else {}
 
 
 def _published_url(db_path: str, since: int) -> str:

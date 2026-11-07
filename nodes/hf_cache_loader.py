@@ -92,7 +92,9 @@ class SilkHFCacheNode(ActiveNode):
         folder history travels in ``cache_history``.
         """
         return state
-    node_version = 1
+    # 2: `cache_dir` (the resolved cache folder) is the second output,
+    # ahead of `file_info`.
+    node_version = 2
 
     def __init__(self, title: str = "HF Cache", **kwargs: Any) -> None:
         super().__init__(title=title, **kwargs)
@@ -101,6 +103,9 @@ class SilkHFCacheNode(ActiveNode):
         # cache_path/model/file are wireable (one add_input each with
         # their widget). Pure outputs are declared here.
         self.add_output("model_path", datatype="filepath")
+        # The cache folder actually in use (typed, or the one found), for
+        # nodes that take a cache folder: the ONNX loaders, HF Download.
+        self.add_output("cache_dir", datatype="dirpath")
         self.add_output("file_info", datatype="dict")
 
         # ── Form ──
@@ -347,7 +352,7 @@ class SilkHFCacheNode(ActiveNode):
                                 "file": None, "size": 0}
         if not os.path.isdir(path):
             self._sync_status = (f"Cache not found: {path} ({source}) -- set the path.")
-            return {"model_path": None, "file_info": info}
+            return {"model_path": None, "cache_dir": None, "file_info": info}
         repos = scan_repos(path)
         info["repos"] = len(repos)
         repo_id = str(inputs.get("model") or "")
@@ -356,7 +361,7 @@ class SilkHFCacheNode(ActiveNode):
             self._sync_status = (f"{len(repos)} repos ({source}). "
                                  + ("Pick a model." if not repo_id
                                     else f"{repo_id} is not in the cache."))
-            return {"model_path": None, "file_info": info}
+            return {"model_path": None, "cache_dir": path, "file_info": info}
         info.update(repo=repo.repo_id, revision=repo.revision,
                     via_ref=repo.via_ref)
         want = str(inputs.get("file") or "")
@@ -365,11 +370,11 @@ class SilkHFCacheNode(ActiveNode):
             picked = repo.files[0] if repo.files else None
         if picked is None or not os.path.isfile(picked.path):
             self._sync_status = f"{repo.repo_id}: no weight files in this snapshot."
-            return {"model_path": None, "file_info": info}
+            return {"model_path": None, "cache_dir": path, "file_info": info}
         info.update(file=picked.name, size=picked.size)
         picked_id = f"{repo.repo_id} > {picked.name}"
         self._sync_status = (f"{len(repos)} repos ({source}). Picked {picked_id}.")
-        return {"model_path": picked.path, "file_info": info}
+        return {"model_path": picked.path, "cache_dir": path, "file_info": info}
 
     def cleanup(self) -> None:
         super().cleanup()

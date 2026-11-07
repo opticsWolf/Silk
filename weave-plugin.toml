@@ -38,12 +38,14 @@ provider = "python"
 module = "silk"
 contract = "weave-node 1.0"
 nodes = [
-    "AgentInferenceSettingsNode", "ChatDisplayNode", "GGUFLNode", "PoolMonitorNode",
-    "SilkAgentNode", "SilkClassifierNode", "SilkHFCacheNode",
-    "SilkHFDownloadNode", "SilkHookMonitorNode", "SilkKnowledgeGraphNode",
-    "SilkMCPAggregatorNode",
-    "SilkMCPServerNode", "SilkModelEndpointNode", "SilkModelFallbackNode",
-    "SilkOpenCodeGoNode", "SilkOpenCodeZenNode", "SilkOrchestratorNode",
-    "SilkPlanViewerNode", "SilkRoleNode", "SilkTaskHubNode",
-    "SilkTaskNode", "SilkToolBoxNode", "SilkToolSetNode", "SilkWorkerNode", "ToolchainNode",
+    "AgentInferenceSettingsNode", "ChatDisplayNode", "ClassifierLoaderNode",
+    "EmbedderLoaderNode", "GGUFLNode", "JevLoaderNode", "PoolMonitorNode",
+    "SilkAgentNode", "SilkClassifierNode", "SilkEndpointNode", "SilkEnsembleNode",
+    "SilkHFCacheNode", "SilkHFDownloadNode", "SilkHookMonitorNode",
+    "SilkKnowledgeGraphNode", "SilkMCPAggregatorNode", "SilkMCPServerNode",
+    "SilkModelEndpointNode", "SilkModelFallbackNode", "SilkModelNode",
+    "SilkOnnxEmbedderNode", "SilkOnnxRerankerNode", "SilkOpenCodeGoNode",
+    "SilkOpenCodeZenNode", "SilkOrchestratorNode", "SilkPlanViewerNode",
+    "SilkRoleNode", "SilkTaskHubNode", "SilkTaskNode", "SilkToolBoxNode",
+    "SilkToolSetNode", "SilkWorkerNode", "ToolchainNode",
 ]

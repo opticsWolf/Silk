@@ -36,6 +36,11 @@ Types:
                       a chat ``model_handle``.
     okf_graph         an OkfGraph: a served OKFgraph knowledge graph, owned
                       by the Knowledge Graph node
+    onnx_embedder     an ONNX embedding model *described* (embroider id,
+                      device, precision, cache dir) for okf serve to load
+                      in its own process; never loaded in Weave's
+    reranker_model    a reranker described: an embroider cross-encoder,
+                      or an external /v1/rerank host by URL and family
     endpoint          provider info (provider key, base URL, credential
                       *name*) from an Endpoint node -- what a Model node
                       connects through. A handle to a configuration, not
@@ -315,6 +320,58 @@ if "okf_graph" not in PortRegistry._by_name:
         ),
         casts_to={},
     )
+
+# An ONNX embedding model as a *description*: which embroider model, on
+# which device and precision, cached where. Not a model_handle on purpose:
+# a model_handle is a model live in Weave's process, and an ONNX model
+# must never load there (a second ONNX Runtime beside one already running
+# takes the interpreter down). The consumer -- the Knowledge Graph node --
+# hands it to `okf serve`, which loads it with embroider in its own process.
+if "onnx_embedder" not in PortRegistry._by_name:
+    PortRegistry.register(
+        name="onnx_embedder",
+        python_type=dict,
+        color_index=122,
+        type_id=None,
+        default=lambda: None,
+        validator=lambda v: v is None or (isinstance(v, dict)
+                            and (not v or (v.get("runtime") == "embroider"
+                                 and v.get("role") == "embedding"))),
+        formatter=lambda v: (
+            f"<ONNX embedder: {v.get('model_id') or 'default'} "
+            f"({v.get('device', 'auto')})>"
+            if isinstance(v, dict) and v else "<no ONNX embedder>"
+        ),
+        casts_to={},
+    )
+
+# A reranker (the second retrieval stage) as a description, whoever runs
+# it: ``runtime: embroider`` is a cross-encoder okf loads itself (the ONNX
+# Reranker node); ``runtime: external`` is a ``POST /v1/rerank`` host
+# (llama-server --rerank, TEI) by URL and declared family. Typed by role,
+# not by runtime, so one port takes either.
+if "reranker_model" not in PortRegistry._by_name:
+    PortRegistry.register(
+        name="reranker_model",
+        python_type=dict,
+        color_index=126,
+        type_id=None,
+        default=lambda: None,
+        validator=lambda v: v is None or (isinstance(v, dict)
+                            and (not v or (v.get("role") == "rerank" and (
+                                v.get("runtime") == "embroider"
+                                or (v.get("runtime") == "external"
+                                    and bool(v.get("endpoint_url"))))))),
+        formatter=lambda v: (
+            f"<Reranker: {v.get('model_id') or 'default'} "
+            f"({v.get('runtime', '?')})>"
+            if isinstance(v, dict) and v else "<no reranker>"
+        ),
+        casts_to={},
+    )
+
+ONNX_EMBEDDER_TYPE = PortRegistry._by_name["onnx_embedder"]
+RERANKER_MODEL_TYPE = PortRegistry._by_name["reranker_model"]
 
 MODEL_HANDLE_TYPE = PortRegistry._by_name["model_handle"]
 # Provider info on a wire: what an Endpoint node selected, what a Model

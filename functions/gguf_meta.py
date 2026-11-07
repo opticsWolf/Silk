@@ -208,6 +208,78 @@ def read_gguf_meta(path: str) -> GGUFMeta:
                         supports_tools=tools)
 
 
+#: llama.cpp's ``<arch>.pooling_type`` values that pool to one vector.
+_POOLING_NAMES = {1: "mean", 2: "cls", 3: "last"}
+
+
+@dataclass(frozen=True)
+class EmbeddingMeta:
+    """What an embedding GGUF says about the vectors its server returns.
+
+    ``name`` is ``general.basename`` (else ``general.name``), ``width``
+    the ``<arch>.embedding_length`` and ``pooling`` the server's pooling
+    from ``<arch>.pooling_type`` -- llama.cpp pools by that key unless told
+    otherwise, so it is the truth about the vectors, not a guess. ``None``
+    for whatever the file does not carry.
+    """
+    name: Optional[str] = None
+    width: Optional[int] = None
+    pooling: Optional[str] = None
+
+
+def read_embedding_meta(path: str) -> EmbeddingMeta:
+    """The embedding identity of a GGUF file; stops once all three are in.
+
+    The ``general.*`` and architecture keys precede the tokenizer's arrays,
+    so this is a few-KB read for a normal file. Raises ValueError like
+    :func:`read_gguf_meta` for a file it cannot walk.
+    """
+    with open(path, "rb") as f:
+        if _read(f, 4) != GGUF_MAGIC:
+            raise ValueError("not a GGUF file")
+        version = _read_u32(f)
+        if version not in (1, 2, 3):
+            raise ValueError(f"unsupported GGUF version {version}")
+        _read_len(f, version)  # tensor_count (unused)
+        kv_count = _read_len(f, version)
+
+        basename: Optional[str] = None
+        name: Optional[str] = None
+        width: Optional[int] = None
+        pooling: Optional[str] = None
+        for _ in range(kv_count):
+            try:
+                key = _read_key(f, version)
+                vtype = _read_u32(f)
+                if vtype == _T_STRING and key in ("general.basename", "general.name"):
+                    text = _read_string(f, version).strip() or None
+                    if key == "general.basename":
+                        basename = text
+                    else:
+                        name = text
+                    val = None
+                else:
+                    val = _read_value(f, vtype, version)
+            except UnsupportedValue:
+                break   # keep what was read before the exotic value
+            # Two-part keys only: a projector's `clip.vision.*` is not it.
+            if val is not None and key.count(".") == 1:
+                if key.endswith(".embedding_length"):
+                    width = val
+                elif key.endswith(".pooling_type"):
+                    pooling = _POOLING_NAMES.get(val)
+            if basename and width is not None and pooling is not None:
+                break
+        return EmbeddingMeta(name=basename or name, width=width, pooling=pooling)
+
+
+def pack_kv_str(key: str, value: str) -> bytes:
+    """Encode one string KV pair (v2/v3 layout). Test/tooling helper."""
+    kb, vb = key.encode("utf-8"), value.encode("utf-8")
+    return (struct.pack("<Q", len(kb)) + kb + struct.pack("<IQ", _T_STRING, len(vb))
+            + vb)
+
+
 def pack_kv_int(key: str, value: int) -> bytes:
     """Encode one uint32 KV pair (v2/v3 layout). Test/tooling helper."""
     kb = key.encode("utf-8")

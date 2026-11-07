@@ -30,6 +30,13 @@ Where the settings come from, in order:
 The output is the same ``model_handle`` wire the chat loader emits, so
 ``functions.embeddings.embedder_for`` and the ToolSet's
 ``embedding_model`` port accept it unchanged.
+
+**Loaded on demand.** There is no load button to press: the node hands
+out its handle as soon as a model is chosen, and the llama.cpp server
+starts the first time something downstream uses it (the Knowledge Graph
+serving a graph, a ToolSet embedding). ``functions.model_pool.LazyGGUFPool``
+is that handle's pool. Unload stops the server; it starts again the next
+time a downstream node needs it.
 """
 
 import threading
@@ -47,7 +54,7 @@ from PySide6.QtWidgets import (
 )
 
 from weave.widgetcore import WidgetCore, PortRole
-from weave.node.threaded import ThreadedManualNode
+from weave.node.threaded import ThreadedNode
 from weave.node import VerticalSizePolicy
 from weave.registry import register_node
 from weave.logger import get_logger
@@ -60,7 +67,7 @@ from weave.widgets.separator_line import SeparatorLine
 from .silk_ports import MODEL_HANDLE_TYPE  # noqa: F401
 
 from ..functions.model_pool import (
-    GGUFModelPool, LLAMA_CPP_AVAILABLE, LLAMA_SERVER_AVAILABLE,
+    LazyGGUFPool, LLAMA_CPP_AVAILABLE, LLAMA_SERVER_AVAILABLE,
     server_missing_deps_message,
 )
 from ..functions.gguf_meta import read_gguf_meta, read_gguf_meta_fallback
@@ -80,7 +87,7 @@ DEVICE_GPU_LAYERS = {"cpu": 0, "gpu": -1}
 
 
 @register_node
-class EmbedderLoaderNode(ThreadedManualNode):
+class EmbedderLoaderNode(ThreadedNode):
     """Loads an embedding GGUF into a shared llama.cpp server (CPU-first)."""
 
     _widget_core: WidgetCore
@@ -89,8 +96,8 @@ class EmbedderLoaderNode(ThreadedManualNode):
     node_subclass: ClassVar[str] = "Loaders"
     node_name: ClassVar[Optional[str]] = "Embedder Loader"
     node_description: ClassVar[Optional[str]] = (
-        "Loads an embedding model via llama.cpp for Silk recall. "
-        "CPU-first; remembers per-model settings."
+        "An embedding model via llama.cpp, loaded when a downstream node "
+        "first uses it. CPU-first; remembers per-model settings."
     )
     node_tags: ClassVar[Optional[List[str]]] = [
         "silk", "llama", "embeddings", "gguf", "pool",
@@ -99,6 +106,23 @@ class EmbedderLoaderNode(ThreadedManualNode):
     vertical_size_policy: ClassVar[VerticalSizePolicy] = VerticalSizePolicy.FIT
 
     _probe_ready = Signal(str, object)
+    #: The lazy pool started (a pool) or failed to (an exception), from
+    #: whichever thread used it first.
+    _pool_started = Signal(object)
+
+    #: 2: loads on demand -- an auto node with an Unload button, no Load.
+    node_version = 2
+    node_state_api = 2
+
+    @classmethod
+    def migrate_state(cls, state: Dict[str, Any], from_version: int) -> Dict[str, Any]:
+        """api 1 → 2: the node was manual (a Load button). A saved scene
+        carries that flag, which would keep the node waiting for a click
+        that no longer exists; the widget values carry over."""
+        dataflow = state.get("dataflow")
+        if isinstance(dataflow, dict):
+            dataflow["manual_mode"] = False
+        return state
 
     _pending_pool_info: Optional[dict] = None
 
@@ -109,7 +133,10 @@ class EmbedderLoaderNode(ThreadedManualNode):
         self.add_output("model_obj", datatype="model_handle")
         self.add_output("pool_info", datatype="dict")
 
-        self.model_pool: Optional[GGUFModelPool] = None
+        self.model_pool: Optional[LazyGGUFPool] = None
+        #: The settings the current pool was made with: an evaluation that
+        #: changes nothing keeps the pool (and a running server).
+        self._pool_key: Optional[tuple] = None
         self._probe_cache: Dict[str, Dict[str, Any]] = {}
         # Per-model auto-memory: written on load, re-applied on selection.
         self._model_store = EmbedderModelStore()
@@ -192,9 +219,13 @@ class EmbedderLoaderNode(ThreadedManualNode):
             datatype="str", add_to_layout=False)
 
         btn_row = QHBoxLayout()
-        self.btn_load = SyncButton(initial_text="Load Embedder",
-                                   initial_icon="download")
-        self.btn_load.clicked.connect(self.execute)
+        self.btn_load = SyncButton(initial_text="Unload Embedder",
+                                   initial_icon="player-eject")
+        self.btn_load.setToolTip(
+            "The model loads when a downstream node first uses it. Unload "
+            "stops its server and frees the memory; it starts again when "
+            "something needs it.")
+        self.btn_load.clicked.connect(self._on_unload_clicked)
         btn_row.addWidget(self.btn_load)
         form.addRow("", btn_row)
         self._widget_core.register_widget(
@@ -209,6 +240,7 @@ class EmbedderLoaderNode(ThreadedManualNode):
         self._probe_timer.setInterval(250)
         self._probe_timer.timeout.connect(self._start_probe)
         self._probe_ready.connect(self._apply_probe)
+        self._pool_started.connect(self._on_pool_started)
 
         self.set_content_widget(self._widget_core)
         if hasattr(self._widget_core, "patch_proxy"):
@@ -344,6 +376,9 @@ class EmbedderLoaderNode(ThreadedManualNode):
     def _on_value_changed(self, port_name: str) -> None:
         self._update_estimation()
         self.on_ui_change()
+        if port_name not in ("status", "btn_load"):
+            # The settings are the server's: a new handle, a new server.
+            self.set_dirty(port_name)
 
     @Slot(str, object)
     def _on_port_value_written(self, port_name: str, value: Any) -> None:
@@ -356,40 +391,45 @@ class EmbedderLoaderNode(ThreadedManualNode):
     # ------------------------------------------------------------------
 
     def _is_model_loaded(self) -> bool:
-        if self.model_pool is not None:
-            return True
-        cached_val = self._get_cached_value("model_obj")
-        return bool(cached_val and isinstance(cached_val, dict)
-                    and "pool" in cached_val)
+        return self.model_pool is not None and self.model_pool.started
 
     def _unload_model(self) -> None:
-        log.info(f"Ejecting embedder for {self.node_name}...")
-        if self.model_pool is not None:
-            self.model_pool.cleanup()
-            self.model_pool = None
-        cached_val = self._get_cached_value("model_obj")
-        if cached_val is not None and "pool" in cached_val:
-            del cached_val["pool"]
+        """Stop the server. The handle stays: its next use starts it."""
+        if self.model_pool is None or not self.model_pool.started:
+            return
+        log.info(f"Unloading embedder for {self.node_name}...")
+        self.model_pool.cleanup()
         import gc as _gc
         _gc.collect()
-        self.emit_stream("pool_info", None)
+        self.emit_stream("pool_info", self.model_pool.snapshot())
         self.on_ui_change()
         self._update_button_idle()
 
-    def execute(self) -> None:
-        if self._is_computing:
-            self.cancel_compute()
-        elif self._is_model_loaded():
-            self._unload_model()
+    def _on_unload_clicked(self) -> None:
+        self._unload_model()
+        # Downstream holds the stopped server's address: re-evaluating
+        # gives it the handle again, and a node that needs the model now
+        # starts it.
+        self.set_dirty("unloaded")
+
+    def _start_notice(self, result: Any) -> None:
+        """The lazy pool's on_start: any thread, so through a signal."""
+        self._pool_started.emit(result)
+
+    @Slot(object)
+    def _on_pool_started(self, result: Any) -> None:
+        if isinstance(result, BaseException):
+            self._widget_core.push_display(
+                "status", f"Embedder server failed to start: {result}")
         else:
-            self.btn_load.set_label("Loading (Click to Cancel)...")
-            super().execute()
+            self._widget_core.push_display(
+                "status", f"Loaded {Path(result.model_path).name} "
+                          f"at {result.base_url}.")
+            self.emit_stream("pool_info", result.snapshot())
+        self._update_button_idle()
 
     def _update_button_idle(self) -> None:
-        if self._is_model_loaded():
-            self.btn_load.set_label("Eject Embedder")
-        else:
-            self.btn_load.set_label("Load Embedder")
+        self.btn_load.setEnabled(self._is_model_loaded())
 
     def _cleanup_after_worker(self, skip_results: bool = False) -> None:
         self._update_button_idle()
@@ -439,34 +479,37 @@ class EmbedderLoaderNode(ThreadedManualNode):
         if self.is_compute_cancelled():
             return {"model_obj": None}
 
-        try:
-            self.model_pool = GGUFModelPool(
-                model_path=model_path,
-                n_instances=1,
-                clear_on_return=False,
-                **llama_kwargs,
+        key = (model_path, tuple(sorted(llama_kwargs.items())))
+        if self.model_pool is None or key != self._pool_key:
+            if self.model_pool is not None:
+                self.model_pool.cleanup()   # settings changed: a new server
+            # Nothing starts here: the server waits for its first user.
+            self.model_pool = LazyGGUFPool(
+                model_path, on_start=self._start_notice,
+                n_instances=1, clear_on_return=False, **llama_kwargs,
             )
-        except Exception as exc:  # noqa: BLE001 - surface the reason to the UI
-            log.error(f"Embedder server failed to start: {exc}")
-            self.compute_error.emit(f"Server failed to start: {exc}")
-            return {"model_obj": None}
+            self._pool_key = key
 
-        # Remember these settings: next time this file is picked, the node
-        # restores them instead of the defaults.
-        try:
-            self._model_store.remember(
-                model_path,
-                device=device,
-                n_ctx=int(inputs.get("n_ctx", 2048)),
-                n_threads=int(inputs.get("n_threads", 8)),
-                n_batch=int(inputs.get("n_batch", 512)),
-                use_mmap=bool(inputs.get("use_mmap", True)),
-            )
-        except Exception as exc:
-            log.debug(f"Could not persist embedder settings: {exc}")
+            # Remember these settings: next time this file is picked, the
+            # node restores them instead of the defaults.
+            try:
+                self._model_store.remember(
+                    model_path,
+                    device=device,
+                    n_ctx=int(inputs.get("n_ctx", 2048)),
+                    n_threads=int(inputs.get("n_threads", 8)),
+                    n_batch=int(inputs.get("n_batch", 512)),
+                    use_mmap=bool(inputs.get("use_mmap", True)),
+                )
+            except Exception as exc:
+                log.debug(f"Could not persist embedder settings: {exc}")
 
         pool_info = self.model_pool.snapshot()
         self._pending_pool_info = pool_info
+        self._sync_status = (
+            f"{Path(model_path).name} on {device.upper()}: "
+            + ("loaded." if self.model_pool.started
+               else "loads when a downstream node uses it."))
         handle: Dict[str, Any] = {"backend": "gguf", "pool": self.model_pool,
                                   "role": "embedding"}
         return {"model_obj": handle, "pool_info": pool_info}
@@ -474,6 +517,8 @@ class EmbedderLoaderNode(ThreadedManualNode):
     def on_evaluate_finished(self) -> None:
         super().on_evaluate_finished()
         self._update_button_idle()
+        if getattr(self, "_sync_status", ""):
+            self._widget_core.push_display("status", self._sync_status)
         if self._pending_pool_info is not None:
             self.emit_stream("pool_info", self._pending_pool_info)
             self._pending_pool_info = None
@@ -485,5 +530,7 @@ class EmbedderLoaderNode(ThreadedManualNode):
         except (RuntimeError, TypeError):
             pass
         self.cancel_compute()
-        self._unload_model()
+        if self.model_pool is not None:
+            self.model_pool.cleanup()
+            self.model_pool = None
         super().cleanup()

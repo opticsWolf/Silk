@@ -718,3 +718,66 @@ class GGUFModelPool:
                 # time. Reported where the pool is already watched (§22 q1c).
                 "serialization": self.serialization_report(),
             }
+
+
+class LazyGGUFPool:
+    """A :class:`GGUFModelPool` whose server starts on first use.
+
+    A loader hands this out at once; the server (seconds, and the RAM or
+    VRAM) is only paid for when a consumer touches anything that needs it
+    -- ``base_url``, ``client``, a checkout. What is known without the
+    server answers without starting it: the file (``model_path``), whether
+    it runs (``started``) and ``snapshot``. ``cleanup`` stops the server;
+    the next use starts a new one. *on_start* is called (on the thread
+    that started it) with the running pool, or with the exception when
+    the start failed; the exception is raised to the consumer either way.
+    """
+
+    def __init__(self, model_path: str, on_start: Any = None,
+                 **pool_kwargs: Any) -> None:
+        self._model_path = model_path
+        self._pool_kwargs = pool_kwargs
+        self._on_start = on_start
+        self._pool: Optional[GGUFModelPool] = None
+        self._lock = threading.Lock()
+
+    @property
+    def model_path(self) -> str:
+        return self._model_path
+
+    @property
+    def started(self) -> bool:
+        return self._pool is not None
+
+    def ensure(self) -> GGUFModelPool:
+        """The running pool, starting the server if it is not up."""
+        with self._lock:
+            if self._pool is None:
+                try:
+                    self._pool = GGUFModelPool(self._model_path, **self._pool_kwargs)
+                except Exception as exc:
+                    if self._on_start is not None:
+                        self._on_start(exc)
+                    raise
+                if self._on_start is not None:
+                    self._on_start(self._pool)
+            return self._pool
+
+    def __getattr__(self, name: str) -> Any:
+        # Only reached for what this class does not define: the pool's API.
+        if name.startswith("__"):
+            raise AttributeError(name)
+        return getattr(self.ensure(), name)
+
+    def snapshot(self) -> dict:
+        pool = self._pool
+        if pool is not None:
+            return pool.snapshot()
+        return {"model_path": Path(self._model_path).name,
+                "full_path": self._model_path, "started": False}
+
+    def cleanup(self, timeout: float = _SHUTDOWN_TIMEOUT_S) -> None:
+        with self._lock:
+            pool, self._pool = self._pool, None
+        if pool is not None:
+            pool.cleanup(timeout)

@@ -186,6 +186,89 @@ from that point comes from a different model at a different price; a run
 that finished on the cheap fallback should not look identical to one that
 finished on the paid primary.
 
+## Knowledge
+
+### Knowledge Graph — `nodes/knowledge_graph.py` (`SilkKnowledgeGraphNode`)
+Serves one OKFgraph knowledge graph (`okf serve`, in its own process) and
+hands it to ToolBoxes, whose `knowledge` tool group gives agents search,
+read, traverse and, by access level, ingest and curation.
+
+| Direction | Port | Type |
+|---|---|---|
+| in | `roots` | `dirpath_list` (where to find or create `.okfgraph/okfgraph.db`) |
+| in | `embedder` | `model_handle` (the Embedder Loader's `model_obj`) |
+| in | `onnx_embedder` | `onnx_embedder` (an ONNX Embedder node) |
+| in | `reranker` | `reranker_model` (an ONNX Reranker node) |
+| out | `knowledge` | `okf_graph` |
+
+The node has **no model fields**: the models come on the wires, and the
+**Embedder** row (`embed_source`: onnx / gguf, with the Re-embed button)
+picks which wire embeds; the other is ignored.
+
+| Embedder | Lane in okf | What the node passes |
+|---|---|---|
+| gguf | external (`/v1/embeddings` on Silk's llama.cpp server) | the server URL, pin `gguf/<file stem>`, and from the GGUF header: family, pooling, width; token counts from the file too |
+| onnx, `onnx_embedder` wired | embroider, in okf's process | model id, device, precision, cache folder |
+| onnx, nothing wired | embroider | the ONNX model the graph was last embedded with; `google/embeddinggemma-2` (Silk's default, `DEFAULT_EMBED_MODEL`) for a new graph |
+
+With nothing wired, okf finds the model itself: embroider looks it up in
+the Hugging Face hub cache (`~/.cache/huggingface/hub`, or the ONNX
+Embedder's cache folder) and downloads it on first use. The Info line
+says which it is (`okf model-info`, offline): "Model files: … in <cache>"
+or "Not downloaded yet: … the first ingest or search fetches it". Not
+downloaded is a notice, not an error. A graph this node has not served
+before that was embedded with another embroider model (okf's old default,
+jina v5 small, say) keeps that model ("Kept …") instead of re-embedding.
+
+**The node turns red** when it cannot serve a graph that searches: a
+wiring problem, a gguf Embedder row with nothing wired, okf failing to
+start, a pin it cannot read, or a graph embedded with other settings.
+The Info line says which; the wire still carries `None` (or the
+mismatched graph), and the next evaluation that serves one clears it. No
+database chosen yet is not red.
+
+The Embedder Loader is not loaded by hand: its server starts when this
+node asks for its address, which is when the graph is served.
+
+What a GGUF embedder is, okf is told from its file, never from a field:
+the **family** is `nomic-v1.5` when the model is one (okf then adds its
+`search_query:` / `search_document:` prefixes and the 64–768 ladder),
+otherwise the model's own name, which embeds without prefixes; the
+**pooling** is the file's `<arch>.pooling_type`, which is what llama.cpp
+pools by; the **width** is the file's `<arch>.embedding_length` (Vector
+dim applies to ONNX models and nomic only). A model wider than 1024 is
+refused, as is a chat model on `embedder`.
+
+Unplugging a loader never re-embeds. On the ONNX lane the graph keeps its
+model; a graph embedded with a GGUF model stops serving and waits for it
+to be wired again (or for the Embedder row to be set to onnx, which
+re-embeds with the ONNX model).
+
+**Reranking is on exactly when a reranker is wired.** Then every agent
+search is reranked (`rank='cross'` on concepts, `rerank` on chunks; the
+`hub` and `ppr` graph walks keep their order); with none wired no search
+is, and okf's default cross-encoder is never loaded. The reranker writes
+no vectors, so changing it restarts the server and never re-embeds.
+Silk's Python llama.cpp server cannot rerank, so a GGUF reranker is not
+offered; `reranker_model` also carries okfgraph's external
+form (a `/v1/rerank` host by URL and family) for a node that serves one.
+
+### ONNX Embedder / ONNX Reranker — `nodes/onnx_loader.py` (`SilkOnnxEmbedderNode`, `SilkOnnxRerankerNode`) *(Silk AI / Loaders)*
+Choose an embroider model (id, device, precision, cache folder) and put the
+choice on a wire. **Nothing loads in Weave**: a second ONNX Runtime in
+Weave's process can take the interpreter down, so the Knowledge Graph node
+passes the description to `okf serve`, which loads it with embroider. That
+is why the wires are `onnx_embedder` / `reranker_model` and not
+`model_handle`, which means a model live in Weave's process.
+
+| Node | Output | Type |
+|---|---|---|
+| ONNX Embedder | `onnx_embedder` | `onnx_embedder` |
+| ONNX Reranker | `reranker` | `reranker_model` |
+
+The model lists are embroider's registry and editable, so a model a newer
+embroider gained can be typed in.
+
 ## Tool assembly
 
 ### Silk ToolBox — `nodes/toolbox.py`

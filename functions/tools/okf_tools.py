@@ -227,6 +227,24 @@ def _format(data: Any) -> str:
     return text
 
 
+def rerank_args(graph: Optional["OkfGraph"], args: Dict[str, Any]) -> Dict[str, Any]:
+    """*args* with the cross-encoder switched on when the graph has one.
+
+    A reranker is wired into the Knowledge Graph node or not at all, so
+    the agent is never asked to choose: a wired one reranks the default
+    fusion search (``rank='cross'`` for concepts, ``rerank`` for chunks),
+    and with none wired no search is reranked -- okf's own default model
+    is never loaded behind the user's back. The graph walks (``hub``,
+    ``ppr``) keep their own order.
+    """
+    spec = getattr(graph, "spec", None)
+    if not getattr(spec, "rerank_model_id", "") or args.get("rank", "none") != "none":
+        return args
+    if args.get("target", "concepts") == "chunks":
+        return dict(args, rerank=True)
+    return dict(args, rank="cross")
+
+
 def _failure(exc: OkfError) -> str:
     """An op error as the model should read it: what, and what to do."""
     line = f"error: {exc.code}: {exc.message}"
@@ -275,7 +293,7 @@ def attach_okf_tools(toolbox: "ToolBox", sandbox: "FileToolSandbox",
         tags=("knowledge", "search", "okfgraph"), category="knowledge", risk="low",
     )
     def okf_search(_db, _session, **args: Any) -> str:
-        return run("search", **args)
+        return run("search", **rerank_args(graph, args))
 
     @register(
         "okf_read",

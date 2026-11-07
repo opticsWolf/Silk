@@ -199,8 +199,9 @@ def test_node_ports_and_scan(node, hub):
     ports = {p.name: p.datatype for p in node.inputs}
     assert ports == {"cache_path": "dirpath", "search": "string",
                      "model": "string", "file": "string"}
-    assert {p.name: p.datatype for p in node.outputs} == {
-        "model_path": "filepath", "file_info": "dict"}
+    assert [(p.name, p.datatype) for p in node.outputs] == [
+        ("model_path", "filepath"), ("cache_dir", "dirpath"),
+        ("file_info", "dict")]
     node._widget_core.apply_port_value("cache_path", hub, user_edit=False)
     node.refresh_cache()
     assert node._combo_model.count() == 2
@@ -288,10 +289,12 @@ def test_compute_resolves_the_pick_to_a_snapshot_path(node, hub):
         os.path.join("snapshots", "abc123", "model.gguf"))
     assert out["file_info"]["repo"] == "org/gguf"
     assert out["file_info"]["revision"] == "abc123"
+    assert out["cache_dir"] == str(hub)
 
 
 def test_compute_without_a_match_emits_nothing(node, hub):
     out = node.compute(gather(node, {"cache_path": hub, "model": "org/nope"}))
     assert out["model_path"] is None
+    assert out["cache_dir"] == str(hub), "the folder is found even so"
     out = node.compute(gather(node, {"cache_path": str(hub) + "-missing"}))
-    assert out["model_path"] is None
+    assert out["model_path"] is None and out["cache_dir"] is None
