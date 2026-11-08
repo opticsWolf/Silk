@@ -75,7 +75,8 @@ def test_agent_no_longer_takes_run_time_settings(qt_app):
     from silk.nodes.orchestrator import SilkOrchestratorNode
     for cls in (SilkAgentNode, SilkOrchestratorNode):
         assert "inference_settings" not in [p.name for p in cls().inputs]
-    assert SilkAgentNode.node_version == 4
+    # 4 dropped the port; 5 (Task box gone, stop/clear inputs) kept it gone.
+    assert SilkAgentNode.node_version >= 4
 
 
 def test_no_dangling_self_calls_inference_wiring():
@@ -88,8 +89,8 @@ def test_no_dangling_self_calls_inference_wiring():
             "is_compute_cancelled", "on_ui_change",
         },
         "nodes/agent.py": {
-            "_get_cached_value", "_start_computing_pulse", "emit_stream",
-            "get_pulse_waveform", "is_compute_cancelled", "pulse",
+            "_fan_out_stream", "_get_cached_value", "_start_computing_pulse",
+            "emit_stream", "get_pulse_waveform", "is_compute_cancelled", "pulse",
             "set_pulse_waveform",
         },
     }

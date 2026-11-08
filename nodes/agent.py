@@ -13,11 +13,18 @@ the full tool registry cannot reach a model by accident.
 
 Execution & chaining
 --------------------
-Manual: click *Run Agent* (or Enter in the prompt editor). Remote: pulse
-the ``run`` Exec input — Manual nodes auto-execute on an incoming pulse —
-and on completion the node pulses its ``done`` Exec output. Chain agent
-networks by wiring ``response`` → next agent's ``user_prompt`` and
-``done`` → next agent's ``run``.
+The prompt comes from outside: a Silk Prompt node is the chat box
+(``send`` → ``run``, carrying the message as the pulse payload;
+``stop`` → ``stop``; ``new_chat`` → ``clear``), or any text on
+``user_prompt``. The reply is read downstream (``events`` → Chat Log
+Display). The node itself keeps one icon row: Run/Stop and Clear
+context. A message sent during a run is queued for the next one, or --
+sent as a steer or an interrupt -- joins the run itself; what waits is
+listed under the icon row, where each message can be re-filed or
+removed. Stop is press-twice: after the current action, then now. On
+completion the node pulses its ``done`` Exec output. Chain agent networks by wiring
+``response`` → next agent's ``user_prompt`` and ``done`` → next agent's
+``run``.
 
 Threading: ``compute()`` drives the AgentLoop on the worker thread; deltas
 reach the UI via a queued Qt signal and downstream nodes via
@@ -29,15 +36,16 @@ import itertools
 import time
 import uuid
 from contextlib import ExitStack
-from typing import Any, ClassVar, Dict, List, Optional, cast
+from typing import Any, ClassVar, Dict, List, Optional
 
-from PySide6.QtCore import Qt, QEvent, Signal, Slot
-from PySide6.QtGui import QKeyEvent
+from PySide6.QtCore import QTimer, Signal, Slot
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMenu,
     QPushButton,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -50,13 +58,16 @@ from weave.registry import register_node
 from weave.canvas.rust_control import served_control
 from weave.logger import get_logger
 
-from weave.widgets.markdown_widget import MarkdownWidget
-from weave.widgets.sync_button import SyncButton
+from weave.library.sync_tool_button.widgets.sync_tool_button import SyncToolButton
 
 from .silk_ports import (  # noqa: F401
     MODEL_HANDLE_TYPE, SILK_CLASSIFIER_TYPE, SILK_ROLE_TYPE, SILK_TOOLSET_TYPE,
 )
 from ..functions.agent_loop import AgentLoop, DEFAULT_MAX_ROUNDS
+from ..functions.run_control import (
+    MODE_QUEUE, MODE_STEER, MODES, STOP_NONE, RunControl, merge_texts,
+)
+from ..widgets.run_queue import RunQueueView, StopEscalation
 from ..functions.event_sink import RunSink, sink_for
 from ..functions.approval import bind_run_seam, headless_refusals
 from ..functions.classifier_binding import begin_classifier_run, end_classifier_run
@@ -100,6 +111,7 @@ from ..functions.stream_events import (
     OUTCOME_ERROR,
     EventChatTurn,
     EventCompaction,
+    EventContextCleared,
     EventDecisionRequest,
     EventDecisionResponse,
     EventDelta,
@@ -111,6 +123,7 @@ from ..functions.stream_events import (
     EventReflection,
     EventRunFinished,
     EventRunResult,
+    EventSteered,
     EventToolCall,
     EventToolDenied,
     EventToolResult,
@@ -119,6 +132,21 @@ from ..functions.stream_events import (
 from ..functions.subagent import compose_system_prompt, handle_supports_tools
 
 log = get_logger("SilkAgent")
+
+
+def _message(payload: Any) -> tuple[str, str]:
+    """A `run` pulse's payload as (text, mode).
+
+    A string is a queued message; a dict says its mode. Anything else
+    is a bare pulse.
+    """
+    if isinstance(payload, dict):
+        text = payload.get("text")
+        mode = payload.get("mode", MODE_QUEUE)
+    else:
+        text, mode = payload, MODE_QUEUE
+    text = text.strip() if isinstance(text, str) else ""
+    return text, mode if mode in MODES else MODE_QUEUE
 
 
 @register_node
@@ -134,7 +162,9 @@ class SilkAgentNode(ThreadedManualNode):
     # 2: the `inference_settings` port is gone -- sampler settings ride
     # the model wire now (the loader stamps handle["gen_params"]). A wire
     # into it is dropped on load; re-draw from the loader instead.
-    node_version = 4
+    # 5: the Task box and Preview are gone (`user_prompt` is a plain
+    # port), and `stop` / `clear` exec inputs are new.
+    node_version = 5
 
     # Weave declares `_widget_core` as `WidgetCoreLike` -- the subset the
     # *dataflow engine* relies on. A node uses the widget-facing whole
@@ -148,13 +178,15 @@ class SilkAgentNode(ThreadedManualNode):
     _run_sink: Optional[RunSink] = None
 
     # Worker → main-thread bridges (V6 R11.1).
-    chunk_streamed = Signal(str)
     status_changed = Signal(str)
     # A gated tool call is blocked on the worker thread and needs the user
     # (D48). The request travels as a plain dict so the queued connection
     # carries nothing Qt has to marshal specially.
     decision_requested = Signal(dict)
     decision_settled = Signal(str)
+    # The run control changed (a message posted, taken or removed, a
+    # worker started or ended) -- on whatever thread did it.
+    control_changed = Signal()
 
     node_class: ClassVar[str] = "Silk AI"
     node_subclass: ClassVar[str] = "Agents"
@@ -168,6 +200,21 @@ class SilkAgentNode(ThreadedManualNode):
     ]
     node_icon: ClassVar[Optional[str]] = "robot-face"
     vertical_size_policy: ClassVar[VerticalSizePolicy] = VerticalSizePolicy.FIT
+
+    _RUN_TIP: ClassVar[str] = (
+        "Run the agent on the prompt wired into user_prompt (or on the "
+        "messages waiting below). Press again to stop after the current "
+        "action, a third time to cut it now; the arrow has both. A pulse "
+        "on `run` starts it too (a Prompt node's send brings its message "
+        "along); `stop` stops it the same way."
+    )
+    _CLEAR_TIP: ClassVar[str] = (
+        "Clear context: forget this agent's conversation, so the next "
+        "run starts a new chat (a pulse on `clear` does the same). The "
+        "plan, the knowledge graph and always-allow grants are kept. "
+        "Workers start fresh on every delegation, so there is nothing "
+        "of theirs to clear."
+    )
 
     def __init__(self, title: str = "Silk Agent", **kwargs: Any) -> None:
         super().__init__(title=title, **kwargs)
@@ -191,17 +238,36 @@ class SilkAgentNode(ThreadedManualNode):
         self._run_budget: Optional[Any] = None
         self._run_budget_built: bool = False
         self._emit_event: Optional[Any] = None
+        #: Asked for while a run was on; done when it ends (clear first,
+        #: then the next run, see `_cleanup_after_worker`). A bare `run`
+        #: pulse queues a re-run; a message is queued on the control.
+        self._run_queued: bool = False
+        self._clear_pending: bool = False
+        #: A prompt that came on a `run` pulse: the next run's.
+        self._next_prompt: Optional[str] = None
+        #: Queued, steering and interrupting messages, and the stop level;
+        #: shared with the loop (and, under an Orchestrator, its workers).
+        self._control = RunControl(label=str(title))
+        #: The running engine, so a force stop reaches the stream even
+        #: while the loop is inside a tool batch and yields nothing.
+        self._engine: Optional[GraphEngine] = None
 
         # ── Ports ──
         self.add_input("model_obj", datatype="model_handle")
         self.add_input("toolset", datatype="silk_toolset")
         self.add_input("role", datatype="silk_role")
         self.add_input("system_prompt", datatype="string")
-        self.add_input("user_prompt", datatype="string")
+        # The prompt: the message this run answers. A Silk Prompt node,
+        # or any text (an upstream agent's `response`, a file).
+        self.add_input("user_prompt", datatype="string",
+                       desc="Prompt: the message the next run answers.")
         # Clean A2A: an inbound AgentMessage becomes the task when no direct
         # prompt is given, and its provenance/correlation flow to the outbox.
         self.add_input("inbox", datatype="agent_message")
         self.add_input("run", datatype="exec")  # pulse → auto-execute (§13)
+        # The Prompt node's Stop and New chat; any exec source works.
+        self.add_input("stop", datatype="exec")
+        self.add_input("clear", datatype="exec")
         # The last link of the ToolSet → Role → Agent chain (D16). Whatever
         # arrives here narrows the toolset's sandbox for this run and only
         # this run; it can never widen it, and it cannot switch confinement
@@ -237,42 +303,61 @@ class SilkAgentNode(ThreadedManualNode):
         self._widget_core = WidgetCore()
         self._widget_core.set_node(self)
 
-        # Prompt editor (Enter to send, Shift+Enter for newline).
-        self.text_prompt = MarkdownWidget(mode="editor")
-        self.text_prompt._text_edit.setPlaceholderText(
-            "Task for the agent (Shift+Enter for newline)…"
-        )
-        self.text_prompt._text_edit.setMaximumHeight(80)
-        self.text_prompt._text_edit.installEventFilter(self)
-        form.addWidget(QLabel("Task:"))
-        form.addWidget(self.text_prompt)
-        self._widget_core.register_widget(
-            "user_prompt", self.text_prompt, role=PortRole.BIDIRECTIONAL,
-            datatype="string", default="", add_to_layout=False,
-        )
-
-        # Clear context button (always visible)
+        # One row: Run/Stop, Clear context, and what the run is doing.
+        # The prompt comes in on `user_prompt` -- a Silk Prompt node, or
+        # any text -- and the reply goes out on `response` and `events`,
+        # so the conversation is read where it is written, not here.
         controls = QHBoxLayout()
-        self.btn_clear = SyncButton(initial_text="Clear Context",
-                                    initial_icon="eraser")
-        self.btn_clear.clicked.connect(self._clear_context)
-        controls.addWidget(self.btn_clear)
-        controls.addStretch()
-        form.addLayout(controls)
+        self.btn_run = SyncToolButton(
+            initial_text="Start", show_label=False, dimensions=24,
+        )
+        self.btn_run.set_tooltip(self._RUN_TIP)
+        self.btn_run.clicked.connect(self.execute)
+        # Start, then Stop (after the current action), then -- pulsing red
+        # while that stop is pending -- Force stop. The arrow offers both
+        # stops directly.
+        self._stop = StopEscalation(
+            self.btn_run, on_stop=self._request_stop,
+            idle_label="Start", idle_tip=self._RUN_TIP, connect=False,
+            quiet=self._widget_core.suppress_signals,
+        )
+        stop_menu = QMenu(self.btn_run)
+        self._act_stop = stop_menu.addAction("Stop after this action")
+        self._act_stop.triggered.connect(lambda: self._request_stop(False))
+        self._act_force = stop_menu.addAction("Force stop now")
+        self._act_force.triggered.connect(lambda: self._request_stop(True))
+        stop_menu.aboutToShow.connect(self._sync_stop_menu)
+        self.btn_run.setMenu(stop_menu)
+        self.btn_run.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
+        controls.addWidget(self.btn_run)
+        self._widget_core.register_widget(
+            "btn_run", self.btn_run, role=PortRole.INTERNAL, add_to_layout=False,
+        )
 
+        self.btn_clear = SyncToolButton(
+            initial_text="Clear", show_label=False, dimensions=24,
+        )
+        self.btn_clear.set_tooltip(self._CLEAR_TIP)
+        self.btn_clear.clicked.connect(self.clear_context)
+        controls.addWidget(self.btn_clear)
         self._widget_core.register_widget(
             "btn_clear", self.btn_clear, role=PortRole.INTERNAL, add_to_layout=False,
         )
 
-        # Live streaming preview.
-        form.addWidget(QLabel("Preview:"))
-        self.text_preview = MarkdownWidget(mode="display")
-        self.text_preview._text_edit.setPlaceholderText("Agent response preview…")
-        form.addWidget(self.text_preview)
+        # Status readout (role, tool activity, errors).
+        self._label_status = QLabel("Idle.")
+        self._label_status.setWordWrap(True)
+        controls.addWidget(self._label_status, stretch=1)
+        form.addLayout(controls)
         self._widget_core.register_widget(
-            "preview_display", self.text_preview, role=PortRole.DISPLAY,
-            datatype="string", default="", add_to_layout=False,
+            "status", self._label_status, role=PortRole.DISPLAY,
+            datatype="str", add_to_layout=False,
         )
+
+        # What waits on the run, and (Orchestrator) the workers running
+        # now. Hidden while empty.
+        self._queue_view = RunQueueView(self._control)
+        form.addWidget(self._queue_view)
 
         # Approval prompt. Hidden until a gated call blocks on it: the
         # decision surface is *in* the node because the run is inside
@@ -327,28 +412,7 @@ class SilkAgentNode(ThreadedManualNode):
             add_to_layout=False,
         )
 
-        # Status readout (role, tool activity, errors).
-        self._label_status = QLabel("Idle.")
-        self._label_status.setWordWrap(True)
-        form.addWidget(QLabel("Status:"))
-        form.addWidget(self._label_status)
-        self._widget_core.register_widget(
-            "status", self._label_status, role=PortRole.DISPLAY,
-            datatype="str", add_to_layout=False,
-        )
-
-        # Run/Cancel action button.
-        self.btn_run = SyncButton(initial_text="Run Agent",
-                                  initial_icon="player-play")
-        self.btn_run.setFixedHeight(30)
-        self.btn_run.setStyleSheet("font-weight: bold;")
-        self.btn_run.clicked.connect(self.execute)
-
         layout.addLayout(form)
-        layout.addWidget(self.btn_run)
-        self._widget_core.register_widget(
-            "btn_run", self.btn_run, role=PortRole.INTERNAL, add_to_layout=False,
-        )
 
         # Subclasses add their own rows here (the Orchestrator's delegation
         # depth, D55). Kept as an attribute rather than rebuilt per subclass
@@ -359,27 +423,16 @@ class SilkAgentNode(ThreadedManualNode):
         container.setLayout(layout)
 
         # ── Signal wiring (worker → main thread; disconnected in cleanup) ──
-        self.chunk_streamed.connect(self._on_chunk_streamed)
         self.status_changed.connect(self._on_status_changed)
         self.decision_requested.connect(self._on_decision_requested)
         self.decision_settled.connect(self._on_decision_settled)
+        self.control_changed.connect(self._queue_view.refresh)
+        self._control.subscribe(self.control_changed.emit)
 
         # ── Mount ──
         self.set_content_widget(container)
         if hasattr(self._widget_core, "patch_proxy"):
             self._widget_core.patch_proxy()
-
-    # ── Enter-to-send ────────────────────────────────────────────────
-
-    def eventFilter(self, obj: Any, event: QEvent) -> bool:
-        if obj == self.text_prompt._text_edit and event.type() == QEvent.Type.KeyPress:
-            key_event = cast(QKeyEvent, event)
-            if key_event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
-                if key_event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
-                    return False
-                self.execute()
-                return True
-        return super().eventFilter(obj, event)
 
     # ── State persistence ────────────────────────────────────────────
 
@@ -389,11 +442,17 @@ class SilkAgentNode(ThreadedManualNode):
         """api 1 → 2: drop any residue of the removed ``inference_settings``
         port; the dict now rides the model wire from the loader, so an old
         wire into the agent is dropped on load and re-drawn there.
+
+        Any version: the Task box and the Preview are gone (the prompt is
+        a wire now, the reply is read downstream). A typed-in task is not
+        restored into anything; the wire, if there was one, still is.
         """
-        if from_version < 2:
-            values = state.get("widget_data")
-            if isinstance(values, dict):
+        values = state.get("widget_data")
+        if isinstance(values, dict):
+            if from_version < 2:
                 values.pop("inference_settings", None)
+            values.pop("user_prompt", None)
+            values.pop("preview_display", None)
         return state
 
     def get_state(self) -> Dict[str, Any]:
@@ -408,6 +467,8 @@ class SilkAgentNode(ThreadedManualNode):
             super().restore_state(state)
             saved = state.get("silk_agent", {})
             self._history = copy.deepcopy(saved.get("history", []))
+        # A state saved mid-run carries the button as Stop.
+        self._show_run_button()
         values = state.get("widget_data")
         if isinstance(values, dict) and values.get("event_log"):
             log.warning(
@@ -417,12 +478,6 @@ class SilkAgentNode(ThreadedManualNode):
             )
 
     # ── UI slots ─────────────────────────────────────────────────────
-
-    @Slot(str)
-    def _on_chunk_streamed(self, text: str) -> None:
-        self._widget_core.push_display("preview_display", text)
-        sb = self.text_preview._text_edit.verticalScrollBar()
-        sb.setValue(sb.maximum())
 
     @Slot(str)
     def _on_status_changed(self, msg: str) -> None:
@@ -511,7 +566,19 @@ class SilkAgentNode(ThreadedManualNode):
                 reason="" if approved else "the user declined this call",
             ))
 
-    def _clear_context(self) -> None:
+    def clear_context(self) -> None:
+        """Forget the conversation: a new chat starts with the next run.
+
+        A run in flight keeps the history it started with, so the clear
+        waits for it to end. Says so on ``events`` (``context.cleared``),
+        which is what tells a Chat Log on the same wire to start over.
+        """
+        if self._is_computing:
+            self._clear_pending = True
+            self._widget_core.push_display(
+                "status", "Context clears when this run ends.")
+            return
+        self._clear_pending = False
         # Release the agent's dedicated pool instance so its KV cache is
         # wiped and returned to the general idle queue.
         cached_val = self._get_cached_value("model_obj")
@@ -524,20 +591,118 @@ class SilkAgentNode(ThreadedManualNode):
             except Exception as exc:
                 log.debug(f"Clear context: pool release failed: {exc}")
 
+        dropped = len(self._history)
         self._history.clear()
-        self._widget_core.push_display("preview_display", "<i>Agent context cleared.</i>")
-        self._widget_core.push_display("status", "Idle.")
+        self._widget_core.push_display("status", "Context cleared.")
+        # Main thread and between runs, where the threaded stream gate
+        # would drop it: straight to the wire.
+        self._fan_out_stream("events", to_wire(
+            EventContextCleared(turns_dropped=dropped), run_id="", seq=0,
+            agent=str(getattr(self, "title", "") or "agent"),
+            agent_id=str(getattr(self, "unique_id", "") or ""),
+        ))
+
+    # ── Exec inputs ─────────────────────────────────────────────────
+
+    def on_pulse(self, port_name: str, sender: Any, payload: Any = None) -> None:
+        """``run`` sends a message, ``stop`` stops, ``clear`` clears context.
+
+        A ``run`` pulse may carry the message as its payload: a string is
+        sent as queued, ``{"text", "mode"}`` says how (``queue``, ``steer``
+        or ``interrupt``). It wins over ``user_prompt`` for that run. It
+        rides the pulse rather than a data wire because a changed input
+        stops a running node, and a message typed during a run is not a
+        stop. Idle, any mode starts a run; during one, a queued message
+        waits for it to end and a steer or interrupt joins it. Text that
+        starts with ``@worker`` goes to that running worker instead.
+
+        ``stop`` is the press-twice Stop: after the current action, and
+        a second time (or a ``"force"`` payload) now.
+        """
+        if port_name == "stop":
+            if self._is_computing:
+                if payload == "force":
+                    self._stop.press_force()
+                else:
+                    self._stop.press()
+            return
+        if port_name == "clear":
+            self.clear_context()
+            return
+        text, mode = _message(payload)
+        if text and self._is_computing and self._to_worker(text, mode):
+            return
+        if self._is_computing:
+            if text:
+                self._control.post(text, mode)
+                self._widget_core.push_display("status", {
+                    MODE_QUEUE: "Message queued: sent when this run ends.",
+                    MODE_STEER: "Steering: joins the run at its next step.",
+                }.get(mode, "Interrupting: cutting the current action…"))
+            else:
+                # A bare pulse (an upstream `done`): run again after this.
+                self._run_queued = True
+            return
+        self._next_prompt = text or None
+        self.execute()
+
+    def _to_worker(self, text: str, mode: str) -> bool:
+        """``@name message``: post to that running worker; False if none."""
+        if not text.startswith("@"):
+            return False
+        name, _, rest = text[1:].partition(" ")
+        rest = rest.strip()
+        if not name or not rest:
+            return False
+        # A worker has no next run: a queued message steers it.
+        mode = MODE_STEER if mode == MODE_QUEUE else mode
+        stack, hit = list(self._control.children()), 0
+        while stack:
+            kid = stack.pop()
+            if kid.label == name:
+                kid.post(rest, mode)
+                hit += 1
+            stack.extend(kid.children())
+        if hit:
+            self._widget_core.push_display(
+                "status", f"Sent to worker '{name}' ({mode}).")
+        return bool(hit)
 
     # ── Execution ───────────────────────────────────────────────────
 
+    def _request_stop(self, force: bool) -> None:
+        """Stop the run: after the current action, or (force) now."""
+        if not self._is_computing:
+            return
+        if force:
+            self.cancel_compute()
+            self._widget_core.push_display("status", "Force stopping…")
+            return
+        self._control.request_stop(force=False)
+        self._stop.mark_stopping()
+        self._widget_core.push_display(
+            "status", "Stopping after the current action…")
+
+    def _sync_stop_menu(self) -> None:
+        running = bool(self._is_computing)
+        self._act_stop.setEnabled(running and not self._stop.stopping)
+        self._act_force.setEnabled(running)
+
     def cancel_compute(self) -> None:
-        """Stop, including a run that is blocked on a decision (D38).
+        """Stop now, including a run that is blocked on a decision (D38).
 
         The loop's generator is inside a single ``next()`` while the gate
         waits and is polling nothing, so the stop flag alone would not be
         read until an answer arrived. Stop therefore cancels the seam
-        *directly*; every waiter denies and the run unwinds normally.
+        *directly*; every waiter denies and the run unwinds normally. The
+        engine is stopped directly too: during a tool batch the loop
+        yields nothing, so a stop raised from the next event would land
+        only after the batch.
         """
+        self._control.request_stop(force=True)
+        engine = self._engine
+        if engine is not None:
+            engine.request_stop()
         seam = self._seam
         if seam is not None:
             seam.cancel("the user stopped the run")
@@ -546,18 +711,28 @@ class SilkAgentNode(ThreadedManualNode):
 
     def execute(self) -> None:
         if self._is_computing:
-            self.cancel_compute()
+            # The button is Stop while a run is on, Force stop while that
+            # stop is pending.
+            self._stop.press()
             return
-        self.btn_run.set_label("Cancel Run")
-        self.btn_run.set_icon_name("player-stop")
-        self._widget_core.push_display("preview_display", "<i>Running…</i>")
+        # A new run: the last one's stop is over, and whatever waited for
+        # it (queued messages, steers that came too late) is this run's
+        # prompt, ahead of a message that came with the pulse.
+        self._control.reset()
+        waiting = self._control.take_queued()
+        if waiting:
+            if self._next_prompt:
+                waiting.append({"text": self._next_prompt})
+            self._next_prompt = merge_texts(waiting)
+        self._run_queued = False
+        self._stop.set_running(True)
+        self._widget_core.push_display("status", "Running…")
         super().execute()
 
     def on_evaluate_finished(self) -> None:
         super().on_evaluate_finished()
         self._show_run_button()
         if self._last_run_ok:
-            self._widget_core.apply_port_value("user_prompt", "")
             # Edge-trigger downstream agents / sinks in the network.
             self.pulse("done", payload=True)
 
@@ -566,14 +741,36 @@ class SilkAgentNode(ThreadedManualNode):
         # `skip_results=True` when a result arrives for a cancelled or
         # disabled node, and an override without it raises TypeError on
         # exactly the path that is already going wrong.
+        stopped = self._control.stop_level() > STOP_NONE
         self._show_run_button()
         super()._cleanup_after_worker(skip_results=skip_results)
+        # What arrived during the run, in the order that makes sense:
+        # a new chat first, then the prompt that starts it.
+        if self._clear_pending:
+            self.clear_context()
+        waiting = len(self._control.pending())
+        if stopped:
+            # A stop holds the queue rather than dropping it: the messages
+            # stay listed (removable), and Start sends them.
+            self._run_queued = False
+            self._control.reset()
+            if waiting:
+                self._widget_core.push_display(
+                    "status", f"Stopped — {waiting} message(s) waiting; "
+                              "Start sends them.")
+        elif waiting or self._run_queued:
+            QTimer.singleShot(0, self.execute)
 
     def _show_run_button(self) -> None:
-        self.btn_run.set_label("Run Agent")
-        self.btn_run.set_icon_name("player-play")
+        self._stop.set_running(False)
 
     def cleanup(self) -> None:
+        # Nothing waits on a node that is going away.
+        self._run_queued = False
+        self._clear_pending = False
+        self._control.take_queued()
+        self._stop.reset()
+        self._queue_view.cleanup()
         self.cancel_compute()
         # A node deleted mid-question leaves a row nobody can answer. The
         # registry's weak reference would prune it eventually; saying so
@@ -582,13 +779,9 @@ class SilkAgentNode(ThreadedManualNode):
         if pending.get("decision_id"):
             DECISIONS.unregister(str(pending["decision_id"]))
         try:
-            self.chunk_streamed.disconnect()
-        except (RuntimeError, TypeError):
-            pass  # already disconnected / node partially destroyed
-        try:
             self.status_changed.disconnect()
         except (RuntimeError, TypeError):
-            pass
+            pass  # already disconnected / node partially destroyed
         super().cleanup()
 
     # ── Worker thread ────────────────────────────────────────────────
@@ -632,8 +825,10 @@ class SilkAgentNode(ThreadedManualNode):
             self.compute_error.emit("No valid model connected.")
             return {"response": "Error: no valid model connected."}
 
+        # Taken once: a prompt that came on the pulse is this run's only.
+        pulse_prompt, self._next_prompt = self._next_prompt, None
         try:
-            prompt = text_input(inputs, "user_prompt")
+            prompt = pulse_prompt or text_input(inputs, "user_prompt")
             system_text = text_input(inputs, "system_prompt")
         except ValueError as exc:
             self.compute_error.emit(f"Prompt: {exc}")
@@ -649,8 +844,8 @@ class SilkAgentNode(ThreadedManualNode):
                 prompt = f"{inbox_msg.context_header()}\n{inbox_msg.content}".strip()
 
         if not prompt:
-            self.compute_error.emit("Empty task prompt.")
-            return {"response": "Error: empty task prompt."}
+            self.compute_error.emit("Empty prompt: wire one into user_prompt.")
+            return {"response": "Error: empty prompt."}
 
         # A budget nobody can read is not a budget. Refusing here --
         # before the role is bound or a token is spent -- is the whole
@@ -905,11 +1100,16 @@ class SilkAgentNode(ThreadedManualNode):
             if budget is not None:
                 log.info(f"Run budget: {describe_budget(budget)}.")
             engine.clear_stop()
+            self._engine = engine
+            if self._control.stop_level() > STOP_NONE:
+                # Stopped between the press of Start and here.
+                engine.request_stop()
 
             loop = AgentLoop(
                 engine,
                 toolset,
                 max_rounds=role.max_rounds or DEFAULT_MAX_ROUNDS,
+                control=self._control,
                 # A full context stops being the end of the run (D24). The
                 # compactor is inert until there is pressure to answer --
                 # and stays inert when the backend does not report a
@@ -964,7 +1164,6 @@ class SilkAgentNode(ThreadedManualNode):
                     emit_run_event(event)
 
                 if isinstance(event, EventDelta):
-                    self.chunk_streamed.emit(event.cumulative_text)
                     self.emit_stream("response", event.cumulative_text, throttle_ms=50)
                 elif isinstance(event, EventToolCall):
                     self.status_changed.emit(f"Tool: {event.tool_name}…")
@@ -997,6 +1196,16 @@ class SilkAgentNode(ThreadedManualNode):
                     # `run_error` would label a run that finished on the
                     # fallback with the primary's last words (D89).
                     run_error = None
+                elif isinstance(event, EventSteered):
+                    self.status_changed.emit(
+                        "Interrupted — carrying on with your message…"
+                        if event.interrupted else
+                        "Steered — carrying on with your message…")
+                    tool_turns.append({
+                        "role": "steer",
+                        "text": event.text,
+                        "interrupted": event.interrupted,
+                    })
                 elif isinstance(event, EventReflection):
                     self.status_changed.emit(
                         f"Reflection retry {event.retry_count + 1}/{event.max_retries}…"
@@ -1084,6 +1293,7 @@ class SilkAgentNode(ThreadedManualNode):
             # The seam dies with the run it belongs to: close it before
             # anything else, so a call still blocked on the way out is
             # denied rather than left waiting on a node that has moved on.
+            self._engine = None
             if self._seam is not None:
                 self._seam.close()
                 self._seam = None

@@ -35,6 +35,7 @@ from weave.logger import get_logger
 from .agent_loop import AgentLoop, DEFAULT_MAX_ROUNDS
 from .graph_engine import GraphEngine
 from .role import DEFAULT_ROLE, Role, RoleBinding
+from .run_control import RunControl
 from .stream_events import (
     OUTCOME_COMPLETED,
     EventError,
@@ -161,6 +162,7 @@ def run_subagent(
     usage_limits: Optional[Any] = None,
     on_event: Optional[Callable[[Any], None]] = None,
     should_stop: Optional[Callable[[], bool]] = None,
+    control: Optional[RunControl] = None,
 ) -> SubagentResult:
     """Run one autonomous agent turn to completion; Qt-free.
 
@@ -176,6 +178,8 @@ def run_subagent(
         on_event: Optional sink for the loop's typed events (streaming/UI).
         should_stop: Optional predicate polled each event; True requests a
             graceful stop at the next round boundary.
+        control: Optional RunControl the worker runs under: steer and
+            interrupt it, or stop it soft or hard, like a top-level agent.
 
     Returns:
         A :class:`SubagentResult`. On a hard failure (bad model, toolset held
@@ -223,6 +227,7 @@ def run_subagent(
             engine,
             toolset,
             max_rounds=spec.max_rounds or role.max_rounds or DEFAULT_MAX_ROUNDS,
+            control=control,
         )
 
         params: dict[str, Any] = {"temperature": 0.7}

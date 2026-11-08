@@ -48,6 +48,7 @@ class EventType(Enum):
     TOOL_CALL = "tool.call"
     TOOL_RESULT = "tool.result"
     REFLECTION = "reflection"
+    STEERED = "run.steered"
     MODEL_SWITCH = "model.switch"
     USAGE_LIMIT = "usage_limit"
     ERROR = "error"
@@ -67,6 +68,7 @@ class EventType(Enum):
     # -- emitted by the node ------------------------------------------------
     CHAT_TURN = "chat.turn"
     WORKER = "worker.event"
+    CONTEXT_CLEARED = "context.cleared"
 
 
 #: How a run ended, on ``EventRunResult.outcome``. A consumer must key off
@@ -262,6 +264,19 @@ class EventUsageLimit:
 
 
 @dataclass
+class EventSteered:
+    """A person's message joined the running loop (steer or interrupt).
+
+    The run carries on with it as a user turn; ``interrupted`` says the
+    action in progress was cut to make room for it.
+    """
+    timestamp: datetime = field(default_factory=datetime.now)
+    text: str = ""
+    mode: str = "steer"
+    interrupted: bool = False
+
+
+@dataclass
 class EventReflection:
     """Emitted when a reflection/retry is triggered.
 
@@ -443,6 +458,20 @@ class EventWorker:
     digest: str = ""
 
 
+@dataclass
+class EventContextCleared:
+    """The agent forgot its conversation: a new chat starts here.
+
+    Emitted outside any run, by Clear Context or a pulse on ``clear``, so
+    a chat log on the same wire can start a fresh page. What the agent
+    keeps -- the plan, the knowledge graph, always-grants -- is not
+    conversation and is not cleared.
+    """
+    timestamp: datetime = field(default_factory=datetime.now)
+    #: How many history entries were dropped.
+    turns_dropped: int = 0
+
+
 # â”€â”€ The wire format â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 #
 # Qt streams carry dicts, so a typed event reaches the graph as one. The
@@ -479,6 +508,7 @@ def _register_types() -> None:
         "EventToolCall": EventType.TOOL_CALL,
         "EventToolResult": EventType.TOOL_RESULT,
         "EventReflection": EventType.REFLECTION,
+        "EventSteered": EventType.STEERED,
         "EventModelSwitch": EventType.MODEL_SWITCH,
         "EventUsageLimit": EventType.USAGE_LIMIT,
         "EventError": EventType.ERROR,
@@ -494,6 +524,7 @@ def _register_types() -> None:
         "EventDecisionResponse": EventType.DECISION_RESPONSE,
         "EventChatTurn": EventType.CHAT_TURN,
         "EventWorker": EventType.WORKER,
+        "EventContextCleared": EventType.CONTEXT_CLEARED,
     }
     for name, member in mapping.items():
         EVENT_TYPES[globals()[name]] = member

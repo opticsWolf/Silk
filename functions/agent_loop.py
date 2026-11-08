@@ -50,6 +50,7 @@ from weave.logger import get_logger
 from .model_errors import OVERFLOW, RETRYABLE, classify_model_error
 from .protocols import AgentEngine, ToolRegistry
 from .reflection import is_retryable_tool_error, parse_tool_error
+from .run_control import MODE_INTERRUPT, STOP_NONE, RunControl, merge_texts
 from .stream_events import (
     OUTCOME_COMPLETED,
     OUTCOME_ERROR,
@@ -62,6 +63,7 @@ from .stream_events import (
     EventReflection,
     EventRunResult,
     EventStart,
+    EventSteered,
     EventToolCall,
     EventToolResult,
     EventUsageLimit,
@@ -107,6 +109,10 @@ class AgentLoop:
             pre-request seam fails the run when the context is full. With
             one, that seam shrinks and retries instead (spec D24/D25).
         max_rounds: Model requests allowed per run.
+        control: Optional :class:`~.run_control.RunControl` -- steer and
+            interrupt messages join the run through it, and its stop level
+            ends the run before the next action (soft) or cuts the current
+            one (force).
     """
 
     def __init__(
@@ -117,11 +123,13 @@ class AgentLoop:
         max_rounds: int = DEFAULT_MAX_ROUNDS,
         compactor: Any = None,
         transient_retries: int = DEFAULT_TRANSIENT_RETRIES,
+        control: Optional[RunControl] = None,
     ) -> None:
         self.engine = engine
         self.toolbox = toolbox
         self.output_validator = output_validator
         self.compactor = compactor
+        self.control = control
         self.max_rounds = max_rounds
         self.transient_retries = max(0, int(transient_retries))
         # Run bookkeeping surfaced to the after_run hook (set defensively
@@ -223,14 +231,23 @@ class AgentLoop:
         # the close would land outside it — before_run fired, after_run
         # never did. Found by the I2 fixture, which is what those fixtures
         # are for.
+        control = self.control
         bind_stop = getattr(self.toolbox, "bind_stop", None)
         if bind_stop is not None:
             # For the length of this run, the toolbox can ask whether the
             # user stopped it, so a batch does not start calls nobody is
             # waiting for any more (G8). Unbound in the finally: a ToolBox
             # outlives the run, and a stale flag would skip the next run's
-            # calls.
-            bind_stop(engine.stop_requested)
+            # calls. A soft stop or an interrupt halts the batch too.
+            if control is None:
+                bind_stop(engine.stop_requested)
+            else:
+                bind_stop(lambda: engine.stop_requested()
+                          or control.should_halt_tools())
+        if control is not None:
+            # Cutting the current action is the engine's stop: the stream
+            # breaks at the next token.
+            control.bind_abort(engine.request_stop)
 
         try:
             yield EventStart(
@@ -251,6 +268,8 @@ class AgentLoop:
         finally:
             if bind_stop is not None:
                 bind_stop(None)
+            if control is not None:
+                control.bind_abort(None)
             self._emit(
                 HOOK_AFTER_RUN,
                 final_text=self._final_text,
@@ -569,6 +588,46 @@ class AgentLoop:
         self._overflow_compacted = True
         return True
 
+    def _halted(self) -> bool:
+        """Is the run to end before its next action?
+
+        A soft or force stop says so; so does a bare engine stop. The
+        engine stop an interrupt raised does not: that one cut an action
+        so the run could carry on with the message.
+        """
+        control = self.control
+        if control is not None and control.stop_level() > STOP_NONE:
+            return True
+        if not self.engine.stop_requested():
+            return False
+        return control is None or not control.interrupt_pending()
+
+    def _take_steering(self) -> Iterator[AgentEvent]:
+        """Let waiting steer/interrupt messages into the run, as one turn."""
+        control = self.control
+        if control is None or not control.has_steering():
+            return
+        # Clear the stop first: an interrupt posted after this point raises
+        # it again and is taken at the next step, not lost. Optional on the
+        # protocol: an engine without it never had an interrupt's stop set
+        # through anything but request_stop, and keeps it.
+        clear = getattr(self.engine, "clear_stop", None)
+        if clear is not None:
+            clear()
+        items = control.take_steering()
+        text = merge_texts(items)
+        if not text:
+            return
+        interrupted = any(it["mode"] == MODE_INTERRUPT for it in items)
+        # Through the transport's template-safe user slot: after a tool
+        # result a plain user turn is what every template accepts.
+        self._transport.append_retry_nudge(self.engine, text)
+        yield EventSteered(
+            text=text,
+            mode=MODE_INTERRUPT if interrupted else "steer",
+            interrupted=interrupted,
+        )
+
     def _run_rounds(
         self,
         gen_params: dict[str, Any],
@@ -586,6 +645,19 @@ class AgentLoop:
         outcome = OUTCOME_COMPLETED
 
         for _round in range(self.max_rounds):
+            # 0a. The person's turn. A stop ends the run here, before the
+            #     next action; a steer or interrupt joins the conversation
+            #     so the coming request answers it. A force stop that
+            #     landed during the tool batch used to fall through to a
+            #     request the engine broke off at once, and the empty
+            #     answer read as a completed run. Not before the first
+            #     request: that one is the run, and a stop already standing
+            #     is the stream's to notice.
+            if _round and self._halted():
+                outcome = OUTCOME_STOPPED
+                break
+            yield from self._take_steering()
+
             # 0. Context pressure, before the gate rather than after it
             #    fails: the seam below used to be where a full context
             #    ended the run, and D24 makes it the place where the run
@@ -708,6 +780,20 @@ class AgentLoop:
                 ok=not stats.get("error") and not stats.get("truncated"),
                 finish_reason=stats.get("finish_reason"),
             )
+            control = self.control
+            if (control is not None and control.interrupt_pending()
+                    and control.stop_level() == STOP_NONE):
+                # Interrupted mid-answer: what was said stays said, the
+                # tool calls it was building are dropped (never announced,
+                # never run), and the next round starts with the message.
+                pull = getattr(engine, "pull_tool_calls", None)
+                if pull is not None:
+                    pull()
+                if full_text.strip():
+                    engine.append_message(
+                        "assistant", full_text, finish_reason="interrupted",
+                    )
+                continue
             if stats.get("error"):
                 if (yield from self._recover_or_stop(
                     self._model_failed(stats["error"], _round), _round,
@@ -775,9 +861,13 @@ class AgentLoop:
                 # finished, whether or not a stop arrived while it spoke.
                 # Calling that `stopped` made a delivered answer read as a
                 # cut-short one, and a consumer keying off the outcome (G13)
-                # would hand a complete result back as a failure.
+                # would hand a complete result back as a failure. Unless a
+                # steer is waiting: then the answer is not the last word.
+                if (self.control is not None and self.control.has_steering()
+                        and self.control.stop_level() == STOP_NONE):
+                    continue
                 break
-            if engine.stop_requested():
+            if self._halted():
                 # Work was left: tools the model asked for that will not run.
                 outcome = OUTCOME_STOPPED
                 break

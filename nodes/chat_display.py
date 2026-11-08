@@ -7,7 +7,9 @@ rendering the entire thread beautifully as HTML using MarkdownConverter.
 
 Wire ``Silk Agent.events`` → ``event``. The agent emits one typed stream
 (spec D2/D3); this node keeps the ``chat.turn`` events and ignores the
-rest, so the same wire that feeds a monitor feeds the log.
+rest, so the same wire that feeds a monitor feeds the log. The agent's
+``context.cleared`` (Clear context, or a Prompt node's New chat) starts
+the log over.
 """
 
 import time
@@ -81,6 +83,10 @@ def _format_turn(turn: dict) -> str:
             parts.append(
                 f"**🔧 Tool result** {mark} `{tool}`:\n\n```\n{body}\n```\n\n"
             )
+        elif role == "steer":
+            # A message the user sent into the running turn.
+            how = "⚡ Interrupt" if t.get("interrupted") else "↪ Steer"
+            parts.append(f"**👤 User — {how}**:\n\n{t.get('text', '')}\n\n")
 
     ai_text = turn.get("ai", "")
     if ai_text:
@@ -163,12 +169,20 @@ class ChatDisplayNode(ThreadedNode):
     def _append_turn(self, event: Any) -> bool:
         """Append one ``chat.turn`` event to the log. True if it was new.
 
+        A ``context.cleared`` event empties the log instead (also True:
+        the page changed).
+
         Pure state mutation, no widget writes, so it is safe from either
         the stream hook (main thread) or ``compute`` (worker thread).
         """
         if not isinstance(event, dict):
             return False
         kind = event.get("type")
+        if kind == EventType.CONTEXT_CLEARED.value:
+            # The agent forgot the conversation: a new chat, a new page.
+            self._chat_log_md = ""
+            self._last_turn_id = None
+            return True
         # `None` keeps a hand-wired plain dict working; anything else on the
         # one shared events port is somebody else's event.
         if kind not in (None, EventType.CHAT_TURN.value):

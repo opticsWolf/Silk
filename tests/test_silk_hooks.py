@@ -482,6 +482,8 @@ def test_format_event_covers_every_type():
         EventType.WORKER: {"worker": "researcher", "event_type": "EventToolCall",
                            "digest": "read_file"},
         EventType.CHAT_TURN: {"ai": "hello"},
+        EventType.CONTEXT_CLEARED: {"turns_dropped": 4},
+    EventType.STEERED: {"text": "use the cache", "mode": "steer"},
         EventType.DELTA: {"chars": 3},
         EventType.FINAL_RESULT: {},
     }

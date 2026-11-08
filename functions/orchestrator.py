@@ -70,6 +70,7 @@ from .approval import _SEAM_ATTR
 from .classifier_binding import inherit_run_classifier, restore_run_classifier
 from .decision_seam import RelaySeam
 from .messaging import AgentMessage
+from .run_control import RunControl
 from .subagent import WorkerSpec, run_subagent
 
 if TYPE_CHECKING:
@@ -104,6 +105,9 @@ _MAX_PARALLEL = 8
 #: at call time, like the roster, so a re-run can refresh them.
 _ON_EVENT_ATTR = "_orchestrator_on_event"
 _SHOULD_STOP_ATTR = "_orchestrator_should_stop"
+#: The run's RunControl: each delegation hangs a child off it, so the
+#: node can steer or stop one worker, and a stop reaches them all.
+_CONTROL_ATTR = "_orchestrator_control"
 
 
 def _non_blank(v: str) -> str:
@@ -154,6 +158,7 @@ def set_orchestrator_observers(
     *,
     on_event: Optional[Callable[[str, Any], None]] = None,
     should_stop: Optional[Callable[[], bool]] = None,
+    control: Optional[RunControl] = None,
 ) -> None:
     """Install the run-scoped worker-event sink and stop predicate.
 
@@ -170,9 +175,12 @@ def set_orchestrator_observers(
             own stream tagged with whose it was.
         should_stop: polled per worker event; True asks the worker to stop
             at its next round boundary.
+        control: the orchestrator's RunControl; every delegation runs
+            under a child of it, listed for as long as the worker runs.
     """
     setattr(toolbox, _ON_EVENT_ATTR, on_event)
     setattr(toolbox, _SHOULD_STOP_ATTR, should_stop)
+    setattr(toolbox, _CONTROL_ATTR, control)
 
 
 # ── request / response schemas ───────────────────────────────────────────────
@@ -314,6 +322,16 @@ def _run_one(
 
     on_event = getattr(toolbox, _ON_EVENT_ATTR, None)
     should_stop = getattr(toolbox, _SHOULD_STOP_ATTR, None)
+    # One control per delegation, under the run's: listed while the worker
+    # runs, and the worker's own delegations hang under it in turn.
+    parent_control = getattr(toolbox, _CONTROL_ATTR, None)
+    control = (parent_control.child(worker)
+               if isinstance(parent_control, RunControl) else None)
+    had_control = (hasattr(child_toolset, _CONTROL_ATTR)
+                   if child_toolset is not None else False)
+    prev_control = getattr(child_toolset, _CONTROL_ATTR, None)
+    if child_toolset is not None and control is not None:
+        setattr(child_toolset, _CONTROL_ATTR, control)
     try:
         result = run_subagent(
             spec, request.content,
@@ -321,8 +339,13 @@ def _run_one(
             usage_limits=budget,
             on_event=(lambda ev: on_event(worker, ev)) if on_event else None,
             should_stop=should_stop,
+            control=control,
         )
     finally:
+        if control is not None:
+            control.close()
+            if child_toolset is not None:
+                _restore(child_toolset, _CONTROL_ATTR, had_control, prev_control)
         if child_toolset is not None:
             _restore(child_toolset, _DEPTH_ATTR, had_depth, prev_depth)
             _restore(child_toolset, _CHAIN_ATTR, had_chain, prev_chain)

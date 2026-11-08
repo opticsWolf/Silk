@@ -143,6 +143,17 @@ def test_stop_reaches_the_fan_out_instead_of_running_every_worker():
     assert "Stopped" in r["results"][1]["error"]
 
 
+def test_each_worker_runs_under_a_child_of_the_run_control():
+    from silk.functions.run_control import RunControl
+    root = RunControl("orch")
+    seen = []
+    tb = _orchestrator([_worker("a", ["done"],
+                                lambda: seen.append([k.label for k in root.children()]))])
+    set_orchestrator_observers(tb, control=root)
+    assert _call(tb, "delegate", {"worker": "a", "task": "go"})["ok"]
+    assert seen == [["a"]] and root.children() == []
+
+
 # -- D52.4: one budget, several claimants ---------------------------------
 
 def test_a_shared_budget_cannot_be_overrun_by_concurrent_claims():

@@ -197,12 +197,17 @@ class SilkOrchestratorNode(SilkAgentNode):
             toolset,
             on_event=_on_worker_event,
             should_stop=self.is_compute_cancelled,
+            # Each delegation runs under a child of this run's control:
+            # listed in the node while it runs, steerable as '@worker …',
+            # and stopped with the orchestrator, softly or by force.
+            control=self._control,
         )
 
     def _detach_run_observers(self, toolset: Any) -> None:
         """Drop the run-scoped observers; they close over this run only."""
         if toolset is not None and "delegate" in getattr(toolset, "tools", {}):
-            set_orchestrator_observers(toolset, on_event=None, should_stop=None)
+            set_orchestrator_observers(toolset, on_event=None, should_stop=None,
+                                       control=None)
 
 
 def _event_digest(event: Any) -> str:

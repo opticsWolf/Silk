@@ -46,6 +46,6 @@ nodes = [
     "SilkModelEndpointNode", "SilkModelFallbackNode", "SilkModelNode",
     "SilkOnnxEmbedderNode", "SilkOnnxRerankerNode", "SilkOpenCodeGoNode",
     "SilkOpenCodeZenNode", "SilkOrchestratorNode", "SilkPlanViewerNode",
-    "SilkRoleNode", "SilkTaskHubNode", "SilkTaskNode", "SilkToolBoxNode",
+    "SilkPromptNode", "SilkRoleNode", "SilkTaskHubNode", "SilkTaskNode", "SilkToolBoxNode",
     "SilkToolSetNode", "SilkWorkerNode", "ToolchainNode",
 ]

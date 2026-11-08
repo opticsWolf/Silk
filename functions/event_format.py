@@ -98,6 +98,9 @@ def format_event(event: dict[str, Any]) -> str:
             f"↺ retry {event.get('retry_count', 0) + 1}/"
             f"{event.get('max_retries', '?')} — {event.get('error_type', '')}"
         )
+    elif kind == EventType.STEERED.value:
+        mark = "⚡ interrupted" if event.get("interrupted") else "↪ steered"
+        body = f"{mark}: {str(event.get('text', ''))[:80]}"
     elif kind == EventType.WORKER.value:
         body = (
             f"⇢ {event.get('worker', '?')}: {event.get('event_type', '')} "
@@ -105,6 +108,8 @@ def format_event(event: dict[str, Any]) -> str:
         )
     elif kind == EventType.CHAT_TURN.value:
         body = f"💬 turn ({len(event.get('ai') or '')} chars)"
+    elif kind == EventType.CONTEXT_CLEARED.value:
+        body = f"⌫ context cleared ({event.get('turns_dropped', 0)} entries)"
     else:
         body = kind
 
