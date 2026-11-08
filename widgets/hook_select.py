@@ -57,8 +57,10 @@ class HookSelectWidget(CompositeValueWidget):
             "and config values — behavior always comes from the "
             "installed catalog. Double-click a ⚙ hook to configure it."
         )
-        # Height for the (small) catalog without scroll churn.
-        self._list.setMaximumHeight(20 * max(1, len(HOOK_CATALOG)) + 8)
+        # No height cap: the list takes whatever height its row gets (a
+        # capped list sits centred in a taller widget and still scrolls,
+        # its rows being taller than a guess at them). A few rows at least.
+        self._list.setMinimumHeight(70)
         layout.addWidget(self._list)
 
         for name in sorted(HOOK_CATALOG):

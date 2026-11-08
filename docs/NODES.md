@@ -271,6 +271,20 @@ embroider gained can be typed in.
 
 ## Tool assembly
 
+The ToolBox, ToolSet, MCP Aggregator and Role bodies are groups of rows —
+settings, the tool tree, the focused tool's details — with a splitter
+handle between each group. Drag a handle to give the tree or the details
+the room; the node keeps the height you set, and the pane sizes are saved
+with the graph. A group's tall widget (tree, editor, details, hooks)
+takes the group's spare height, and Hooks and Details carry their label
+above them. The groups run settings, hooks, tools, then details. The
+ToolBox, ToolSet and Role trees each have a Category dropdown to show one
+category at a time.
+
+Keep the node short and drag it wide, and once the groups fit side by
+side at their preferred widths they turn side by side; narrow it again
+or make it tall, and they stack.
+
 ### Silk ToolBox — `nodes/toolbox.py`
 The registry of **all** tools an agent network may use: sandbox roots (hard
 ceiling), toolchain packs, per-tool selection and details.
@@ -415,6 +429,15 @@ sandbox permissions and named presets.
 | out | `toolset` | `silk_toolset` |
 | out | `permissions` | `file_permissions` |
 
+**Allow All Tools** takes every tool the connected ToolBox offers, including
+tools that appear later (a toolchain wired upstream). The tree shows them
+all ticked and locks; your own ticks come back when you untick it. Presets
+save it.
+
+The knowledge graph access level sits behind the gear on the tree's
+knowledge row (double-click or right-click it), as on the ToolBox; the row
+is there while the connected ToolBox offers knowledge tools.
+
 ### Silk MCP Server — `nodes/mcp_server.py`
 Connects to one MCP server and shares the **live session** with every
 downstream agent — one handshake per server, not per agent (D19). The
@@ -495,6 +518,16 @@ Declarative agent configuration: persona instructions plus a
 | out | `role` | `silk_role` |
 | out | `permissions` | `file_permissions` |
 
+**Allow All Tools** grants every tool of the connected toolset, never more:
+the toolset is built with only its own tools, so a role cannot reach past
+it. The tree shows them all ticked and locks. Your own ticks stay underneath and come back when
+you untick it. Max Risk still applies to every tool, Allow All or not.
+
+**Max Risk** is a ceiling, not a selection: tools above it are never
+granted, ticked or not. The tree shows them unticked and greyed, with the
+reason in the tooltip, and it wins over Allow All. Your ticks on them are
+kept and return when the ceiling is raised.
+
 ### Inference Settings — `nodes/inference_settings.py`
 Builds a `gen_params` dict (sampling / generation parameters) from UI
 controls; save and recall configurations as named presets.
@@ -504,6 +537,47 @@ controls; save and recall configurations as named presets.
 | out | `gen_params` | `dict` |
 
 ## Execution
+
+### Silk Prompt — `nodes/prompt.py` *(Silk AI / Agents)*
+The chat box for an agent or orchestrator. Three icon buttons: Send, Stop,
+New chat. Send and Stop are split buttons; their arrows hold the other
+modes.
+
+| Key | Sends as | What happens on a running agent |
+|---|---|---|
+| Enter | queue | waits; the next run's prompt |
+| Ctrl+Enter | steer | joins this run at its next step |
+| Ctrl+Shift+Enter | interrupt | cuts the current action, carries on with it |
+
+Shift+Enter starts a new line; Ctrl+Up / Ctrl+Down step through earlier
+messages (kept with the graph). `@name message` goes to the running worker
+`name` of an Orchestrator. A queued message travels as the plain text, a
+steer or an interrupt as `{"text", "mode"}`.
+
+Stop is press-twice: the first press stops after the current action; for
+a few seconds the button then pulses red, and a second press stops now
+(`stop` payload `"force"`).
+
+| Direction | Port | Type |
+|---|---|---|
+| out | `send` | `exec` → the agent's `run` (payload: the message) |
+| out | `stop` | `exec` → the agent's `stop` |
+| out | `new_chat` | `exec` → the agent's `clear` |
+| out | `prompt` | `string` (the last message sent) |
+
+The message rides the `send` pulse, so `send → run` is the whole wiring.
+It does not go over a data wire because a changed input stops a running
+node; this way a message sent mid-run is queued as the next one. `prompt`
+is there for anything else that wants the text — wiring it into the
+agent's `user_prompt` too works while idle, but then a send during a run
+stops that run.
+
+```
+[Silk Prompt] ─send──────▶ [Silk Agent] .run
+              ─stop──────▶ [Silk Agent] .stop
+              ─new_chat──▶ [Silk Agent] .clear
+[Silk Agent]  ─events────▶ [Chat Log Display] .event
+```
 
 ### Silk Agent — `nodes/agent.py`
 The autonomous tool-calling agent: wires model + toolset + role into the
@@ -520,8 +594,11 @@ for an Orchestrator to delegate to instead, use **Silk Worker** below.
 | in | `user_prompt` | `string` |
 | in | `inbox` | `agent_message` |
 | in | `run` | `exec` |
-| in | `inference_settings` | `dict` |
+| in | `stop` | `exec` |
+| in | `clear` | `exec` |
 | in | `permissions` | `file_permissions` |
+| in | `budget` | `string` |
+| in | `classifier` | `silk_classifier` |
 | out | `response` | `string` |
 | out | `outbox` | `agent_message` |
 | out | `events` | `dict` |
@@ -531,6 +608,39 @@ for an Orchestrator to delegate to instead, use **Silk Worker** below.
 tool calls and results, denials, plan snapshots, chat turns and decisions,
 each carrying `type`, `ts`, `run_id`, `seq` and the agent identity.
 Consumers filter by `type`.
+
+**The node is controls, not a chat window.** One icon row: Run/Stop (one
+toggle) and Clear context, next to the status. The prompt arrives from
+outside — a **Silk Prompt** node, or any text on `user_prompt` — and the
+reply is read downstream (`events` → Chat Log Display, or `response`).
+The exec inputs mirror the buttons:
+
+- `run` starts a run. A pulse may carry the message as its payload (the
+  Prompt node's `send` does); it wins over `user_prompt` for that run.
+  During a run the message is filed by its mode (below) instead of
+  stopping the run; a bare `run` pulse runs again after it.
+- `stop` stops the run, press-twice like the button: the first after the
+  current action, a second (or a `"force"` payload) now.
+
+**What waits on the run** is listed under the icon row, hidden while
+empty. Each message has its mode as an icon — click to re-file it — and a
+remove button. The modes (`functions/run_control.py`):
+
+| Mode | When it reaches the run | What it cuts |
+|---|---|---|
+| queue | when the run ends: the next run's prompt (several are merged) | nothing |
+| steer | at the next step — after the tool batch, or instead of ending on an answer | nothing |
+| interrupt | now | the model stream at the next token; tools not yet started. A tool already running finishes; its result is kept |
+
+The agent's own button is Start → Stop → (pulsing red) Force stop; its
+arrow has both stops. A soft stop finishes the current action, takes no
+next one, and ends the run `stopped`. A stop holds the queue rather than
+dropping it: the messages stay listed and Start sends them, ahead of any
+new one. Steers that missed the run are filed as queued.
+- `clear` forgets the conversation (the pool session and the history),
+  then emits `context.cleared` on `events`, which starts a wired Chat Log
+  over. During a run it waits for the run to end. The plan, the knowledge
+  graph and always-allow grants are not conversation and are kept.
 
 **File access is a port, not a hidden handle** (spec D16-D18). Whatever
 reaches `permissions` — wired straight here, or inherited down the
@@ -656,6 +766,18 @@ workers but stops a worker from sub-delegating, `2` allows one further hop.
 Cycles are refused at any depth. An upstream connection overrides the spin
 box.
 
+Clear context clears the orchestrator's own conversation only: a worker
+runs in a fresh, isolated context on every delegation, so it has none to
+clear.
+
+**Workers are steered and stopped like the orchestrator.** Every
+delegation runs under a child of the orchestrator's run control, so while
+a worker runs it is listed under the icon row (`⇢ name`), with its own
+press-twice Stop and its own waiting messages. Send `@name message` from a
+Prompt node to reach it: a plain send steers it (a worker has no next run
+to queue for), Ctrl+Shift+Enter interrupts it. A stop on the orchestrator
+reaches every worker below it, soft or forced.
+
 ## Observability & human gates
 
 ### Hook Monitor — `nodes/hook_monitor.py` *(Silk AI / Display)*
@@ -729,6 +851,11 @@ thread as markdown/HTML.
 | Direction | Port | Type |
 |---|---|---|
 | in | `event` | `dict` | (the Agent's `events` stream; keeps `chat.turn`) |
+
+A `context.cleared` event (the agent's Clear context, or a Prompt node's
+New chat) empties the log: a new chat starts on a new page. A steer or
+an interrupt that joined a turn shows inside it, as a user line at the
+point the run took it (`run.steered` on `events`).
 
 ### Pool Monitor — `nodes/pool_monitor.py` *(Silk AI / Display)*
 Live snapshot of GGUF pool state (active/idle instances, capacity). Wire any

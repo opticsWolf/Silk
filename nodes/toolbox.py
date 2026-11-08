@@ -33,8 +33,7 @@ from pathlib import Path
 from typing import Any, ClassVar, Dict, List, Optional, Union
 
 from PySide6.QtWidgets import (
-    QComboBox, QDialog, QDialogButtonBox, QFormLayout, QLabel, QSpinBox,
-    QVBoxLayout,
+    QComboBox, QLabel, QSpinBox,
 )
 
 from weave.widgetcore import WidgetCore, PortRole
@@ -49,11 +48,11 @@ from ..functions.tool_box import ToolBox
 from ..functions.toolset_build import prune_to_selection, tool_catalog
 from ..functions.tool_groups import (
     GROUP_ATTACHERS,
-    GROUP_CONFIG_LABELS,
     WRITING_GROUPS,
     categories_of,
     coerce_paths,
     configurable_categories,
+    group_config_title,
     default_selection,
     groups_for,
     static_catalog,
@@ -70,17 +69,18 @@ from ..functions.embeddings import embedder_for
 from ..functions.tools.toolchains import attach_toolchain_tools
 from ..functions.tools.task_tracker import attach_task_tools
 from ..functions.hook_catalog import attach_catalog_hooks, default_hook_config
+from ..widgets.group_config import ConfigDialogs
 from ..widgets.hook_select import HookSelectWidget
 from ..widgets.node_whitelist import NodeWhitelistWidget
-from ..widgets.tool_tree import ToolDetailWidget, ToolTreeWidget
+from ..widgets.split_form import SplitForm, SplitFormState
+from ..widgets.tool_tree import (
+    ALL_CATEGORIES, CategoryCombo, ToolDetailWidget, ToolTreeWidget,
+)
 
 log = get_logger("SilkToolBox")
 
-_ALL_CATEGORIES = "All categories"
-
-
 @register_node
-class SilkToolBoxNode(ActiveNode):
+class SilkToolBoxNode(SplitFormState, ActiveNode):
     """Builds a ToolBox with sandboxed tool groups for downstream agents."""
     # Weave declares `_widget_core` as `WidgetCoreLike` -- the subset the
     # *dataflow engine* relies on. A node uses the widget-facing whole
@@ -98,9 +98,10 @@ class SilkToolBoxNode(ActiveNode):
     )
     node_tags: ClassVar[Optional[List[str]]] = ["silk", "agent", "tools", "sandbox", "llm"]
     node_icon: ClassVar[Optional[str]] = "grid-dots"
-    vertical_size_policy: ClassVar[VerticalSizePolicy] = VerticalSizePolicy.FIT
+    # Keeps the height the user drags it to: the groups share it.
+    vertical_size_policy: ClassVar[VerticalSizePolicy] = VerticalSizePolicy.GROW_ONLY
     node_state_api = 5   # owns a hand-written state dict
-    node_version = 5     # bump on any state-shape change (G20)
+    node_version = 6     # bump on any state-shape change (G20); 6: splitter sizes
 
     def __init__(self, title: str = "Silk ToolBox", **kwargs: Any) -> None:
         super().__init__(title=title, **kwargs)
@@ -134,11 +135,12 @@ class SilkToolBoxNode(ActiveNode):
         self.add_output("root_paths", datatype="dirpath_list")
 
         # ── Layout & WidgetCore ──
-        form = QFormLayout()
-        form.setContentsMargins(5, 5, 5, 5)
-        form.setSpacing(4)
-        self._widget_core = WidgetCore(layout=form)
+        # Three groups, resizable against each other: the box's settings,
+        # the tool tree, and the focused tool's detail with the status.
+        self._split = SplitForm(3, stretch=(0, 2, 1))
+        self._widget_core = WidgetCore(layout=self._split.layout)
         self._widget_core.set_node(self)
+        form = self._split.forms[0]
 
         # ── Widgets ──
         # No root picker: the sandbox roots are the hard ceiling of the
@@ -184,7 +186,7 @@ class SilkToolBoxNode(ActiveNode):
             datatype="string", default=DEFAULT_OKF_LEVEL, add_to_layout=False,
         )
         self._knowledge_level.setCurrentText(DEFAULT_OKF_LEVEL)
-        self._config_dialogs: Dict[str, QDialog] = {}
+        self._config_dialogs = ConfigDialogs()
 
         # Infrastructure hooks: part of the recipe, so every derived
         # ToolSet re-creates them — always on, outside any role layer.
@@ -194,7 +196,8 @@ class SilkToolBoxNode(ActiveNode):
         # is what people wish they had turned on after a run, and a hook
         # that was never ticked leaves nothing to go back to.
         self._hook_select = HookSelectWidget()
-        form.addRow("Hooks:", self._hook_select)
+        self._split.fill(self._hook_select)
+        self._split.add_above(form, "Hooks:", self._hook_select)
         self._widget_core.register_widget(
             "hooks_config", self._hook_select, role=PortRole.INTERNAL,
             datatype="dict", default=default_hook_config(),
@@ -203,14 +206,13 @@ class SilkToolBoxNode(ActiveNode):
         self._hook_select.set_value(default_hook_config())
 
         # ── Overview: category quick-select + tool tree + detail ──
-        self._combo_category = QComboBox()
-        self._combo_category.addItem(_ALL_CATEGORIES)
-        self._combo_category.setToolTip("Filter the overview to one tool category.")
+        form = self._split.forms[1]
+        self._combo_category = CategoryCombo()
         form.addRow("Category:", self._combo_category)
         # Register as INTERNAL so the selected category filter survives saves
         self._widget_core.register_widget(
             "category_filter", self._combo_category, role=PortRole.INTERNAL,
-            datatype="string", default=_ALL_CATEGORIES, add_to_layout=False,
+            datatype="string", default=ALL_CATEGORIES, add_to_layout=False,
         )
 
         # The only tool selector there is. There used to be a row of
@@ -229,6 +231,7 @@ class SilkToolBoxNode(ActiveNode):
         self._tool_tree.set_catalog(catalog)
         self._tool_tree.set_configurable(configurable_categories())
         self._tool_tree.config_requested.connect(self._open_group_config)
+        self._split.fill(self._tool_tree)
         form.addRow(self._tool_tree)
         self._widget_core.register_widget(
             "enabled_tools", self._tool_tree, role=PortRole.INTERNAL,
@@ -242,15 +245,17 @@ class SilkToolBoxNode(ActiveNode):
         # have just been offered, so they start here.
         self._seen_tools: set[str] = {str(e["name"]) for e in catalog}
 
+        form = self._split.forms[2]
         self._detail = ToolDetailWidget()
-        form.addRow("Details:", self._detail)
+        self._split.fill(self._detail)
+        self._split.add_above(form, "Details:", self._detail)
         self._widget_core.register_widget(
             "tool_detail", self._detail, role=PortRole.DISPLAY,
             datatype="str", add_to_layout=False,
         )
 
         # UI-local wiring (no port involvement): filter + detail preview.
-        self._combo_category.currentTextChanged.connect(self._on_category_changed)
+        self._combo_category.bind(self._tool_tree)
         self._tool_tree.tool_focused.connect(self._detail.show_tool)
 
         self._label_status = QLabel("No toolbox built yet.")
@@ -344,9 +349,6 @@ class SilkToolBoxNode(ActiveNode):
 
     # ── UI helpers (main thread only) ─────────────────────────────────
 
-    def _on_category_changed(self, text: str) -> None:
-        self._tool_tree.set_category_filter("" if text == _ALL_CATEGORIES else text)
-
     def _open_group_config(self, category: str) -> None:
         """Open the settings behind a category row's gear.
 
@@ -358,32 +360,13 @@ class SilkToolBoxNode(ActiveNode):
         widget = self._config_widget(category)
         if widget is None:
             return
-        dialog = self._config_dialogs.get(category)
-        if dialog is None:
-            dialog = QDialog()
-            dialog.setWindowTitle(self._config_title(category))
-            layout = QVBoxLayout(dialog)
-            layout.setContentsMargins(12, 12, 12, 12)
-            layout.setSpacing(8)
-            intro = getattr(widget, "intro", "")
-            if intro:
-                label = QLabel(intro)
-                label.setWordWrap(True)
-                layout.addWidget(label)
-            layout.addWidget(widget, 1)
-            buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
-            buttons.rejected.connect(dialog.reject)
-            buttons.accepted.connect(dialog.accept)
-            layout.addWidget(buttons)
-            if widget is self._node_whitelist:
-                dialog.setMinimumSize(380, 420)
-                dialog.resize(520, 640)
-            else:
-                dialog.setMinimumWidth(380)
-            self._config_dialogs[category] = dialog
-        dialog.show()
-        dialog.raise_()
-        dialog.activateWindow()
+        if widget is self._node_whitelist:
+            self._config_dialogs.open(
+                category, widget, group_config_title(category),
+                min_size=(380, 420), size=(520, 640))
+        else:
+            self._config_dialogs.open(
+                category, widget, group_config_title(category))
 
     def _config_widget(self, category: str) -> Optional[Any]:
         """The widget that configures *category*, if there is one."""
@@ -392,13 +375,6 @@ class SilkToolBoxNode(ActiveNode):
         if category in categories_of("knowledge"):
             return self._knowledge_level
         return None
-
-    @staticmethod
-    def _config_title(category: str) -> str:
-        for group, label in GROUP_CONFIG_LABELS.items():
-            if category in categories_of(group):
-                return label.rstrip("…").strip()
-        return category
 
     def _adopt_new_tools(self, catalog: List[Dict[str, Any]]) -> None:
         """Tick every tool the tree has not offered before.
@@ -440,16 +416,6 @@ class SilkToolBoxNode(ActiveNode):
     def _refresh_overview(self, catalog: List[Dict[str, Any]]) -> None:
         self._adopt_new_tools(catalog)
         self._tool_tree.set_catalog(catalog)
-        current = self._combo_category.currentText()
-        self._combo_category.blockSignals(True)
-        self._combo_category.clear()
-        self._combo_category.addItem(_ALL_CATEGORIES)
-        for category in self._tool_tree.categories():
-            self._combo_category.addItem(category)
-        index = self._combo_category.findText(current)
-        self._combo_category.setCurrentIndex(index if index >= 0 else 0)
-        self._combo_category.blockSignals(False)
-        self._on_category_changed(self._combo_category.currentText())
 
     # ── Worker thread ─────────────────────────────────────────────────
 

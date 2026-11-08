@@ -14,7 +14,7 @@ pydantic-validated on load) and recalled from the dropdown.
 
 from typing import Any, ClassVar, Dict, List, Optional
 
-from PySide6.QtWidgets import QCheckBox, QComboBox, QFormLayout, QLineEdit, QSpinBox
+from PySide6.QtWidgets import QCheckBox, QComboBox, QLineEdit, QSpinBox
 
 from weave.widgetcore import WidgetCore, PortRole
 from weave.widgetcore.binding_policy import debounced
@@ -38,13 +38,14 @@ from ..functions.role import Role, ToolSelector
 from ..functions.toolset_build import tool_catalog, with_port_tools
 from ..widgets.hook_select import HookSelectWidget
 from ..widgets.preset_bar import PresetBarWidget
-from ..widgets.tool_tree import ToolTreeWidget
+from ..widgets.split_form import SplitForm, SplitFormState
+from ..widgets.tool_tree import ALL_CATEGORIES, CategoryCombo, ToolTreeWidget
 
 log = get_logger("SilkRole")
 
 
 @register_node
-class SilkRoleNode(ActiveNode):
+class SilkRoleNode(SplitFormState, ActiveNode):
     """Declarative agent role: persona + hard tool downselection of a toolset."""
     # Weave declares `_widget_core` as `WidgetCoreLike` -- the subset the
     # *dataflow engine* relies on. A node uses the widget-facing whole
@@ -62,12 +63,15 @@ class SilkRoleNode(ActiveNode):
     )
     node_tags: ClassVar[Optional[List[str]]] = ["silk", "agent", "role", "persona", "llm"]
     node_icon: ClassVar[Optional[str]] = "text-recognition"
-    vertical_size_policy: ClassVar[VerticalSizePolicy] = VerticalSizePolicy.FIT
-    node_state_api = 2   # owns a hand-written state dict
+    # Keeps the height the user drags it to: the groups share it.
+    vertical_size_policy: ClassVar[VerticalSizePolicy] = VerticalSizePolicy.GROW_ONLY
+    node_state_api = 3   # owns a hand-written state dict
     # 1 = the shape this spec settled on. 2 registers the preset bar
     # (`preset` binding) so the mirror panel builds a working twin.
     # Additive: older states have no entry and restore unselected.
-    node_version = 1     # bump on any state-shape change (G20)
+    # 3 adds the category filter (`category_filter`), additive: absent,
+    # every category shows.
+    node_version = 3     # bump on any state-shape change (G20); 3: category filter
 
     def __init__(self, title: str = "Silk Role", **kwargs: Any) -> None:
         super().__init__(title=title, **kwargs)
@@ -84,11 +88,12 @@ class SilkRoleNode(ActiveNode):
         self.add_output("permissions", datatype="file_permissions")
 
         # ── Layout & WidgetCore ──
-        form = QFormLayout()
-        form.setContentsMargins(5, 5, 5, 5)
-        form.setSpacing(4)
-        self._widget_core = WidgetCore(layout=form)
+        # Three groups, resizable against each other: who the role is,
+        # the hooks its runs get, and the tools it gets.
+        self._split = SplitForm(3, stretch=(1, 1, 2))
+        self._widget_core = WidgetCore(layout=self._split.layout)
         self._widget_core.set_node(self)
+        form = self._split.forms[0]
 
         # ── Presets ──
         self._preset_store: PresetStore[RolePreset] = PresetStore(
@@ -119,11 +124,45 @@ class SilkRoleNode(ActiveNode):
         self._edit_instructions._text_edit.setPlaceholderText(
             "Persona / instructions injected as a [ROLE: …] system prompt block…"
         )
-        self._edit_instructions._text_edit.setMaximumHeight(100)
+        # Small at rest; the group's spare height is the editor's.
+        self._edit_instructions._text_edit.setMinimumHeight(60)
+        self._split.fill(self._edit_instructions)
         form.addRow("Instructions:", self._edit_instructions)
         self._widget_core.register_widget(
             "instructions", self._edit_instructions, role=PortRole.BIDIRECTIONAL,
             datatype="string", default="", add_to_layout=False,
+        )
+
+        self.spin_max_rounds = QSpinBox()
+        self.spin_max_rounds.setRange(1, 64)
+        self.spin_max_rounds.setValue(16)
+        form.addRow("Max Rounds:", self.spin_max_rounds)
+        self._widget_core.register_widget(
+            "max_rounds", self.spin_max_rounds, role=PortRole.INTERNAL,
+            datatype="int", default=16, add_to_layout=False,
+        )
+
+        form = self._split.forms[1]
+        # Behavioral hooks: installed by the RoleBinding on activation,
+        # removed on deactivation — scoped to this role's runs only.
+        # Value shape: {"names": [...], "configs": {name: {...}}}.
+        self._hook_select = HookSelectWidget()
+        # Spill, memory and the run log are the box's; the two gates and
+        # compaction layer on the box's for this role's runs.
+        self._hook_select.set_role_layer(TOOLBOX_ONLY_HOOKS, ROLE_OVERLAY_HOOKS)
+        self._split.fill(self._hook_select)
+        self._split.add_above(form, "Hooks:", self._hook_select)
+        self._widget_core.register_widget(
+            "hooks_config", self._hook_select, role=PortRole.INTERNAL,
+            datatype="dict", default={}, add_to_layout=False,
+        )
+
+        form = self._split.forms[2]
+        self._combo_category = CategoryCombo()
+        form.addRow("Category:", self._combo_category)
+        self._widget_core.register_widget(
+            "category_filter", self._combo_category, role=PortRole.INTERNAL,
+            datatype="string", default=ALL_CATEGORIES, add_to_layout=False,
         )
 
         self.chk_allow_all = QCheckBox()
@@ -134,14 +173,6 @@ class SilkRoleNode(ActiveNode):
         self._widget_core.register_widget(
             "allow_all", self.chk_allow_all, role=PortRole.INTERNAL,
             datatype="bool", default=False, add_to_layout=False,
-        )
-
-        # Tool downselection tree, populated from the connected toolset.
-        self._tool_tree = ToolTreeWidget(checkable=True)
-        form.addRow(self._tool_tree)
-        self._widget_core.register_widget(
-            "checked_tools", self._tool_tree, role=PortRole.INTERNAL,
-            datatype="list", default=[], add_to_layout=False,
         )
 
         self._combo_risk = QComboBox()
@@ -155,39 +186,41 @@ class SilkRoleNode(ActiveNode):
             datatype="str", default="", add_to_layout=False,
         )
 
-        self.spin_max_rounds = QSpinBox()
-        self.spin_max_rounds.setRange(1, 64)
-        self.spin_max_rounds.setValue(16)
-        form.addRow("Max Rounds:", self.spin_max_rounds)
+        # Tool downselection tree, populated from the connected toolset.
+        self._tool_tree = ToolTreeWidget(checkable=True)
+        self._split.fill(self._tool_tree)
+        form.addRow(self._tool_tree)
         self._widget_core.register_widget(
-            "max_rounds", self.spin_max_rounds, role=PortRole.INTERNAL,
-            datatype="int", default=16, add_to_layout=False,
+            "checked_tools", self._tool_tree, role=PortRole.INTERNAL,
+            datatype="list", default=[], add_to_layout=False,
         )
+        self._combo_category.bind(self._tool_tree)
 
-        # Behavioral hooks: installed by the RoleBinding on activation,
-        # removed on deactivation — scoped to this role's runs only.
-        # Value shape: {"names": [...], "configs": {name: {...}}}.
-        self._hook_select = HookSelectWidget()
-        # Spill, memory and the run log are the box's; the two gates and
-        # compaction layer on the box's for this role's runs.
-        self._hook_select.set_role_layer(TOOLBOX_ONLY_HOOKS, ROLE_OVERLAY_HOOKS)
-        form.addRow("Hooks:", self._hook_select)
-        self._widget_core.register_widget(
-            "hooks_config", self._hook_select, role=PortRole.INTERNAL,
-            datatype="dict", default={}, add_to_layout=False,
-        )
-
-        # ── Visibility: the tree and risk ceiling are moot with Allow All
-        #    on; show them only while it is off. ──
-        self._widget_core.bind_visibility(
-            trigger_port="allow_all",
-            mapping={False: ["checked_tools", "max_risk"]},
-        )
+        # ── The tree shows what the role grants: Allow All ticks and locks
+        #    every tool; Max Risk unticks and locks the tools above it (it
+        #    refuses them whatever is ticked, Allow All too -- see
+        #    ToolSelector.permits). Nothing hides, so the groups keep their
+        #    layout, and the user's own ticks stay underneath. ──
+        #    Programmatic writes (presets, restore) block the widgets'
+        #    signals and are announced on port_value_written instead.
+        self.chk_allow_all.toggled.connect(self._sync_tree_locks)
+        self._combo_risk.currentIndexChanged.connect(self._sync_tree_locks)
+        self._widget_core.port_value_written.connect(self._on_port_written)
 
         # ── Mount ──
         self.set_content_widget(self._widget_core)
         if hasattr(self._widget_core, "patch_proxy"):
             self._widget_core.patch_proxy()
+
+    # ── Tree locks (main thread) ──────────────────────────────────────
+
+    def _sync_tree_locks(self, *_args: Any) -> None:
+        self._tool_tree.set_all_granted(self.chk_allow_all.isChecked())
+        self._tool_tree.set_risk_ceiling(self._combo_risk.currentData() or None)
+
+    def _on_port_written(self, port_name: str, _value: Any) -> None:
+        if port_name in ("allow_all", "max_risk"):
+            self._sync_tree_locks()
 
     # ── Presets (main thread) ─────────────────────────────────────────
 
@@ -286,13 +319,15 @@ class SilkRoleNode(ActiveNode):
     def migrate_state(cls, state: Dict[str, Any],
                       from_version: int) -> Dict[str, Any]:
         """api 1 → 2: the preset binding is new; older states restore
-        with the placeholder selected."""
+        with the placeholder selected. 2 → 3: the category filter is
+        new; older states show every category."""
         return state
 
     def restore_state(self, state: Dict[str, Any]) -> None:
         # 1. Restore values silently (prevents eval storms & false undo history)
         with self._widget_core.suppress_signals():
             super().restore_state(state)
+        self._sync_tree_locks()
 
     def on_evaluate_finished(self) -> None:
         super().on_evaluate_finished()

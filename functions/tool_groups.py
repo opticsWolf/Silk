@@ -189,13 +189,30 @@ def categories_of(group: str) -> frozenset[str]:
                      for e in _probe().get(group, ()))
 
 
-def configurable_categories() -> Dict[str, str]:
-    """``{category: label}`` for the rows that open a config dialog."""
+def configurable_categories(
+    groups: Optional[Iterable[str]] = None,
+) -> Dict[str, str]:
+    """``{category: label}`` for the rows that open a config dialog.
+
+    *groups* narrows it to those groups (a ToolSet configures only the
+    knowledge level; the whitelist is the ToolBox's alone).
+    """
+    wanted = None if groups is None else set(groups)
     out: Dict[str, str] = {}
     for group, label in GROUP_CONFIG_LABELS.items():
+        if wanted is not None and group not in wanted:
+            continue
         for category in categories_of(group):
             out[category] = label
     return out
+
+
+def group_config_title(category: str) -> str:
+    """The title of the dialog behind *category*'s gear."""
+    for group, label in GROUP_CONFIG_LABELS.items():
+        if category in categories_of(group):
+            return label.rstrip("…").strip()
+    return category
 
 
 def coerce_paths(value: Any) -> List[str]:

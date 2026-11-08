@@ -19,7 +19,7 @@ business, and the role gate is what actually refuses a call.
 
 from typing import Any, ClassVar, Dict, List, Optional
 
-from PySide6.QtWidgets import QFormLayout, QLabel
+from PySide6.QtWidgets import QLabel
 
 from weave.widgetcore import WidgetCore, PortRole
 from weave.node.base import ActiveNode
@@ -29,13 +29,14 @@ from weave.logger import get_logger
 
 from .silk_ports import MCP_SERVERS_TYPE  # noqa: F401
 from ..functions.mcp_session import MCPBundle
+from ..widgets.split_form import SplitForm, SplitFormState
 from ..widgets.tool_tree import ToolDetailWidget, ToolTreeWidget
 
 log = get_logger("SilkMCPAggregator")
 
 
 @register_node
-class SilkMCPAggregatorNode(ActiveNode):
+class SilkMCPAggregatorNode(SplitFormState, ActiveNode):
     """Checkbox tree over the MCP servers on one wire."""
     # Weave declares `_widget_core` as `WidgetCoreLike` -- the subset the
     # *dataflow engine* relies on. A node uses the widget-facing whole
@@ -55,9 +56,10 @@ class SilkMCPAggregatorNode(ActiveNode):
         "silk", "agent", "tools", "mcp", "llm",
     ]
     node_icon: ClassVar[Optional[str]] = "arrows-join"
-    vertical_size_policy: ClassVar[VerticalSizePolicy] = VerticalSizePolicy.FIT
+    # Keeps the height the user drags it to: the groups share it.
+    vertical_size_policy: ClassVar[VerticalSizePolicy] = VerticalSizePolicy.GROW_ONLY
     node_state_api = 1
-    node_version = 1     # bump on any state-shape change (G20)
+    node_version = 2     # bump on any state-shape change (G20); 2: splitter sizes
 
     def __init__(self, title: str = "Silk MCP Aggregator", **kwargs: Any) -> None:
         super().__init__(title=title, **kwargs)
@@ -65,21 +67,25 @@ class SilkMCPAggregatorNode(ActiveNode):
         self.add_input("mcp_in", datatype="mcp_servers")
         self.add_output("mcp", datatype="mcp_servers")
 
-        form = QFormLayout()
-        form.setContentsMargins(5, 5, 5, 5)
-        form.setSpacing(4)
-        self._widget_core = WidgetCore(layout=form)
+        # Two groups, resizable against each other: the tree, and the
+        # focused tool's detail with the status.
+        self._split = SplitForm(2, stretch=(2, 1))
+        self._widget_core = WidgetCore(layout=self._split.layout)
         self._widget_core.set_node(self)
+        form = self._split.forms[0]
 
         self._tool_tree = ToolTreeWidget(checkable=True)
+        self._split.fill(self._tool_tree)
         form.addRow(self._tool_tree)
         self._widget_core.register_widget(
             "checked_tools", self._tool_tree, role=PortRole.INTERNAL,
             datatype="list", default=[], add_to_layout=False,
         )
 
+        form = self._split.forms[1]
         self._detail = ToolDetailWidget()
-        form.addRow("Details:", self._detail)
+        self._split.fill(self._detail)
+        self._split.add_above(form, "Details:", self._detail)
         self._widget_core.register_widget(
             "tool_detail", self._detail, role=PortRole.DISPLAY,
             datatype="str", add_to_layout=False,

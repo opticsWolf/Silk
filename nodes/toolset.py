@@ -16,7 +16,7 @@ presets (JSON, pydantic-validated on load).
 
 from typing import Any, ClassVar, Dict, List, Optional
 
-from PySide6.QtWidgets import QComboBox, QFormLayout, QLabel
+from PySide6.QtWidgets import QCheckBox, QComboBox, QLabel
 
 from weave.widgetcore import WidgetCore, PortRole
 from weave.node.base import ActiveNode
@@ -29,14 +29,21 @@ from ..functions.file_grants import FileGrant, FileGrants
 from ..functions.presets import PresetStore, ToolSetPreset
 from ..functions.tools.okf_tools import OKF_LEVELS, OKF_TOOLS, narrow_okf_level
 from ..functions.toolset_build import build_toolset, split_by_ceiling, tool_catalog
+from ..functions.tool_groups import (
+    categories_of, configurable_categories, group_config_title,
+)
+from ..widgets.group_config import ConfigDialogs
 from ..widgets.preset_bar import PresetBarWidget
-from ..widgets.tool_tree import ToolDetailWidget, ToolTreeWidget
+from ..widgets.split_form import SplitForm, SplitFormState
+from ..widgets.tool_tree import (
+    ALL_CATEGORIES, CategoryCombo, ToolDetailWidget, ToolTreeWidget,
+)
 
 log = get_logger("SilkToolSet")
 
 
 @register_node
-class SilkToolSetNode(ActiveNode):
+class SilkToolSetNode(SplitFormState, ActiveNode):
     """Checkbox-tree downselection of a ToolBox into an agent-facing ToolSet."""
     # Weave declares `_widget_core` as `WidgetCoreLike` -- the subset the
     # *dataflow engine* relies on. A node uses the widget-facing whole
@@ -54,14 +61,17 @@ class SilkToolSetNode(ActiveNode):
     )
     node_tags: ClassVar[Optional[List[str]]] = ["silk", "agent", "tools", "toolset", "llm"]
     node_icon: ClassVar[Optional[str]] = "slice"
-    vertical_size_policy: ClassVar[VerticalSizePolicy] = VerticalSizePolicy.FIT
-    node_state_api = 3   # owns a hand-written state dict
+    # Keeps the height the user drags it to: the groups share it.
+    vertical_size_policy: ClassVar[VerticalSizePolicy] = VerticalSizePolicy.GROW_ONLY
+    node_state_api = 4   # owns a hand-written state dict
     # 1 = the shape this spec settled on. 2 registers the preset bar
     # (`preset` binding) so the mirror panel builds a working twin.
     # Additive: older states have no entry and restore unselected.
     # 3 adds the knowledge-graph level (`knowledge_level`), also additive:
     # absent, the toolset keeps the ToolBox's level.
-    node_version = 2     # bump on any state-shape change (G20)
+    # 4 adds Allow All (`allow_all`) and the category filter
+    # (`category_filter`), additive: absent, off and all categories.
+    node_version = 4     # bump on any state-shape change (G20); 4: allow all, category
 
     #: The level combo's first entry: no narrowing.
     _LEVEL_AS_TOOLBOX = "as ToolBox"
@@ -81,11 +91,12 @@ class SilkToolSetNode(ActiveNode):
         self.add_output("permissions", datatype="file_permissions")
 
         # ── Layout & WidgetCore ──
-        form = QFormLayout()
-        form.setContentsMargins(5, 5, 5, 5)
-        form.setSpacing(4)
-        self._widget_core = WidgetCore(layout=form)
+        # Two groups, resizable against each other: the selection (preset
+        # and the tool tree), and the focused tool's detail.
+        self._split = SplitForm(2, stretch=(2, 1))
+        self._widget_core = WidgetCore(layout=self._split.layout)
         self._widget_core.set_node(self)
+        form = self._split.forms[0]
 
         # ── Presets ──
         self._preset_store: PresetStore[ToolSetPreset] = PresetStore(
@@ -102,16 +113,66 @@ class SilkToolSetNode(ActiveNode):
             datatype="str", default="", add_to_layout=False,
         )
 
-        # ── Tool selection tree ──
+        # ── Tool selection: category filter, Allow All, tree ──
         self._tool_tree = ToolTreeWidget(checkable=True)
+
+        # What this toolset's agents may do to the knowledge graph. Only
+        # ever lower than the ToolBox's level (the ToolBox is the grant);
+        # picking a higher one keeps the ToolBox's. Behind the gear on the
+        # knowledge row, as on the ToolBox: it is the grant those tools
+        # run under, so it sits with them. Registered, so it saves.
+        self._knowledge_level = QComboBox()
+        self._knowledge_level.addItems([self._LEVEL_AS_TOOLBOX, *OKF_LEVELS])
+        self._knowledge_level.setToolTip(
+            "read: search, read, traverse. write: also okf_ingest. curate: "
+            "also update, supersede and delete.")
+        self._knowledge_level.intro = (  # type: ignore[attr-defined]
+            "Lower the knowledge graph's access for this toolset's agents. "
+            "Never above the ToolBox's level: picking a higher one keeps "
+            "the ToolBox's.")
+        self._widget_core.register_widget(
+            "knowledge_level", self._knowledge_level, role=PortRole.INTERNAL,
+            datatype="string", default=self._LEVEL_AS_TOOLBOX,
+            add_to_layout=False,
+        )
+        self._config_dialogs = ConfigDialogs()
+        self._tool_tree.set_configurable(configurable_categories(("knowledge",)))
+        self._tool_tree.config_requested.connect(self._open_group_config)
+        self._combo_category = CategoryCombo(self._tool_tree)
+        form.addRow("Category:", self._combo_category)
+        self._widget_core.register_widget(
+            "category_filter", self._combo_category, role=PortRole.INTERNAL,
+            datatype="string", default=ALL_CATEGORIES, add_to_layout=False,
+        )
+
+        # Every tool the ToolBox offers, now and as it changes. The tree
+        # shows them all ticked and locks; the user's own ticks stay
+        # underneath for when it is lifted.
+        self.chk_allow_all = QCheckBox()
+        self.chk_allow_all.setToolTip(
+            "Take every tool the connected ToolBox offers (skip "
+            "downselection).")
+        form.addRow("Allow All Tools:", self.chk_allow_all)
+        self._widget_core.register_widget(
+            "allow_all", self.chk_allow_all, role=PortRole.INTERNAL,
+            datatype="bool", default=False, add_to_layout=False,
+        )
+        # Programmatic writes (presets, restore) block the box's signals
+        # and are announced on port_value_written instead.
+        self.chk_allow_all.toggled.connect(self._tool_tree.set_all_granted)
+        self._widget_core.port_value_written.connect(self._on_port_written)
+
+        self._split.fill(self._tool_tree)
         form.addRow(self._tool_tree)
         self._widget_core.register_widget(
             "checked_tools", self._tool_tree, role=PortRole.INTERNAL,
             datatype="list", default=[], add_to_layout=False,
         )
 
+        form = self._split.forms[1]
         self._detail = ToolDetailWidget()
-        form.addRow("Details:", self._detail)
+        self._split.fill(self._detail)
+        self._split.add_above(form, "Details:", self._detail)
         # DISPLAY binding (no pushes): canvas-resolvable, menu suppressed
         # via the registered builder returning None.
         self._widget_core.register_widget(
@@ -120,22 +181,6 @@ class SilkToolSetNode(ActiveNode):
         )
         # UI-local wiring: focused tree row drives the detail preview.
         self._tool_tree.tool_focused.connect(self._detail.show_tool)
-
-        # What this toolset's agents may do to the knowledge graph. Only
-        # ever lower than the ToolBox's level (the ToolBox is the grant);
-        # picking a higher one keeps the ToolBox's.
-        self._knowledge_level = QComboBox()
-        self._knowledge_level.addItems([self._LEVEL_AS_TOOLBOX, *OKF_LEVELS])
-        self._knowledge_level.setToolTip(
-            "Lower the knowledge graph's access for this toolset. read: "
-            "search, read, traverse. write: also okf_ingest. curate: also "
-            "update, supersede and delete. Never above the ToolBox's level.")
-        form.addRow("Knowledge:", self._knowledge_level)
-        self._widget_core.register_widget(
-            "knowledge_level", self._knowledge_level, role=PortRole.INTERNAL,
-            datatype="string", default=self._LEVEL_AS_TOOLBOX,
-            add_to_layout=False,
-        )
 
         self._label_status = QLabel("No toolbox connected.")
         self._label_status.setWordWrap(True)
@@ -150,15 +195,29 @@ class SilkToolSetNode(ActiveNode):
         if hasattr(self._widget_core, "patch_proxy"):
             self._widget_core.patch_proxy()
 
+    # ── UI helpers (main thread only) ─────────────────────────────────
+
+    def _on_port_written(self, port_name: str, _value: Any) -> None:
+        if port_name == "allow_all":
+            self._tool_tree.set_all_granted(self.chk_allow_all.isChecked())
+
+    def _open_group_config(self, category: str) -> None:
+        """The knowledge row's gear: this toolset's access level."""
+        if category in categories_of("knowledge"):
+            self._config_dialogs.open(
+                category, self._knowledge_level, group_config_title(category))
+
     # ── Presets (main thread) ─────────────────────────────────────────
 
     def _collect_preset(self) -> dict:
         return {
             "checked_tools": list(self._widget_core.get_port_value("checked_tools") or []),
+            "allow_all": bool(self._widget_core.get_port_value("allow_all")),
         }
 
     def _apply_preset(self, preset: ToolSetPreset) -> None:
         self._widget_core.apply_port_value("checked_tools", list(preset.checked_tools))
+        self._widget_core.apply_port_value("allow_all", preset.allow_all)
 
     # ── Worker thread ─────────────────────────────────────────────────
 
@@ -173,6 +232,8 @@ class SilkToolSetNode(ActiveNode):
             return {"toolset": None, "permissions": None}
 
         self._sync_catalog = tool_catalog(toolbox)
+        if inputs.get("allow_all"):
+            checked = [str(e["name"]) for e in self._sync_catalog]
 
         try:
             toolset = build_toolset(toolbox, checked, permissions)
@@ -238,13 +299,16 @@ class SilkToolSetNode(ActiveNode):
                       from_version: int) -> Dict[str, Any]:
         """api 1 → 2: the preset binding is new; older states restore
         with the placeholder selected. 2 → 3: the knowledge level is new;
-        older states restore "as ToolBox", which is what they did."""
+        older states restore "as ToolBox", which is what they did.
+        3 → 4: Allow All and the category filter are new; older states
+        restore with Allow All off and every category shown."""
         return state
 
     def restore_state(self, state: Dict[str, Any]) -> None:
         # 1. Restore values silently (prevents eval storms & false undo history)
         with self._widget_core.suppress_signals():
             super().restore_state(state)
+        self._tool_tree.set_all_granted(self.chk_allow_all.isChecked())
 
     def on_evaluate_finished(self) -> None:
         super().on_evaluate_finished()

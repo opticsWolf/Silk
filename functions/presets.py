@@ -29,6 +29,7 @@ class ToolSetPreset(BaseModel):
 
     name: str
     checked_tools: list[str] = Field(default_factory=list)
+    allow_all: bool = False
 
 
 class RolePreset(BaseModel):

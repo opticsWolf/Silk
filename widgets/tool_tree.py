@@ -8,6 +8,10 @@
     widget value is the sorted list of checked tool names. In read-only
     mode it is a plain browsable overview.
 
+:class:`CategoryCombo`
+    The tree's category filter: "All categories" plus one entry per
+    category the tree offers, refilled whenever its catalog changes.
+
 :class:`ToolDetailWidget`
     Structured key/value preview of a single catalog entry (category,
     risk, tags, description, parameter schema). Driven by the tree's
@@ -21,8 +25,9 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from PySide6.QtCore import Qt, Signal, QObject
-from PySide6.QtGui import QAction
+from PySide6.QtGui import QAction, QBrush, QPalette
 from PySide6.QtWidgets import (
+    QComboBox,
     QHeaderView,
     QMenu,
     QTreeWidget,
@@ -33,6 +38,11 @@ from PySide6.QtWidgets import (
 from weave.widgets.composite_value import CompositeValueWidget
 from weave.widgetcore import menus as widget_menus
 from weave.panel.mirror_contracts import MirrorContract
+
+from ..functions.role import RISK_ORDER
+
+#: The category filter's entry that shows every category.
+ALL_CATEGORIES = "All categories"
 
 _NAME_ROLE = Qt.ItemDataRole.UserRole
 _ENTRY_ROLE = Qt.ItemDataRole.UserRole + 1
@@ -62,6 +72,13 @@ class ToolTreeWidget(CompositeValueWidget):
         # user's selection; names simply re-appear ticked on reconnect.
         self._checked: set[str] = set()
         self._available: set[str] = set()
+        # Locks, display only: the user's own ticks stay underneath and
+        # come back when a lock is lifted. Allow All shows every tool
+        # ticked; a risk ceiling (a role's Max Risk) shows the tools
+        # above it unticked. The ceiling wins: it refuses a tool even
+        # under Allow All.
+        self._all_granted = False
+        self._risk_ceiling: Optional[str] = None
 
         self.setLayout(QVBoxLayout())
         self.layout().setContentsMargins(0, 0, 0, 0)
@@ -168,6 +185,11 @@ class ToolTreeWidget(CompositeValueWidget):
         invert.triggered.connect(self.invert_checked)
         menu.addAction(invert)
 
+        # Under Allow All the ticks are not what counts; editing them
+        # unseen would only surprise when it is lifted.
+        for action in (select_all, deselect_all, invert):
+            action.setEnabled(not self._all_granted)
+
         return menu
 
     # -- population ------------------------------------------------------
@@ -203,19 +225,9 @@ class ToolTreeWidget(CompositeValueWidget):
                 child = QTreeWidgetItem(parent)
                 child.setText(0, entry["name"])
                 child.setText(1, entry.get("risk", "low"))
-                child.setToolTip(0, entry.get("description", ""))
                 child.setData(0, _NAME_ROLE, entry["name"])
                 child.setData(0, _ENTRY_ROLE, entry)
-                if self._checkable:
-                    child.setFlags(child.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-                    child.setCheckState(
-                        0,
-                        Qt.CheckState.Checked
-                        if entry["name"] in self._checked
-                        else Qt.CheckState.Unchecked,
-                    )
-            if self._checkable:
-                self._sync_category_state(parent)
+            self._paint_category(parent)
             parent.setExpanded(True)
         self._refresh_category_markers()
         self._tree.blockSignals(False)
@@ -261,16 +273,22 @@ class ToolTreeWidget(CompositeValueWidget):
         self._tree.blockSignals(True)
         try:
             if item.data(0, _NAME_ROLE) is None:
-                # Category row: quick-select every tool beneath it.
-                state = item.checkState(0)
+                # Category row: tick every tool beneath it the user can
+                # tick, or untick them if they all are. Decided from the
+                # tools, not the row's new state: with locked tools in it
+                # the row is part-ticked, and Qt turns a part-ticked row
+                # ticked again on every click -- it could never untick.
+                free = [item.child(i) for i in range(item.childCount())
+                        if not self._locked(item.child(i))]
                 target = (
-                    Qt.CheckState.Checked
-                    if state != Qt.CheckState.Unchecked
-                    else Qt.CheckState.Unchecked
+                    Qt.CheckState.Unchecked
+                    if free and all(c.checkState(0) == Qt.CheckState.Checked
+                                    for c in free)
+                    else Qt.CheckState.Checked
                 )
-                item.setCheckState(0, target)
-                for i in range(item.childCount()):
-                    item.child(i).setCheckState(0, target)
+                for child in free:
+                    child.setCheckState(0, target)
+                self._sync_category_state(item)
             else:
                 self._sync_category_state(item.parent())
         finally:
@@ -293,17 +311,109 @@ class ToolTreeWidget(CompositeValueWidget):
             parent.setCheckState(0, Qt.CheckState.PartiallyChecked)
 
     def _recollect_checked(self) -> None:
-        # Names outside the current catalog keep their remembered state;
-        # only the visible portion is re-read from the tree.
-        self._checked -= self._available
+        # Names outside the current catalog keep their remembered state,
+        # and so do locked rows (they show the lock, not the tick); only
+        # the rows the user can tick are re-read from the tree.
         for i in range(self._tree.topLevelItemCount()):
             parent = self._tree.topLevelItem(i)
             for j in range(parent.childCount()):
                 child = parent.child(j)
+                if self._locked(child):
+                    continue
+                name = child.data(0, _NAME_ROLE)
                 if child.checkState(0) == Qt.CheckState.Checked:
-                    self._checked.add(child.data(0, _NAME_ROLE))
+                    self._checked.add(name)
+                else:
+                    self._checked.discard(name)
+
+    # -- locks -----------------------------------------------------------
+
+    def _lock_reason(self, entry: Optional[Dict[str, Any]]) -> str:
+        """Why a tool's tick is not the user's to give, or ``""``."""
+        if not entry:
+            return ""
+        ceiling = self._risk_ceiling
+        risk = entry.get("risk", "low")
+        if ceiling and RISK_ORDER.get(risk, 0) > RISK_ORDER.get(ceiling, 0):
+            return (f"Above the Max Risk ceiling ({ceiling}): never "
+                    f"granted, ticked or not.")
+        if self._all_granted:
+            return "Allow All grants every tool."
+        return ""
+
+    def _locked(self, child: QTreeWidgetItem) -> bool:
+        return bool(self._lock_reason(child.data(0, _ENTRY_ROLE)))
+
+    def _paint_tool(self, child: QTreeWidgetItem) -> None:
+        """A tool row's tick, lock and tooltip."""
+        entry = child.data(0, _ENTRY_ROLE) or {}
+        reason = self._lock_reason(entry)
+        description = entry.get("description", "")
+        child.setToolTip(
+            0, f"{reason}\n\n{description}".strip() if reason else description)
+        if not self._checkable:
+            return
+        flags = child.flags() | Qt.ItemFlag.ItemIsUserCheckable
+        if reason:
+            flags &= ~Qt.ItemFlag.ItemIsUserCheckable
+        child.setFlags(flags)
+        if reason.startswith("Above"):
+            shown = False
+        elif reason:
+            shown = True
+        else:
+            shown = child.data(0, _NAME_ROLE) in self._checked
+        child.setCheckState(
+            0, Qt.CheckState.Checked if shown else Qt.CheckState.Unchecked)
+        # Greyed, not disabled: a locked tool can still be selected to
+        # read its details.
+        for column in range(child.columnCount()):
+            child.setData(column, Qt.ItemDataRole.ForegroundRole,
+                          self._locked_brush() if reason else None)
+
+    def _locked_brush(self) -> QBrush:
+        return QBrush(self._tree.palette().color(
+            QPalette.ColorGroup.Disabled, QPalette.ColorRole.Text))
+
+    def _paint_category(self, parent: QTreeWidgetItem) -> None:
+        for j in range(parent.childCount()):
+            self._paint_tool(parent.child(j))
+        if not self._checkable:
+            return
+        free = any(not self._locked(parent.child(j))
+                   for j in range(parent.childCount()))
+        flags = parent.flags() | Qt.ItemFlag.ItemIsUserCheckable
+        if not free:
+            flags &= ~Qt.ItemFlag.ItemIsUserCheckable
+        parent.setFlags(flags)
+        self._sync_category_state(parent)
 
     # -- bulk helpers ----------------------------------------------------
+
+    def set_all_granted(self, granted: bool) -> None:
+        """Show every tool ticked and locked, or lift that.
+
+        The value (the user's own ticks) is untouched either way. The
+        rows stay selectable (details) and the category gears usable.
+        """
+        self._all_granted = bool(granted)
+        self._paint_checks()
+
+    def all_granted(self) -> bool:
+        return self._all_granted
+
+    def set_risk_ceiling(self, ceiling: Optional[str]) -> None:
+        """Show tools above *ceiling* (a ``RISK_ORDER`` level, or None
+        for none) unticked and locked; the user's ticks stay underneath.
+
+        A role's Max Risk: those tools are refused whatever is ticked,
+        so the tree says so instead of showing them granted.
+        """
+        self._risk_ceiling = ceiling or None
+        self._paint_checks()
+
+    def risk_ceiling(self) -> Optional[str]:
+        return self._risk_ceiling
 
     def check_all(self) -> None:
         self._write([e["name"] for e in self._catalog])
@@ -345,20 +455,12 @@ class ToolTreeWidget(CompositeValueWidget):
         if not isinstance(value, (list, tuple, set)):
             value = []
         self._checked = {str(v) for v in value}
+        self._paint_checks()
+
+    def _paint_checks(self) -> None:
         self._tree.blockSignals(True)
         for i in range(self._tree.topLevelItemCount()):
-            parent = self._tree.topLevelItem(i)
-            for j in range(parent.childCount()):
-                child = parent.child(j)
-                if self._checkable:
-                    child.setCheckState(
-                        0,
-                        Qt.CheckState.Checked
-                        if child.data(0, _NAME_ROLE) in self._checked
-                        else Qt.CheckState.Unchecked,
-                    )
-            if self._checkable:
-                self._sync_category_state(parent)
+            self._paint_category(self._tree.topLevelItem(i))
         self._tree.blockSignals(False)
 
     def _internal_signal_sources(self) -> List[QObject]:
@@ -376,6 +478,50 @@ class ToolTreeWidget(CompositeValueWidget):
             args[0].get("name") if args and isinstance(args[0], dict) else None
         ),
     )
+
+
+class CategoryCombo(QComboBox):
+    """Filters a :class:`ToolTreeWidget` to one category.
+
+    Its entries follow the tree's catalog; a pick that is still offered
+    after a refill stays picked. Built bare (a panel mirror builds it
+    so) it is a plain combo until :meth:`bind` gives it a tree.
+    """
+
+    def __init__(self, tree: Optional[ToolTreeWidget] = None,
+                 parent=None) -> None:
+        super().__init__(parent)
+        self._tree: Optional[ToolTreeWidget] = None
+        self.addItem(ALL_CATEGORIES)
+        self.setToolTip("Filter the tool tree to one category.")
+        self.currentTextChanged.connect(self._apply)
+        if tree is not None:
+            self.bind(tree)
+
+    def bind(self, tree: ToolTreeWidget) -> None:
+        self._tree = tree
+        tree.catalog_changed.connect(self.refill)
+        self.refill()
+
+    def refill(self) -> None:
+        """One entry per category the tree offers; the pick kept."""
+        if self._tree is None:
+            return
+        current = self.currentText()
+        self.blockSignals(True)
+        self.clear()
+        self.addItem(ALL_CATEGORIES)
+        self.addItems(self._tree.categories())
+        index = self.findText(current)
+        self.setCurrentIndex(index if index >= 0 else 0)
+        self.blockSignals(False)
+        # A rebuilt tree shows every category again.
+        self._apply(self.currentText())
+
+    def _apply(self, text: str) -> None:
+        if self._tree is not None:
+            self._tree.set_category_filter(
+                "" if text == ALL_CATEGORIES else text)
 
 
 def _cloned_tree(source: ToolTreeWidget) -> ToolTreeWidget:
