@@ -167,7 +167,13 @@ def test_a_refusal_and_a_dead_transport_are_results_not_exceptions(local):
 
 
 def test_the_gate_holds_against_a_weave_in_another_process():
-    with ControlClient.spawn(["weave.library.python_math"]) as client:
+    # The child must import the Weave checkout this suite runs against;
+    # conftest only puts it on this process's sys.path.
+    import os
+    import weave as weave_pkg
+    root = os.path.dirname(os.path.dirname(weave_pkg.__file__))
+    env = dict(os.environ, PYTHONPATH=os.pathsep.join([root, os.environ.get("PYTHONPATH", "")]))
+    with ControlClient.spawn(["weave.library.python_math"], env=env, cwd=root) as client:
         box = _box(client)
         src_id, add_id = _build(box)
         assert call(box, OP_SET_VALUE, id=add_id, port="B", value=0.5)["ok"]

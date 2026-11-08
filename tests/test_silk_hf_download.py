@@ -446,6 +446,14 @@ def _ports(node_ports):
     return {p.name: p.datatype for p in node_ports}
 
 
+def _write(node, port_name, value, **kwargs):
+    # apply_port_value defers its port_value_written emit by one event-loop
+    # turn (QTimer.singleShot(0)), so on_ui_change runs only after a flush.
+    from PySide6.QtWidgets import QApplication
+    node._widget_core.apply_port_value(port_name, value, **kwargs)
+    QApplication.processEvents()
+
+
 def test_file_filter_narrows_without_reselecting(node):
     from silk.functions.hf_hub import HubFile
     node._files = [HubFile("model.gguf", 100),
@@ -468,9 +476,9 @@ def test_mirror_write_updates_folder_enablement(node):
     # Mirror edits arrive via bindings with widget signals held -- the
     # folder enablement must still follow (on_ui_change, not cascades).
     assert node._target_folder.isEnabled() is False  # hub default
-    node._widget_core.apply_port_value("target", "custom")
+    _write(node, "target", "custom")
     assert node._target_folder.isEnabled() is True
-    node._widget_core.apply_port_value("target", "hub")
+    _write(node, "target", "hub")
     assert node._target_folder.isEnabled() is False
 
 
@@ -496,15 +504,14 @@ def test_mirror_result_pick_fills_repo(node, monkeypatch):
     assert node._repo.text() == "a/b"
     assert calls == [1]
     # Mirror picks arrive as binding writes (widget signals held).
-    node._widget_core.apply_port_value(
-        "results", node._combo_results.itemText(1), user_edit=False)
+    _write(node, "results", node._combo_results.itemText(1), user_edit=False)
     assert node._repo.text() == "c/d"
     assert calls == [1, 1]
 
 
 def test_repo_edit_schedules_debounced_fetch(node):
     assert node._fetch_timer.isActive() is False
-    node._widget_core.apply_port_value("repo", "x/y", user_edit=False)
+    _write(node, "repo", "x/y", user_edit=False)
     assert node._fetch_timer.isActive() is True
     node._fetch_timer.stop()
 
@@ -596,8 +603,10 @@ def test_admit_only_publishes_on_change(node, monkeypatch):
 
 def test_status_push_only_on_change(node, monkeypatch):
     pushes = []
+    real_push = node._widget_core.push_display
+    # Call through: _set_status also compares against the label's text.
     monkeypatch.setattr(node._widget_core, "push_display",
-                        lambda *a: pushes.append(a))
+                        lambda *a: (pushes.append(a), real_push(*a))[1])
     node._set_status("hello")
     node._set_status("hello")
     assert pushes == [("status", "hello")]
@@ -622,10 +631,10 @@ def test_mirror_kind_pick_filters_the_file_list(node):
                                      {"branches": ["main"], "tags": []},
                                      "main")))
     assert node._combo_file.count() == 3
-    node._widget_core.apply_port_value("kind", "gguf", user_edit=False)
+    _write(node, "kind", "gguf", user_edit=False)
     assert node._combo_file.count() == 1
     assert node._combo_file.currentData() == "m.gguf"
-    node._widget_core.apply_port_value("kind", "any", user_edit=False)
+    _write(node, "kind", "any", user_edit=False)
     assert node._combo_file.count() == 3
 
 

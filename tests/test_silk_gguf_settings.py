@@ -69,7 +69,8 @@ def test_mtp_ports(node):
 
 
 def test_sliders_follow_probe_and_spinners(node):
-    node._apply_probe("x", {"exists": True, "size_gb": 4.0,
+    # Probes for any other path are dropped as stale (_apply_probe guard).
+    node._apply_probe(node._effective_model_path(), {"exists": True, "size_gb": 4.0,
                             "max_ctx": 8192, "layers": 32})
     assert node.spin_gpu.maximum() == 33
     assert node.slider_gpu.maximum() == 33
@@ -88,7 +89,7 @@ def test_sliders_follow_probe_and_spinners(node):
 def test_probe_shrink_cascades_to_spinners(node):
     node.slider_gpu.setValue(10)
     assert node.spin_gpu.value() == 10
-    node._apply_probe("x", {"exists": True, "size_gb": 4.0,
+    node._apply_probe(node._effective_model_path(), {"exists": True, "size_gb": 4.0,
                             "max_ctx": 4096, "layers": 4})
     assert node.spin_gpu.maximum() == 5
     assert node.slider_gpu.maximum() == 5

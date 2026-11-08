@@ -67,7 +67,11 @@ def test_node_ports_and_safe_defaults(node):
     assert ports(node.inputs) == {"classifier_a": "classifier_model",
                                    "classifier_b": "classifier_model",
                                    "classifier_c": "classifier_model",
-                                   "judge_model": "model_handle"}
+                                   "judge_model": "model_handle",
+                                   "policy": "string",
+                                   "agreement": "float",
+                                   "mode": "string",
+                                   "tool_calls_per_run": "int"}
     assert ports(node.outputs) == {"classifier": "silk_classifier",
                                    "stats": "dict"}
     out = node.compute(gather(node))

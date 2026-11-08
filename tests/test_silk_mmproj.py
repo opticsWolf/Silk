@@ -36,7 +36,10 @@ def _port(node, name):
 
 
 def test_mmproj_ports(node):
-    assert _port(node, "enable_mmproj").datatype == "bool"
+    # The switch is node-local config (INTERNAL); only the file is a port.
+    assert "enable_mmproj" not in {p.name for p in node.inputs}
+    assert node._widget_core._bindings["enable_mmproj"].widget is node.chk_mmproj
+    assert node._widget_core.get_port_value("enable_mmproj") is False
     assert _port(node, "mmproj_path").datatype == "filepath"
 
 

@@ -202,7 +202,8 @@ def test_candidate_cache_dirs_dedupes_aliased_roots(tmp_path, monkeypatch):
 
 def test_node_ports_and_scan(node, hub):
     ports = {p.name: p.datatype for p in node.inputs}
-    assert ports == {"cache_path": "dirpath", "search": "string",
+    # The search box is node-local (INTERNAL), not a wireable port.
+    assert ports == {"cache_path": "dirpath",
                      "model": "string", "file": "string"}
     assert [(p.name, p.datatype) for p in node.outputs] == [
         ("model_path", "filepath"), ("cache_dir", "dirpath"),
@@ -242,7 +243,7 @@ def test_identical_rescan_is_quiet(node, hub):
     spy = QSignalSpy(node._combo_model.model().modelReset)
     file_spy = QSignalSpy(node._combo_file.model().modelReset)
     node.refresh_cache()
-    assert len(spy) == 0 and len(file_spy) == 0
+    assert spy.count() == 0 and file_spy.count() == 0
 
 
 def test_refill_publishes_the_restored_pick(node, hub):

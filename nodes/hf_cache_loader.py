@@ -17,7 +17,6 @@ weights, this node finds them.
 
 Ports
     in   cache_path : dirpath       hub dir; blank means autodetect
-    in   search     : string        substring filter over the repo list
     in   model      : string        repo id (``org/name``)
     in   file       : string        weight file name inside the repo
     out  model_path : filepath      snapshot path of the chosen weights

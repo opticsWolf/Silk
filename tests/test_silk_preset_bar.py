@@ -50,7 +50,7 @@ def test_twin_shares_the_live_list(bar):
     bar._store.upsert(bar._store.model.model_validate(payload))
     bar.refresh(select="calm")
     assert twin._combo.findText("calm") >= 0
-    assert len(spy) == 1
+    assert spy.count() == 1
 
 
 def test_select_name_never_applies(qt_app, tmp_path):
@@ -69,7 +69,7 @@ def test_select_name_never_applies(qt_app, tmp_path):
     spy = QSignalSpy(bar.preset_chosen)
     bar.select_name("calm")
     assert bar._combo.currentText() == "calm"
-    assert len(spy) == 0
+    assert spy.count() == 0
     assert applied == []
 
 

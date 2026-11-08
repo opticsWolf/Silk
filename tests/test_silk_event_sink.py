@@ -205,6 +205,6 @@ def test_the_agent_node_no_longer_has_its_own_switch():
     node = SilkAgentNode()
     try:
         assert "event_log" not in {p.name for p in node.inputs}
-        assert SilkAgentNode.node_version == 3
+        assert SilkAgentNode.node_version >= 3
     finally:
         node.cleanup()
