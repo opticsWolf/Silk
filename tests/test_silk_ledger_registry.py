@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""One handle per ledger file, process-wide (D62).
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+One handle per ledger file, process-wide (D62).
 
 Macrame has one Write Actor per open handle, and the library does *not*
 refuse a second open — two handles on one file just race. The sole-writer

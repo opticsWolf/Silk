@@ -1,4 +1,9 @@
-"""MCPToolset for local MCP (Model Context Protocol) server connections.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+MCPToolset for local MCP (Model Context Protocol) server connections.
 
 Supports:
 - SSE (Server-Sent Events) transport

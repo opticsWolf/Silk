@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Jev and local decision models as one interchangeable backend, with the
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Jev and local decision models as one interchangeable backend, with the
 human as the guaranteed final link.
 
 * ``jev`` and ``systemone`` kinds answer through the same

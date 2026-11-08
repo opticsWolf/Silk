@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Tests for the lightweight GGUF metadata probe (silk GGUF loader)."""
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Tests for the lightweight GGUF metadata probe (silk GGUF loader)."""
 
 import struct
 

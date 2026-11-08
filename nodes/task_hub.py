@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Silk Task Hub Node.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Silk Task Hub Node.
 
 The multi-agent progress surface (spec D58). N independent top-level
 agents share no event port and never will (rule 3), so there is no wire

@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""The spill hook (spec D41 option A, D57).
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+The spill hook (spec D41 option A, D57).
 
 The claim under test is narrow and load-bearing: a big result is replaced
 **before it is appended**, so history stays append-only. Everything else

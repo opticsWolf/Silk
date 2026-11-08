@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Silk MCP Aggregator Node.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Silk MCP Aggregator Node.
 
 Several MCP servers arrive on one wire; this node decides which of their
 tools an agent may see (spec D20). The tree is the same

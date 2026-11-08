@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Model-facing tool discovery (spec D4-D6).
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Model-facing tool discovery (spec D4-D6).
 
 The index in `tool_search.py` has always existed and has never been
 reachable by a model. The only agent-visible discovery tool was

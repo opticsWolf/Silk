@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""A delegated worker asks the human its parent asks (D48 revised).
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+A delegated worker asks the human its parent asks (D48 revised).
 
 Before the relay, a worker had no seam and every gated call it made was
 refused with ``no_answerer``. These tests pin the relay: the request reaches

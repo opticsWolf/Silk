@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""The multi-agent board projection (D58, D60(2), D60(3)).
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+The multi-agent board projection (D58, D60(2), D60(3)).
 
 Independent top-level agents share no event port, so the only place that
 sees all of them is the store they all write to. These tests pin what the

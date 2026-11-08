@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Inference-settings wiring: the dict rides the model wire, not the run.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Inference-settings wiring: the dict rides the model wire, not the run.
 
 Qt-free helper tests run everywhere; node port-shape tests need the Weave
 env (PySide6) and error here -- same convention as the other node suites.

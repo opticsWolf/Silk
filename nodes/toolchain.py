@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Silk Toolchain Node.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Silk Toolchain Node.
 
 Configures a **set** of external toolchains — Python interpreters/venvs,
 ruff, mypy, radon, maturin, cargo — and emits them on a ``toolchains``

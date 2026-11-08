@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Which writable roots are also *importable* (spec D77, G21 residue).
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Which writable roots are also *importable* (spec D77, G21 residue).
 
 Every file tool is sandboxed. ``import`` is not. Module-level code in a
 file the agent wrote runs with the full authority of the Weave process --

@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""The run-scoped decision seam and its race catalog (spec D30/D38/D42/D49).
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+The run-scoped decision seam and its race catalog (spec D30/D38/D42/D49).
 
 Two halves. The first pins the seam's plain behaviour: correlation, the
 five wake causes, idempotence, and the rule that every failure denies. The

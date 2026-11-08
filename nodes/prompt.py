@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Silk Prompt Node.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Silk Prompt Node.
 
 The chat box for an agent: type, press Enter, and the agent runs on what
 was typed. It is a node rather than a box on the agent so that one input

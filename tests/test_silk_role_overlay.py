@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""A Role's word on the ToolBox-wired hooks: tighten, adjust, never loosen.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+A Role's word on the ToolBox-wired hooks: tighten, adjust, never loosen.
 
 The ToolBox owns the approval gate, sign-off, compaction, spill, memory and
 the run log. A Role may layer on three of them for its own runs: its gate

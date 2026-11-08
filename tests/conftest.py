@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Silk's own test suite.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Silk's own test suite.
 
 Layout note: this is the runtime half of the suite that used to live in
 the Weave tree — it moved here 2026-09-09 (OPEN_TOPICS G4). The 13 seam

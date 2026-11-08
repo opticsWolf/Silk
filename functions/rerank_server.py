@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""A GGUF reranker behind ``POST /v1/rerank``, as its own process.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+A GGUF reranker behind ``POST /v1/rerank``, as its own process.
 
 ``llama_cpp.server`` serves chat and embeddings but not rerank, and
 llama.cpp's own ``llama-server --rerank`` is a native binary Silk does not

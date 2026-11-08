@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""The Endpoint/Model split and the reworked Model Endpoint.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+The Endpoint/Model split and the reworked Model Endpoint.
 
 The settings file is pinned in ``test_silk_endpoint_settings``; this
 pins the seam a person actually touches -- that switching providers

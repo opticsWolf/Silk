@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""bobine in Silk: the convert_document tool and the document nodes.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+bobine in Silk: the convert_document tool and the document nodes.
 
 bobine runs in a child process per call, so these run the real worker;
 they skip where bobine is not installed. The files are built here: a

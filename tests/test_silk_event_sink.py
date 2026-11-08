@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""The durable event sink: one JSONL file per run (T7, D85).
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+The durable event sink: one JSONL file per run (T7, D85).
 
 Compaction drops turns to keep a run under its window, and what it drops
 is unrecoverable -- which is what made a durable event log a precondition

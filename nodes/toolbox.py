@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Silk ToolBox Node.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Silk ToolBox Node.
 
 Assembles a live :class:`ToolBox` — the single registry of ALL tools an
 agent network may use — and outputs it on a ``silk_toolbox`` port. Tool

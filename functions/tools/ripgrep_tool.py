@@ -1,4 +1,8 @@
-"""
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
 Ripgrep-backed search tools using the in-process `pyripgrep` native binding
 (pip install ripgrep-python). No `rg` binary or subprocess is required — the
 engine is linked into the wheel — so there is no shell/argv surface: the

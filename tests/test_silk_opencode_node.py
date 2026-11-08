@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""The OpenCode nodes: the dropdown, the slider, and what reaches the handle.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+The OpenCode nodes: the dropdown, the slider, and what reaches the handle.
 
 The catalogue logic is pinned in ``test_silk_model_catalog``; this pins
 the seam a person actually touches -- that the slider's top is the

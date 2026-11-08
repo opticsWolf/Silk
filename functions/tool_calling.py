@@ -1,5 +1,10 @@
 # tool_calling.py
-"""General (tool-agnostic) tool-calling protocol for local GGUF chat models.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+General (tool-agnostic) tool-calling protocol for local GGUF chat models.
 
 This replaces the old hard-coded nushell code-fence scraping. The model signals
 a tool call by emitting a fenced ``tool_call`` block containing JSON:

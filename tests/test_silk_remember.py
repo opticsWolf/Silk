@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""The writer memory was missing (§17, D65).
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+The writer memory was missing (§17, D65).
 
 ``recall`` searches a history ledger and the ledger knows how to record a
 run, but until this hook existed nothing in a running graph called it: the

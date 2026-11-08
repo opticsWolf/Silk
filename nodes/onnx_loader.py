@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Silk ONNX Embedder and ONNX Reranker nodes.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Silk ONNX Embedder and ONNX Reranker nodes.
 
 Choose an ONNX model for the Knowledge Graph node -- the embedding model
 that makes a graph's vectors, or the cross-encoder that reranks its

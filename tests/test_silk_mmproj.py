@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Vision-projector (mmproj) support: server key, detection, tooltips.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Vision-projector (mmproj) support: server key, detection, tooltips.
 
 Qt-free tests run everywhere; node tests need the Weave env (PySide6)
 and error here -- same convention as the other node suites.

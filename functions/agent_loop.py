@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""AgentLoop — the single, Qt-free autonomous agent run loop.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+AgentLoop — the single, Qt-free autonomous agent run loop.
 
 This is the only place multi-turn agent behaviour lives: stream one model
 response, parse ``tool_call`` fences, dispatch them through the ToolBox

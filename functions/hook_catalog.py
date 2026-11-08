@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Named hook catalog — vetted hook implementations selectable by name.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Named hook catalog — vetted hook implementations selectable by name.
 
 Behavior stays code, selection becomes data: nodes offer these hooks as
 checkboxes and presets store only the **names + config values**. A

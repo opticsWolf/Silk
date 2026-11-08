@@ -1,4 +1,9 @@
-"""ToolSet abstraction for composable, lifecycle-managed tool collections.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+ToolSet abstraction for composable, lifecycle-managed tool collections.
 
 Inspired by Pydantic AI's toolset architecture, this module provides:
 - Base ToolSet class with lifecycle management (__aenter__/__aexit__)

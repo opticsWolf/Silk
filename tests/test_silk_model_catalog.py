@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""OpenCode catalogues: the model list on disk, and the context it implies.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+OpenCode catalogues: the model list on disk, and the context it implies.
 
 OpenCode's ``/v1/models`` names models and nothing else; models.dev
 carries their windows. What is pinned here is how the two are combined,

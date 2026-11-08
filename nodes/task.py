@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Silk Plan Node.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Silk Plan Node.
 
 Shown as **Silk Plan**; it was "Silk Task" until the name was found to
 promise the wrong thing -- it makes no task, it says which *plan* the task

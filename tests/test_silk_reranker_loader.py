@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""The Reranker Loader: a GGUF reranker on Silk's own /v1/rerank server.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+The Reranker Loader: a GGUF reranker on Silk's own /v1/rerank server.
 
 The server (``functions/rerank_server.py``) is exercised over HTTP with a
 stand-in scorer, so no model is needed; the node and the Knowledge Graph

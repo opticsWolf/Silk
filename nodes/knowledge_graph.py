@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Silk Knowledge Graph Node.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Silk Knowledge Graph Node.
 
 Owns **one served OKFgraph knowledge graph** and hands it downstream as a
 handle, the way the MCP node owns a session (D19): the node starts

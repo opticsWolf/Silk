@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Documents to Markdown with bobine, for the agent tool and the nodes.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Documents to Markdown with bobine, for the agent tool and the nodes.
 
 bobine (``pip install bobine``; Silk's ``documents`` extra) turns PDF,
 Office (DOCX/XLSX/PPTX and the legacy formats), JATS XML and text files

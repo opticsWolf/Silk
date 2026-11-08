@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Tests for prompt-prefix reuse measurement (spec D41/D47, G15).
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Tests for prompt-prefix reuse measurement (spec D41/D47, G15).
 
 The point of this measurement is to tell "reuse is zero" apart from "we do
 not know what reuse is", so most of these tests are about what the report

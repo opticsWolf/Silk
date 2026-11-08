@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Silk MCP Node.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Silk MCP Node.
 
 Owns **one live session** to one MCP server and hands it downstream as a
 handle (spec D19). The node holds the connection the way the GGUF Loader

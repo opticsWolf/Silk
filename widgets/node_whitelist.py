@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Which node classes an agent may place (spec §18, D71).
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Which node classes an agent may place (spec §18, D71).
 
 A checkable tree over `NODE_REGISTRY` in the levels the canvas's own
 *Browse Nodes* menu shows -- category, then the nodes placed directly in

@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Silk agent runtime — Qt-free core (ported from the silk-playground project).
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Silk agent runtime — Qt-free core (ported from the silk-playground project).
 
 No module in this package imports PySide6 or touches Qt state: the ToolSet
 hierarchy, the ToolBox registry with hard role enforcement, capabilities,

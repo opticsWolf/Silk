@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Asking the same backend again, when the error says to (D15, D40).
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Asking the same backend again, when the error says to (D15, D40).
 
 `classify_model_error` has always separated a 429 or a 503 from a bad
 request, but the loop only ever acted on the overflow verdict, so a rate

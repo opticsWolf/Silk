@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Text read from a String input port, without truth-testing it.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Text read from a String input port, without truth-testing it.
 
 A String port also accepts pass-through wires: List, Tuple, Set, Dict,
 NdArray, DataFrame and PILImage values cross into it unchanged

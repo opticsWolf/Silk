@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""D47 mechanism A: the queue is grouped by conversation, not by arrival.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+D47 mechanism A: the queue is grouped by conversation, not by arrival.
 
 The measurement (G15, 2026-09-19) is what chose this: one server holds one
 resident context, so alternating two conversations drops prefix reuse from

@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""A GGUF reranker served on ``/v1/rerank`` by a child process.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+A GGUF reranker served on ``/v1/rerank`` by a child process.
 
 The rerank twin of :class:`functions.model_pool.GGUFModelPool`: one
 background process per model (``functions/rerank_server.py``, run as a

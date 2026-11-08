@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Interface contracts between the Silk agent loop, engine, and tool registry.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Interface contracts between the Silk agent loop, engine, and tool registry.
 
 These Protocols pin the previously duck-typed wiring: the AgentLoop binds to
 ``AgentEngine`` + ``ToolRegistry`` instead of reaching into concrete classes,

@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""JSON preset persistence for silk nodes — Qt-free.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+JSON preset persistence for silk nodes — Qt-free.
 
 Presets are stored per kind as a single JSON document under the user's
 home directory (``~/.weave/presets/<kind>.json``) and validated through

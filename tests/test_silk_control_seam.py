@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""An agent builds, evaluates and reads a headless graph through Weave's
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+An agent builds, evaluates and reads a headless graph through Weave's
 control API alone (Weave manifest P3 gate).
 
 The graph tools are the ones a canvas run gets; only the seam differs:

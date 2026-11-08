@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""The Jev loader: endpoint in, classifier-model handle out.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+The Jev loader: endpoint in, classifier-model handle out.
 
 The wire shape (``hosted_decision_handle``) is pinned Qt-free in
 ``test_silk_systemone``; this pins the node seam -- that the provider

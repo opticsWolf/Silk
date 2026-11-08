@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Invariant I11: the model-visible prefix grows only at the tail.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Invariant I11: the model-visible prefix grows only at the tail.
 
 The guard is a detector, so the tests are mostly about *not* crying wolf.
 A run that appends is the overwhelmingly common case and must stay silent;

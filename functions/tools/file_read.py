@@ -1,4 +1,9 @@
-"""Read-only file tools: read_file, view_file, list_directory, find_files, search_files, file_info."""
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Read-only file tools: read_file, view_file, list_directory, find_files, search_files, file_info."""
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any

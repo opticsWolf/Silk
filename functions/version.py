@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""What Silk this is (G12).
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+What Silk this is (G12).
 
 A bug report that says "Silk misbehaved" is worth much less than one that
 says which Silk. The version in ``pyproject.toml`` moves rarely and says

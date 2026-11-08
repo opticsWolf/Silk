@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Classify a failed model request before anything upstream reacts to it.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Classify a failed model request before anything upstream reacts to it.
 
 Every model-request failure arrives at the AgentLoop as the same thing: an
 exception out of ``stream_response``, turned into

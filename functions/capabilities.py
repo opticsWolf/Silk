@@ -1,4 +1,9 @@
-"""Composable capabilities for bundling tools, instructions, and settings.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Composable capabilities for bundling tools, instructions, and settings.
 
 Capabilities are reusable units of agent behavior that bundle tools,
 instructions, model settings, and lifecycle hooks into composable units.

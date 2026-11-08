@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Several classifiers as one: the combination math and the policies.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Several classifiers as one: the combination math and the policies.
 
 The node surface (ports, presets, bands table) is pinned in
 ``test_classifier_ensemble_wiring``; this pins the part that decides --

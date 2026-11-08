@@ -1,5 +1,10 @@
 # -*- coding: utf-8
-"""The Hub client: search, listing, resume, integrity, auth scope.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+The Hub client: search, listing, resume, integrity, auth scope.
 
 A fake Hub (threaded HTTP) serves bytes with real ``Range`` semantics,
 so resume/restart/cancel are exercised, not mocked. Qt node tests live

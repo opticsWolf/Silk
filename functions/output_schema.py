@@ -1,4 +1,9 @@
-"""Structured output schema and validation.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Structured output schema and validation.
 
 Enables the model's final output to be validated against a Pydantic model
 or JSON schema. Validation errors are fed back to the model for self-correction.

@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""A node's title is what the canvas shows, not an attribute (G9).
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+A node's title is what the canvas shows, not an attribute (G9).
 
 Graph authoring wrote `node.title = ...` and read it back, which
 round-tripped through an attribute Weave never renders: the header shows

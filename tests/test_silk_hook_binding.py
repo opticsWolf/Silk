@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Per-tool hook binding and the essential tier (spec D13/D14, Phase 2 item 1).
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Per-tool hook binding and the essential tier (spec D13/D14, Phase 2 item 1).
 
 Two things used to be invisible. A hook that only cared about one tool said
 so inside its own body, so no config, UI or test could see which hooks

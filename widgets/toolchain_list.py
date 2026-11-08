@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Checkable toolchain list for the Toolchain node.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Checkable toolchain list for the Toolchain node.
 
 Each row is one configured toolchain: checkbox (enabled) + kind +
 executable path. The path cell is edited by **double-clicking** it; the

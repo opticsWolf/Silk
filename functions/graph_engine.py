@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""GraphEngine — a Qt-free AgentEngine over a Weave ``model_handle`` handle.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+GraphEngine — a Qt-free AgentEngine over a Weave ``model_handle`` handle.
 
 The Weave graph passes models around as the ``model_handle`` port payload:
 ``{"backend": "gguf", "model": Llama}`` or ``{"backend": "gguf",

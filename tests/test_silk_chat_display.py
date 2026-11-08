@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Chat Log tool-role rendering (pure function; imports PySide6 but builds
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Chat Log tool-role rendering (pure function; imports PySide6 but builds
 no widgets, so it is safe to run in-process)."""
 
 from __future__ import annotations

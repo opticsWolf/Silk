@@ -1,4 +1,9 @@
-"""Typed streaming events for structured LLM output.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Typed streaming events for structured LLM output.
 
 Provides a typed event system that replaces ad-hoc token deltas with
 structured events. This enables better observability, tool-call tracking,

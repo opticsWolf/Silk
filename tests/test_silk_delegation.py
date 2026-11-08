@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""What a fan-out tells the model, and what it does to a shared budget.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+What a fan-out tells the model, and what it does to a shared budget.
 
 Spec D52 catalogues four ways ``delegate_parallel`` was silently wrong with
 more than one assignment; D53 rules that it runs sequentially until there is

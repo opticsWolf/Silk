@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""The main-thread seam, and the waiter both seams are made of (D49, D70).
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+The main-thread seam, and the waiter both seams are made of (D49, D70).
 
 D49 was specified as a *general* waiter rather than an approval-specific
 one, and D70 is the claim being cashed: the canvas seam is the same

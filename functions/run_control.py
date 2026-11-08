@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""RunControl -- what a person can do to an agent while it runs.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+RunControl -- what a person can do to an agent while it runs.
 
 Qt-free and thread-safe: the node posts from the GUI thread, the loop
 reads from its worker thread, and an orchestrator's workers each run on a

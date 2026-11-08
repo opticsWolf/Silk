@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Formatting and counting for the Agent node's ``events`` stream.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Formatting and counting for the Agent node's ``events`` stream.
 
 Qt-free so the Hook Monitor node's logic is testable headless. Wire events
 carry ``type`` (a member of :class:`EventType`), ``ts``, ``run_id`` and

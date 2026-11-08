@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""D90: what the runs cost, kept across them.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+D90: what the runs cost, kept across them.
 
 D88 made money a ceiling and D90 makes it a record. The distinction these
 tests keep pinning down is the one the whole module turns on: an unpriced

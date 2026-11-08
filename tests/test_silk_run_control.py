@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Steer, interrupt, queue and the two stops (Qt-free).
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Steer, interrupt, queue and the two stops (Qt-free).
 
 RunControl on its own, then through AgentLoop with a fake engine whose
 stream honours the stop flag the way GraphEngine's does, and a fake

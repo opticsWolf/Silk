@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Per-provider endpoint memory: what the node remembers, pinned.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Per-provider endpoint memory: what the node remembers, pinned.
 
 The listing logic keeps no state of its own; this pins the seam the
 nodes actually touch -- that a URL edit lands in the provider's file,

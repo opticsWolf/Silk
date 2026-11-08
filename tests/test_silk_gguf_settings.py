@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Per-model JSON memory, probe-driven sliders, MTP switch (GGUF Loader).
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Per-model JSON memory, probe-driven sliders, MTP switch (GGUF Loader).
 
 Qt-free tests run everywhere; node tests need the Weave env (PySide6)
 and error here -- same convention as the other node suites.

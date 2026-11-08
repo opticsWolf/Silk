@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Silk Plan Viewer Node.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Silk Plan Viewer Node.
 
 The display **and** graph-composition surface for the agent task tracker. It
 shows the current plan (rendered with the user's ``mordant`` markdown parser when

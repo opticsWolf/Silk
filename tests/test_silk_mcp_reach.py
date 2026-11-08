@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""What an MCP server can reach, said out loud (G21 residue 2, D84).
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+What an MCP server can reach, said out loud (G21 residue 2, D84).
 
 Silk sandboxes every file tool it registers. An MCP server is another
 process: it writes where its own process can, and the file-permissions

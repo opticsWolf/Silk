@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Hook catalog selector for the silk nodes.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Hook catalog selector for the silk nodes.
 
 A compact checkbox list over the named hook catalog
 (:mod:`..functions.hook_catalog`). The widget value is

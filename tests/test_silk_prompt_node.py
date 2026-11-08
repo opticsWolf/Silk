@@ -1,5 +1,10 @@
 # -*- coding: utf-8
-"""The chat loop: Prompt node → Agent (run / stop / clear) → Chat Log.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+The chat loop: Prompt node → Agent (run / stop / clear) → Chat Log.
 
 Qt node tests with in-test imports, so the file still collects where
 PySide6 is missing. Runs never start: the agent's execute and cancel are

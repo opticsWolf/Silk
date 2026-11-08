@@ -1,5 +1,10 @@
 # -*- coding: utf-8
-"""The tool nodes' resizable groups: one splitter, sizes kept in the state.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+The tool nodes' resizable groups: one splitter, sizes kept in the state.
 
 Qt-only; the imports sit in the tests so the file still collects where
 PySide6 is missing.

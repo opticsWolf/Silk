@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Model-request failures: classification, and the truncation that hides.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Model-request failures: classification, and the truncation that hides.
 
 Two spec decisions meet here. D40 says a stream failure must be classified
 before anything reacts to it, because ``context="stream_response"`` covers

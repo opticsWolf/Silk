@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""The Ensemble node: ports, wiring, presets.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+The Ensemble node: ports, wiring, presets.
 
 The combination math and the policies are pinned Qt-free in
 ``test_classifier_ensemble``; this pins the canvas seam -- that

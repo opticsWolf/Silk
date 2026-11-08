@@ -1,10 +1,7 @@
-Silk is dual-licensed. You may use, modify, and distribute this software
-under either of the following licenses, at your option:
+Silk is licensed under the GNU Affero General Public License, version 3
+only.
 
-  1. the Apache License, Version 2.0
-     (full text: LICENSES/Apache-2.0.txt)
+  Full text: LICENSES/AGPL-3.0-only.txt
+  (https://www.gnu.org/licenses/agpl-3.0.txt)
 
-  2. the MIT License
-     (full text: LICENSES/MIT.txt)
-
-SPDX-License-Identifier: Apache-2.0 OR MIT
+SPDX-License-Identifier: AGPL-3.0-only

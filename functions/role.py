@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""The Role model: declarative agent configurations over a ToolBox.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+The Role model: declarative agent configurations over a ToolBox.
 
 A **Role** is serialisable data describing *how* an agent runs: which subset
 of the toolbox it may use, its persona instructions, model-setting overrides,

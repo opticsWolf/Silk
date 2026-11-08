@@ -1,4 +1,9 @@
-"""Silk classifier core (D-S8): questions, backends, breaker, redaction,
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Silk classifier core (D-S8): questions, backends, breaker, redaction,
 spec, triage levels, task drift, findings gate and the classify tool.
 
 Ported from the Macrame 0.20 prototype; the cases that drive the work

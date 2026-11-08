@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""What Silk *can* attach, known before anything is attached.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+What Silk *can* attach, known before anything is attached.
 
 The ToolBox node's tree is the only tool selector, so it has to be
 populated before there is a ToolBox to read it off — a tree that fills in

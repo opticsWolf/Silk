@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Turns and runs as memory, and the ``recall`` tool over them (§17, D66).
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Turns and runs as memory, and the ``recall`` tool over them (§17, D66).
 
 Two claims are under test. The first is that compaction stops being
 destructive: a compacted round is superseded, not deleted, so *what did

@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Pool Monitor Node.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Pool Monitor Node.
 
 Takes a ``model_obj`` handle and emits a live snapshot of the GGUF pool
 state. Refreshed on demand via an ``exec`` input pulse — wire any agent's

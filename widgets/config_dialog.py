@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""PydanticConfigDialog — a small form dialog generated from a pydantic model.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+PydanticConfigDialog — a small form dialog generated from a pydantic model.
 
 Used by the hook selector to edit per-hook configs (and reusable for any
 "selection is data, behavior is code" surface). Supported field types:

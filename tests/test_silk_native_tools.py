@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Native (structured tool_calls) transport + GraphEngine capability (Qt-free).
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Native (structured tool_calls) transport + GraphEngine capability (Qt-free).
 
 Covers the OpenAI-style tool-calling path that runs when the loaded model
 advertises support, and the fence fallback that keeps plain chat models

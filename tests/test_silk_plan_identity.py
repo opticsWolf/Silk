@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Explicit plan identity: which plan, named rather than inferred (D23).
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Explicit plan identity: which plan, named rather than inferred (D23).
 
 The failure this closes is quiet: the store picks the newest ``plan-*.db``
 under a root, so two plans in one directory cross-discover and which one

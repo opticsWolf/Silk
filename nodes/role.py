@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Silk Role Node.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Silk Role Node.
 
 Defines a declarative :class:`Role` — persona instructions plus a hard
 tool-selection rule — and outputs it on a ``silk_role`` port. The node

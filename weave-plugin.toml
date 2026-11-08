@@ -17,7 +17,7 @@ version = "0.1.0"
 weave = ">=0.1, <0.2"
 name = "Silk"
 description = "Local-first agentic runtime as Weave nodes."
-license = "LGPL-3.0-only"
+license = "AGPL-3.0-only"
 
 [capabilities]
 # Model endpoints and MCP servers are whatever the user configures.

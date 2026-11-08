@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Tool catalog widgets for the silk node suite.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Tool catalog widgets for the silk node suite.
 
 :class:`ToolTreeWidget`
     Category-grouped tree of a tool catalog. In *checkable* mode each

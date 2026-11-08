@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""The agent places nodes -- and the three rules that let it (§18, D69-D73).
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+The agent places nodes -- and the three rules that let it (§18, D69-D73).
 
 This is the first Silk tool family whose effect is on Weave itself, so
 what is pinned here is mostly what it *cannot* do: place a class nobody

@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""The client the pool talks through, and the key it can now carry (D45/D22).
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+The client the pool talks through, and the key it can now carry (D45/D22).
 
 `OpenAIClientMock` was the production HTTP client for as long as it was
 called a mock, and it sent exactly one header — `Content-Type`. That was

@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Markdown -> HTML for the plan surfaces, as Qt will actually draw it.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Markdown -> HTML for the plan surfaces, as Qt will actually draw it.
 
 Qt's rich text is an HTML subset with no form controls: a GFM task item
 rendered as ``<input type="checkbox">`` disappears without a trace, which

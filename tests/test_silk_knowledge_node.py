@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""The Knowledge Graph node's paths are history pickers.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+The Knowledge Graph node's paths are history pickers.
 
 Qt suite (needs the Weave env; errors here) -- same convention as the
 other node suites.

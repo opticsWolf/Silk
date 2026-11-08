@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""The canvas seam is served on the main thread wherever it is built (D70).
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+The canvas seam is served on the main thread wherever it is built (D70).
 
 The Agent node builds its ``CanvasAuthor`` inside ``compute``, on a pool
 worker. A QObject's queued slots run on the thread it lives on, so an

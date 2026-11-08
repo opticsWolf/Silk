@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""The error family fires, and a hook that could not fire is refused.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+The error family fires, and a hook that could not fire is refused.
 
 Spec D15 / gap G3. Eleven of nineteen declared hook events were never
 emitted, and the consequence was not the missing events themselves: it was

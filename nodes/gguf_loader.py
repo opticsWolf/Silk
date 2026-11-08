@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""GGUF LLM Loader Module.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+GGUF LLM Loader Module.
 
 Provides a specialized, thread-safe node for loading Large Language Models
 via the GGUF format using llama.cpp. Compliant with Weave V6 specifications.

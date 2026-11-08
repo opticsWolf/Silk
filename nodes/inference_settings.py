@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Agent Inference Settings Node.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Agent Inference Settings Node.
 
 Constructs a ``gen_params`` dictionary from UI controls and emits it on an
 output port. Only keys that match ``GraphEngine._GEN_PARAM_KEYS`` are

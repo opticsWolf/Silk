@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Seeing and withdrawing what was granted (real Qt, subprocess) — §22 q1.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Seeing and withdrawing what was granted (real Qt, subprocess) — §22 q1.
 
 D10 made "don't ask again" durable and D35 put it outside the graph; this
 is the half that faces the person. An allowance you cannot find is an

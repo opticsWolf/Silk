@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""The decision directory behind the inbox dock (D59).
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+The decision directory behind the inbox dock (D59).
 
 The registry exists so a graph of N agents can answer "who needs me"
 without hunting the canvas. What it must never become is a way to answer

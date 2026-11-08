@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""A model that runs somewhere else (D45, the remote half).
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+A model that runs somewhere else (D45, the remote half).
 
 The loop only ever calls ``create_chat_completion``, so a hosted or
 separately-run backend is the same graph with the subprocess removed.

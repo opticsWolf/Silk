@@ -1,4 +1,9 @@
-"""Tool search for deferred tool discovery.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Tool search for deferred tool discovery.
 
 Enables searching for tools by name or description, useful for
 on-demand capability loading where only relevant tools are sent to

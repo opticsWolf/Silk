@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Where a secret lives, which is nowhere near the graph (spec D22).
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Where a secret lives, which is nowhere near the graph (spec D22).
 
 A node, a preset or a saved graph stores a credential *name*. The value
 behind it is resolved when a connection is made, from the environment or

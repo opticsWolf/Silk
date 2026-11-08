@@ -1,5 +1,10 @@
 # -*- coding: utf-8
-"""The HF cache browser: layout scan, autodetect, dropdowns, filepath out.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+The HF cache browser: layout scan, autodetect, dropdowns, filepath out.
 
 Function tests build a fake hub tree (no network, no huggingface_hub).
 Qt node tests live at the bottom with in-fixture imports, so this file

@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Tests for the configurable hook system (Qt-free).
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Tests for the configurable hook system (Qt-free).
 
 Covers the named hook catalog (names → callables, unknown names
 skipped), recipe-style attachment, capability-carried hooks now being

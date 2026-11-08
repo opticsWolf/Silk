@@ -123,4 +123,4 @@ to this codebase as well.
 
 ## License
 
-Dual-licensed **Apache-2.0 OR MIT** — you may choose either. See [LICENSE](LICENSE) and [LICENSES/](LICENSES/).
+Licensed under the **GNU Affero General Public License v3.0 (AGPL-3.0-only)**. See [LICENSE](LICENSE) and [LICENSES/AGPL-3.0-only.txt](LICENSES/AGPL-3.0-only.txt).

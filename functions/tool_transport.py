@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Tool-call transport for the AgentLoop.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Tool-call transport for the AgentLoop.
 
 How the loop (a) extracts tool calls from a model turn and (b) feeds results
 back into the conversation, abstracted behind a strategy so the same loop

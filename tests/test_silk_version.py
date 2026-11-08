@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Which Silk is this (G12).
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Which Silk is this (G12).
 
 The package had no version and no commit, so a log line or a bug report
 could say what went wrong but never in which build. Only the Weave

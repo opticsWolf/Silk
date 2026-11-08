@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""The invariant catalog: one record per invariant, one per violation class.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+The invariant catalog: one record per invariant, one per violation class.
 
 Spec D27, Phase 1 item 1. This is *data*. The executable side lives in
 ``test_silk_invariants.py``, which refuses to run unless every record here

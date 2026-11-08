@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""The public-web pack: skill-distilled descriptions, budgets, soft-dep.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+The public-web pack: skill-distilled descriptions, budgets, soft-dep.
 
 Qt-free throughout: the pack is functions-level (pydantic + stdlib) and
 the backend import is lazy. Runs everywhere; the live-registration test

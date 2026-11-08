@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Prompt-prefix reuse measurement (spec D41/D47, Phase 1 item 6; G15).
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Prompt-prefix reuse measurement (spec D41/D47, Phase 1 item 6; G15).
 
 Silk's whole context design hangs on one number nobody has ever looked at:
 how much of a request's prompt the backend already had in its KV cache. If

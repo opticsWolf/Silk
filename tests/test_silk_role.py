@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Silk Role model tests: selector semantics, hard dispatch enforcement,
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Silk Role model tests: selector semantics, hard dispatch enforcement,
 RoleBinding lifecycle (hooks + capabilities), and serialisation.
 
 Qt-free — exercises silk.functions only.

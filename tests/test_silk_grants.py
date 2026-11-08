@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Durable and run-scoped approval grants (spec D10, D34, D35).
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Durable and run-scoped approval grants (spec D10, D34, D35).
 
 Almost every test here is really one claim in two directions: **a grant can
 only ever remove a prompt, never add one**. That is what lets the store be

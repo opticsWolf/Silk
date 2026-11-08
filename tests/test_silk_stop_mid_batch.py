@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Stops inside a tool batch (G8).
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Stops inside a tool batch (G8).
 
 `stop_requested()` was read between rounds and at token boundaries, so a
 batch already dispatched ran to the end whatever the user did -- for a

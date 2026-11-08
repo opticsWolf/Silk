@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Model-facing tool discovery: search, deferral, auto-load (spec D4-D6).
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Model-facing tool discovery: search, deferral, auto-load (spec D4-D6).
 
 The claims under test are the ones the spec makes about *reach*: what the
 model can find, what it can call without being told to load it first, and

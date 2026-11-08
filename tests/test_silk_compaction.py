@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Compaction (spec §12, D24/D25/D40/D41; invariant I9).
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Compaction (spec §12, D24/D25/D40/D41; invariant I9).
 
 Three claims, in descending order of how much damage getting them wrong
 does.

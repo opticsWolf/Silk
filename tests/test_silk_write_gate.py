@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Tests for the per-root write gate (spec D67 tier 2, closes G19).
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Tests for the per-root write gate (spec D67 tier 2, closes G19).
 
 Tier 1 -- the per-path locks -- covers the file tools and nothing else. A
 toolchain subprocess that rewrites files never passes through them, so these

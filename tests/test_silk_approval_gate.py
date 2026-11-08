@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""The unified approval gate (spec D30, D31, D34-D37; invariants I7, I10).
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+The unified approval gate (spec D30, D31, D34-D37; invariants I7, I10).
 
 One ``wrap_tool_execute`` middleware resolves two policy domains -- task
 changes and tool calls -- because D31 makes them two *policies*, not two

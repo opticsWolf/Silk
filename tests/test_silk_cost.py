@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""What a run costs, and what happens when nobody will say (D88).
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+What a run costs, and what happens when nobody will say (D88).
 
 Cost is the one cap whose denominator lives outside Silk: tokens and
 requests are counted here, but money is what someone else charges. So

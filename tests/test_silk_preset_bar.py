@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Preset bars mirror as working twins (classifier/ensemble/inference
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Preset bars mirror as working twins (classifier/ensemble/inference
 settings/role/toolset).
 
 Qt-free tests run everywhere; widget tests need the Weave env (PySide6)

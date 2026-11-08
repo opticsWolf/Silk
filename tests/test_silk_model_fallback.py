@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""D89: a model handle that names its successor, and a loop that walks it.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+D89: a model handle that names its successor, and a loop that walks it.
 
 Three layers, tested separately because they fail separately:
 

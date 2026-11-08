@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Configured external toolchains as structured agent tools — Qt-free.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Configured external toolchains as structured agent tools — Qt-free.
 
 A **toolchain** is a configured executable (a Python interpreter/venv,
 ruff, mypy, radon, maturin, cargo, …) probed and frozen into a

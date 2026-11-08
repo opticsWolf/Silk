@@ -1,4 +1,9 @@
-"""Run context for carrying dependencies through a run.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Run context for carrying dependencies through a run.
 
 Provides a typed context object that carries dependencies, usage stats,
 and other run-time information through the engine and tools.

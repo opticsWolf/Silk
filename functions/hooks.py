@@ -1,4 +1,9 @@
-"""Middleware lifecycle hooks for observability and error recovery.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Middleware lifecycle hooks for observability and error recovery.
 
 Extends the basic hook system with middleware semantics:
 - wrap_* hooks that can short-circuit or modify behavior

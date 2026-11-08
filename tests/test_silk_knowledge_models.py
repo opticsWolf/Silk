@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Models on wires into the Knowledge Graph node.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Models on wires into the Knowledge Graph node.
 
 Four claims, offline (no ``okf serve``, no model loaded anywhere).
 

@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Finding plans without knowing which backend wrote them (T4, D63/D66).
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Finding plans without knowing which backend wrote them (T4, D63/D66).
 
 Plan discovery has been file-shaped since D23: a plan is a ``plan-*.db``
 under a sandbox root, the newest one wins when nobody names a file, and

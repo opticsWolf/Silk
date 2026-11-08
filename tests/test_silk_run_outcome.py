@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""How a run ended, and how big the room was.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+How a run ended, and how big the room was.
 
 Two Phase 1 items that are one line each in the spec and were load-bearing
 gaps in the code. G13: a run that exhausted ``max_rounds`` still produced a

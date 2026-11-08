@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Silk ToolSet Node.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Silk ToolSet Node.
 
 Derives a restricted **ToolSet** from an upstream Silk ToolBox: the tree
 lists every tool of the toolbox grouped by category (category rows are

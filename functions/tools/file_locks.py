@@ -1,4 +1,8 @@
-"""
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
 Process-wide per-path file locks.
 
 The file tools run synchronously inside ``asyncio.to_thread``, so when

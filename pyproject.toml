@@ -19,6 +19,7 @@
 name = "silk"
 version = "0.1.0"
 description = "Local-first agentic runtime as Weave nodes."
+license = "AGPL-3.0-only"
 requires-python = ">=3.12"
 dependencies = [
     "PySide6>=6.7",       # the node layer; functions/ is importable without it

@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Graph-level ToolSet construction — Qt-free.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Graph-level ToolSet construction — Qt-free.
 
 A **ToolSet** in the silk node graph is a real :class:`ToolBox` rebuilt
 from the source toolbox's *recipe* (the attach functions it was built

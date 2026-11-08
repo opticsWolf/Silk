@@ -1,5 +1,9 @@
 # -*- coding: utf-8 -*-
-"""
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
 Chat Display Node
 
 A sink node that continuously appends chat turns to a running log,

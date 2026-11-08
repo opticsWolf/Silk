@@ -1,4 +1,8 @@
-"""
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
 Qt-free assembly of the *exact* context a session ToolBox would hand to the LLM:
 the combined system prompt (base prompt + sandbox policy + every selected tool's
 ``procedure`` block) and the tool-call schemas (the function definitions).

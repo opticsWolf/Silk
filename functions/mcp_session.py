@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""One live MCP session per server, owned by a node (spec D19-D22).
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+One live MCP session per server, owned by a node (spec D19-D22).
 
 `mcp_toolset.py` already speaks the protocol. What was missing is *where
 the connection lives*, and the answer matters more than it looks.

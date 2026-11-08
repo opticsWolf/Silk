@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""AgentLoop tests with a fake engine + fake toolbox (Qt-free, no model).
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+AgentLoop tests with a fake engine + fake toolbox (Qt-free, no model).
 
 Covers: plain completion, tool round, reflection retry, non-retryable
 role_denied results, usage-limit stop, and the max_rounds cap — the

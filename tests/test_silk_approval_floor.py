@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""The floor under ``requires_approval=True`` (spec D81; closes G1).
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+The floor under ``requires_approval=True`` (spec D81; closes G1).
 
 The flag was stored at registration and read by nothing: `_safe_execute`
 held a `pass` with a TODO, and the only thing that ever asked was the

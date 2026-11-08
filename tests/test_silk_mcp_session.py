@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Node-owned MCP sessions: one handshake per server (spec D19-D22).
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Node-owned MCP sessions: one handshake per server (spec D19-D22).
 
 The claims worth pinning have nothing to do with the protocol, which
 `mcp_toolset.py` already speaks. They are about *ownership*: that a

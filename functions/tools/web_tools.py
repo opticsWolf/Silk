@@ -1,11 +1,20 @@
 # -*- coding: utf-8 -*-
-"""The public web as agent tools: gossamer search, fetch and extraction.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+The public web as agent tools: gossamer search, fetch and extraction.
 
 Distilled from the bundled skill ``gossamer/skills/gossamer/SKILL.md``
 (served upstream as ``skills://gossamer``) and ``docs/QUICKREF.md``. The
 descriptions below are the skill's routing table, budgets and gotchas
 compressed to what the model needs at call time; re-sync them when the
 skill changes (upstream guards its drift with ``test_skill_drift.py``).
+
+Upstream license: the gossamer skill is MIT-licensed (Copyright (c)
+2024-2026 gossamer contributors); this distillation preserves that
+attribution. The surrounding Silk code is AGPL-3.0-only.
 
 What was taken from the skill, per tool:
 

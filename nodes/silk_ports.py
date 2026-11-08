@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Custom port types shared by the Silk node suite.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Custom port types shared by the Silk node suite.
 
 Registered once at import (R2.5.6). Every silk node module imports its
 types from here; each registration is guarded so re-imports and test

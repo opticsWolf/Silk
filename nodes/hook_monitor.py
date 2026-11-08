@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Silk Hook Monitor Node.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Silk Hook Monitor Node.
 
 Graph-native observability sink for the Agent node's ``events`` stream:
 a rolling log of every event the run produces — lifecycle, model rounds,

@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""bobine in a child process: one request on stdin, JSON lines on stdout.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+bobine in a child process: one request on stdin, JSON lines on stdout.
 
 Run by :mod:`functions.bobine_convert`, never imported into Weave's
 process: ``import bobine`` loads ONNX Runtime when one is installed, and

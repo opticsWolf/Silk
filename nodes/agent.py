@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Silk Agent Node.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Silk Agent Node.
 
 The autonomous tool-calling agent as a graph node. Wires a GGUF model
 (pool), a Silk ToolSet, and a Silk Role into the Qt-free

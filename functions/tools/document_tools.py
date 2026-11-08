@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Document tools: a sandbox file to Markdown with bobine.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Document tools: a sandbox file to Markdown with bobine.
 
 ``convert_document`` reads a PDF, Office file (DOCX/XLSX/PPTX and the
 legacy formats), JATS XML article or text file inside the sandbox and

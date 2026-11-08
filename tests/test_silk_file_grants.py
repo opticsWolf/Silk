@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""File grants as data, and the chain that may only narrow (spec D16-D18, I6).
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+File grants as data, and the chain that may only narrow (spec D16-D18, I6).
 
 The model is the easy half. What these tests are actually defending is the
 direction of every operation: `narrow` is not symmetric, a malformed grant

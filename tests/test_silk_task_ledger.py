@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""The task store, backed by the Macrame ledger (D63-D66).
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+The task store, backed by the Macrame ledger (D63-D66).
 
 Two things are being pinned here, and they pull in opposite directions.
 

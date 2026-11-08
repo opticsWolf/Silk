@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Lightweight GGUF metadata probe.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Lightweight GGUF metadata probe.
 
 Reads ONLY the GGUF header and metadata KV section, stopping as soon as the
 wanted keys are found.  It never reaches the tensor-info table, so probing a

@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Minimal HuggingFace Hub client (stdlib only).
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
+Copyright (c) 2026 opticsWolf
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Minimal HuggingFace Hub client (stdlib only).
 
 Listing, searching and downloading need no Hub library: the search and
 repo endpoints are plain JSON over HTTPS, and file downloads are plain

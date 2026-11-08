@@ -1,10 +1,8 @@
 # -*- coding: utf-8 -*-
-"""
-Weave: A modular PySide6 framework for the visual synthesis
-and execution of high-concurrency simulation workflows.
+"""Silk agent suite (opt-in): a local-first agentic runtime as Weave nodes.
 Copyright (c) 2026 opticsWolf
 
-SPDX-License-Identifier: Apache-2.0 OR MIT
+SPDX-License-Identifier: AGPL-3.0-only
 
 The ``node-dev`` toolset: the agent writes a Rust compute node, proves it
 against a Python reference, hot-loads and benchmarks it in Weave, and asks
