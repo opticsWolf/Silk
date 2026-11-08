@@ -860,4 +860,4 @@ def test_an_old_toolbox_keeps_compacting_after_migration():
     out = SilkToolBoxNode.migrate_state(state, 3)
     assert out["widget_data"]["hooks_config"]["names"] == ["timing", "auto_compact"]
     assert "compact_context" in out["seen_tools"], "offered, so not auto-ticked"
-    assert SilkToolBoxNode.node_state_api == 5
+    assert SilkToolBoxNode.node_state_api == 6

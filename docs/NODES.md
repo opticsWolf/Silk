@@ -413,7 +413,12 @@ attached because something in it is ticked, and that is the whole rule
 * **plugin authoring** is on because a `suite_tools` tool is ticked, and
   that is what adds `~/.weave/plugins` to the sandbox as a writable root;
 * **graph authoring** mounts because a graph tool is ticked *and* the
-  whitelist behind its gear names at least one class.
+  whitelist behind its gear names at least one class;
+* **node-dev** promotes into the folder behind its gear (saved in the
+  graph). Empty is Weave's user plugin folder. Weave remembers any other
+  folder on the first promotion into it and loads it at every start
+  (`weave.plugin.remember_root`; `forget_root` stops that). The sign-off
+  request names the folder.
 
 **The tree is populated before anything is wired.** It is seeded from a
 static catalog (`functions/tool_groups.py`) built once by running every

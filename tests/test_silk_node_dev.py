@@ -208,6 +208,12 @@ def test_from_a_spec_to_a_promoted_rust_node(box, weave, tmp_path):
     assert signoff.tool_name == nd.OP_PROMOTE and signoff.detail["suggestion"]["suggest"] == "approve"
     assert signoff.detail["bench"]["met"] and signoff.detail["ready"]
     assert promoted["result"]["approved_by"] == "frank"
+    assert str(tmp_path / "plugins") in signoff.prompt, "the person sees where it goes"
+    # Outside the user plugin folder: Weave loads it with every session.
+    from weave.plugin import default_roots, forget_root
+    assert promoted["result"]["remembered"] is True
+    assert (tmp_path / "plugins").resolve() in default_roots()
+    assert forget_root(tmp_path / "plugins")
     dest = tmp_path / "plugins" / "fast_math"
     manifest = (dest / "weave-plugin.toml").read_text()
     assert 'id = "fast_math"' in manifest and '"SumSquares"' in manifest

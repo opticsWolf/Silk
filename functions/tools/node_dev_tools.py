@@ -53,6 +53,7 @@ _ADVISOR_ATTR = "_silk_node_dev_advisor"
 _APPROVER_ATTR = "_silk_node_dev_approver"
 _FLOOR_ATTR = "_silk_node_dev_floor"
 _BUILDS_ATTR = "_silk_node_dev_approved_builds"
+_PROMOTE_ROOT_ATTR = "_silk_node_dev_promote_root"
 
 #: The approver a load records when nobody was asked: every WASM build it
 #: starts was approved earlier in this run, or pinned (D3).
@@ -82,6 +83,27 @@ def bind_signoff_advisor(toolbox: Any, advisor: Optional[Callable[[dict], Any]])
 
 def node_dev_workspace(toolbox: Any) -> Optional[Workspace]:
     return getattr(toolbox, _WORKSPACE_ATTR, None)
+
+
+def promote_root_of(toolbox: Any) -> Path:
+    """Where *toolbox*'s node-dev promotes: the folder its ToolBox chose,
+    else Weave's user plugin folder."""
+    root = getattr(toolbox, _PROMOTE_ROOT_ATTR, None)
+    if root is not None:
+        return Path(root)
+    from ..self_modify import user_plugin_root
+    return user_plugin_root()
+
+
+def _remember(root: Path) -> bool:
+    """Have Weave load *root* with every session: a promoted set outside
+    the user plugin folder would otherwise serve this session only."""
+    try:
+        from weave.plugin import remember_root
+        return remember_root(root)
+    except Exception as exc:  # noqa: BLE001 - the promotion itself stands
+        log.warning("node-dev: could not remember %s as a plugin folder: %s", root, exc)
+        return False
 
 
 def _weave(toolbox: Any) -> Any:
@@ -135,8 +157,9 @@ def attach_node_dev_floor(toolbox: Any, *, promote_root: Optional[os.PathLike] =
                                     text="Not ready to promote: " + "; ".join(missing) + ".")
                 target = str(args.get("set_id") or "")
                 detail = nd.signoff_detail(ws, kind, target, getattr(toolbox, _ADVISOR_ATTR, None))
-                prompt = (f"Promote {kind} from the scratch set into '{target}'? It was written by an agent; "
-                          f"review the kernel, the proof and the bench.")
+                prompt = (f"Promote {kind} from the scratch set into '{target}' in {promote_root_of(toolbox)}? "
+                          f"It was written by an agent; review the kernel, the proof and the bench. Weave "
+                          f"loads that folder at every start from now on.")
             elif tool_name == OP_BENCH:
                 control = _weave(toolbox)
                 needed = None if control is None else nd.reference_needed(control, ws, kind)
@@ -309,13 +332,14 @@ def attach_node_dev_tools(toolbox: "ToolBox", sandbox: Optional["FileToolSandbox
         root = base / ".weave" / "node-dev"
     ws = Workspace(root)
     setattr(toolbox, _WORKSPACE_ATTR, ws)
+    setattr(toolbox, _PROMOTE_ROOT_ATTR, None if promote_root is None else Path(promote_root))
     attach_node_dev_floor(toolbox)
 
-    def _promote_root() -> Path:
-        if promote_root is not None:
-            return Path(promote_root)
-        from ..self_modify import user_plugin_root
-        return user_plugin_root()
+    def _promote_into_root(control: Any, kind: str, set_id: str, approver: str) -> dict:
+        dest_root = promote_root_of(toolbox)
+        result = nd.promote(ws, kind, dest_root, set_id, approved_by=approver, control=control)
+        result["remembered"] = _remember(dest_root)
+        return result
 
     def run(op: str, fn: Callable[[], dict]) -> NodeDevResult:
         try:
@@ -444,8 +468,7 @@ def attach_node_dev_tools(toolbox: "ToolBox", sandbox: Optional["FileToolSandbox
         if approver is None:
             # Reached without the floor: refuse rather than promote unasked.
             return NodeDevResult(ok=False, op=OP_PROMOTE, message="Promotion needs the user's sign-off.")
-        return run(OP_PROMOTE, lambda: nd.promote(ws, kind, _promote_root(), set_id, approved_by=approver,
-                                                  control=_weave(toolbox)))
+        return run(OP_PROMOTE, lambda: _promote_into_root(_weave(toolbox), kind, set_id, approver))
 
     @toolbox.register(
         name=OP_STATUS, tags=("node-dev", "read"), category="node-dev", risk="low",

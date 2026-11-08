@@ -98,6 +98,7 @@ DEFAULT_GROUPS: frozenset[str] = frozenset({"file_read", "ripgrep", "knowledge"}
 GROUP_CONFIG_LABELS: Dict[str, str] = {
     "graph_authoring": "Allowed node classes…",
     "knowledge": "Knowledge graph access…",
+    "node_dev": "Promote folder…",
 }
 
 

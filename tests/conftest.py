@@ -26,12 +26,17 @@ Bootstrap, in order:
    test the host's submodule pin instead of this checkout.
 3. **Qt renders offscreen** by default (the widget tests build real
    docks).
+4. **Weave's settings go to a throwaway INI file,** as in Weave's own
+   suite: a promotion remembers its plugin folder there, and a test run
+   must not add folders to the user's startup roots.
 """
 from __future__ import annotations
 
 import importlib.util
 import os
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parent.parent
@@ -60,3 +65,20 @@ sys.modules["silk"] = _silk
 _spec.loader.exec_module(_silk)
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+_SETTINGS_DIR = ""
+
+
+def pytest_configure(config):
+    global _SETTINGS_DIR
+    try:
+        import weave.app_settings as store
+    except Exception:  # a run without Qt installed
+        return
+    _SETTINGS_DIR = tempfile.mkdtemp(prefix="silk-test-settings-")
+    store._ini_path = str(Path(_SETTINGS_DIR) / "weave.ini")
+
+
+def pytest_unconfigure(config):
+    if _SETTINGS_DIR:
+        shutil.rmtree(_SETTINGS_DIR, ignore_errors=True)

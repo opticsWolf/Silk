@@ -41,6 +41,7 @@ from weave.node.base import ActiveNode
 from weave.node import VerticalSizePolicy
 from weave.registry import register_node
 from weave.logger import get_logger
+from weave.widgets.path_history_picker import PathHistoryPicker
 
 from .silk_ports import SILK_TOOLBOX_TYPE  # noqa: F401
 from ..functions.mcp_session import MCPBundle, attach_bundle
@@ -59,6 +60,7 @@ from ..functions.tool_groups import (
 )
 from ..functions.tools.file_sandbox import FileToolSandbox
 from ..functions.tools.graph_authoring import attach_graph_tools
+from ..functions.tools.node_dev_tools import attach_node_dev_tools
 from ..functions.import_reach import import_reach_warning
 from ..functions.self_modify import user_plugin_root
 from ..functions.tools.recall_tool import attach_recall_tool
@@ -100,7 +102,7 @@ class SilkToolBoxNode(SplitFormState, ActiveNode):
     node_icon: ClassVar[Optional[str]] = "grid-dots"
     # Keeps the height the user drags it to: the groups share it.
     vertical_size_policy: ClassVar[VerticalSizePolicy] = VerticalSizePolicy.GROW_ONLY
-    node_state_api = 5   # owns a hand-written state dict
+    node_state_api = 6   # owns a hand-written state dict
     node_version = 6     # bump on any state-shape change (G20); 6: splitter sizes
 
     def __init__(self, title: str = "Silk ToolBox", **kwargs: Any) -> None:
@@ -186,6 +188,23 @@ class SilkToolBoxNode(SplitFormState, ActiveNode):
             datatype="string", default=DEFAULT_OKF_LEVEL, add_to_layout=False,
         )
         self._knowledge_level.setCurrentText(DEFAULT_OKF_LEVEL)
+        # Where node-dev promotes the kinds it was signed off on. Behind
+        # the gear on the node-dev row: empty is Weave's user plugin
+        # folder; any other folder Weave remembers on the first promote
+        # into it and loads with every session after.
+        self._promote_root = PathHistoryPicker(mode="folder")
+        self._promote_root.setToolTip(
+            "The plugin folder promoted node-dev kinds go to. Empty: "
+            "Weave's user plugin folder.")
+        self._promote_root.intro = (  # type: ignore[attr-defined]
+            "Where this box's node-dev tools put a kind once you sign off "
+            "on it. Weave loads the sets in this folder at every start "
+            "from the first promotion on. Empty: Weave's user plugin "
+            "folder.")
+        self._widget_core.register_widget(
+            "node_dev_promote_root", self._promote_root, role=PortRole.INTERNAL,
+            datatype="dirpath", default="", add_to_layout=False,
+        )
         self._config_dialogs = ConfigDialogs()
 
         # Infrastructure hooks: part of the recipe, so every derived
@@ -281,7 +300,11 @@ class SilkToolBoxNode(SplitFormState, ActiveNode):
 
     @staticmethod
     def migrate_state(state: Dict[str, Any], from_version: int) -> Dict[str, Any]:
-        """api 1 → 5.
+        """api 1 → 6.
+
+        5 → 6: node-dev's promote folder (``node_dev_promote_root``).
+        Nothing to translate: absent is empty, Weave's user plugin
+        folder, which is where every promotion went before.
 
         4 → 5: the knowledge tools became a group of their own, with an
         access level (``knowledge_level``). Nothing to translate: an absent
@@ -352,8 +375,9 @@ class SilkToolBoxNode(SplitFormState, ActiveNode):
     def _open_group_config(self, category: str) -> None:
         """Open the settings behind a category row's gear.
 
-        Graph authoring's whitelist and the knowledge graph's access
-        level. Both are modal on purpose: each is a grant, and a grant
+        Graph authoring's whitelist, the knowledge graph's access level
+        and node-dev's promote folder. All are modal on purpose: each is
+        a grant (the folder is where Weave loads code from), and a grant
         edited in a panel that can drift out of view is a grant nobody
         re-reads.
         """
@@ -374,6 +398,8 @@ class SilkToolBoxNode(SplitFormState, ActiveNode):
             return self._node_whitelist
         if category in categories_of("knowledge"):
             return self._knowledge_level
+        if category in categories_of("node_dev"):
+            return self._promote_root
         return None
 
     def _adopt_new_tools(self, catalog: List[Dict[str, Any]]) -> None:
@@ -543,6 +569,10 @@ class SilkToolBoxNode(SplitFormState, ActiveNode):
                     attach_okf_tools, graph=inputs.get("knowledge"),
                     level=coerce_level(inputs.get("knowledge_level")),
                 )
+            elif group == "node_dev":
+                promote_root = str(inputs.get("node_dev_promote_root") or "").strip()
+                attacher = (partial(attach_node_dev_tools, promote_root=Path(promote_root).expanduser())
+                            if promote_root else attach_node_dev_tools)
             else:
                 attacher = GROUP_ATTACHERS[group]
             recipe.append((group, attacher))
