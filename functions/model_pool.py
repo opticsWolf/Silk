@@ -731,13 +731,17 @@ class LazyGGUFPool:
     the next use starts a new one. *on_start* is called (on the thread
     that started it) with the running pool, or with the exception when
     the start failed; the exception is raised to the consumer either way.
+    *check* (optional) is asked about a freshly started pool before anyone
+    gets it -- a decision model's smoke question, say; when it raises, the
+    server is stopped and the start counts as failed.
     """
 
     def __init__(self, model_path: str, on_start: Any = None,
-                 **pool_kwargs: Any) -> None:
+                 check: Any = None, **pool_kwargs: Any) -> None:
         self._model_path = model_path
         self._pool_kwargs = pool_kwargs
         self._on_start = on_start
+        self._check = check
         self._pool: Optional[GGUFModelPool] = None
         self._lock = threading.Lock()
 
@@ -753,12 +757,21 @@ class LazyGGUFPool:
         """The running pool, starting the server if it is not up."""
         with self._lock:
             if self._pool is None:
+                pool: Optional[GGUFModelPool] = None
                 try:
-                    self._pool = GGUFModelPool(self._model_path, **self._pool_kwargs)
+                    pool = GGUFModelPool(self._model_path, **self._pool_kwargs)
+                    if self._check is not None:
+                        self._check(pool)
                 except Exception as exc:
+                    if pool is not None:
+                        try:
+                            pool.cleanup()
+                        except Exception:  # noqa: BLE001 - keep the cause
+                            pass
                     if self._on_start is not None:
                         self._on_start(exc)
                     raise
+                self._pool = pool
                 if self._on_start is not None:
                     self._on_start(self._pool)
             return self._pool

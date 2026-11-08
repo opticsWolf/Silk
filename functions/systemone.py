@@ -166,6 +166,43 @@ class SystemOneClient:
         return answers
 
 
+class PoolSystemOneClient(SystemOneClient):
+    """A :class:`SystemOneClient` on a Silk pool, which it asks for the
+    address at every question rather than once.
+
+    The Classifier Loader's pool starts its server on first use, so
+    building a classifier must not touch it; and a server stopped and
+    started again (Unload, then the next question) is on a new port. A
+    server that will not start fails the question, like an unreachable
+    one, with the reason it gave.
+    """
+
+    def __init__(self, pool: Any, headers: Optional[Dict[str, str]] = None) -> None:
+        self._pool = pool
+        super().__init__("", headers=headers)
+
+    @property  # type: ignore[override]
+    def base_url(self) -> str:
+        try:
+            return str(self._pool.base_url or "").rstrip("/")
+        except RuntimeError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - one failure type for the chain
+            raise RuntimeError(f"the decision server did not start: {exc}") from exc
+
+    @base_url.setter
+    def base_url(self, value: str) -> None:
+        pass   # the pool's, never set
+
+    @property  # type: ignore[override]
+    def model_alias(self) -> str:
+        return str(getattr(self._pool, "model_alias", "") or "default")
+
+    @model_alias.setter
+    def model_alias(self, value: str) -> None:
+        pass
+
+
 def _classify_http(exc: urllib.error.HTTPError) -> Exception:
     """The server's own verdict, translated to the caller's terms."""
     detail = ""

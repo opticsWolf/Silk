@@ -34,6 +34,14 @@ Settings sources, in order:
 The output is the ``classifier_model`` wire:
 ``{"backend": "systemone", "pool": ..., "role": "decision"}`` -- the
 shape the Classifier and Ensemble nodes consume via ``SystemOneClient``.
+
+**Loaded on demand.** There is no load button to press: the node hands
+out its handle as soon as a model is chosen, and the llama.cpp server
+starts the first time a Classifier or Ensemble asks it a question
+(``functions.model_pool.LazyGGUFPool``). The smoke decision runs right
+then, before that first question gets the server, and the settings are
+remembered once it passes. Unload stops the server; the next question
+starts it again.
 """
 
 import threading
@@ -51,7 +59,7 @@ from PySide6.QtWidgets import (
 )
 
 from weave.widgetcore import WidgetCore, PortRole
-from weave.node.threaded import ThreadedManualNode
+from weave.node.threaded import ThreadedNode
 from weave.node import VerticalSizePolicy
 from weave.registry import register_node
 from weave.logger import get_logger
@@ -64,7 +72,7 @@ from weave.widgets.separator_line import SeparatorLine
 from .silk_ports import CLASSIFIER_MODEL_TYPE  # noqa: F401
 
 from ..functions.model_pool import (
-    GGUFModelPool, LLAMA_CPP_AVAILABLE, LLAMA_SERVER_AVAILABLE,
+    GGUFModelPool, LazyGGUFPool, LLAMA_CPP_AVAILABLE, LLAMA_SERVER_AVAILABLE,
     server_missing_deps_message,
 )
 from ..functions.gguf_meta import read_gguf_meta, read_gguf_meta_fallback
@@ -96,7 +104,7 @@ SMOKE_QUESTIONS = {
 
 
 @register_node
-class ClassifierLoaderNode(ThreadedManualNode):
+class ClassifierLoaderNode(ThreadedNode):
     """Loads a decision-model GGUF and serves /v1/systemone from it."""
 
     _widget_core: WidgetCore
@@ -114,8 +122,9 @@ class ClassifierLoaderNode(ThreadedManualNode):
     ]
     node_icon: ClassVar[Optional[str]] = "scale"
     vertical_size_policy: ClassVar[VerticalSizePolicy] = VerticalSizePolicy.FIT
-    node_state_api = 2
-    node_version = 1
+    #: 3: loads on demand -- an auto node with an Unload button, no Load.
+    node_state_api = 3
+    node_version = 2
 
     @classmethod
     def migrate_state(cls, state: Dict[str, Any], from_version: int) -> Dict[str, Any]:
@@ -125,10 +134,20 @@ class ClassifierLoaderNode(ThreadedManualNode):
 
         Widgets are unchanged, so saved values land as before; only wires
         off the renamed output need re-drawing.
+
+        api 2 → 3: the node was manual (a Load button). A saved scene
+        carries that flag, which would keep the node waiting for a click
+        that no longer exists.
         """
+        dataflow = state.get("dataflow")
+        if from_version < 3 and isinstance(dataflow, dict):
+            dataflow["manual_mode"] = False
         return state
 
     _probe_ready = Signal(str, object)
+    #: The lazy pool started (a pool) or failed to (an exception), from
+    #: whichever thread asked the first question.
+    _pool_started = Signal(object)
 
     _pending_pool_info: Optional[dict] = None
 
@@ -139,7 +158,8 @@ class ClassifierLoaderNode(ThreadedManualNode):
         self.add_output("model_obj", datatype="classifier_model")
         self.add_output("pool_info", datatype="dict")
 
-        self.model_pool: Optional[GGUFModelPool] = None
+        self.model_pool: Optional[LazyGGUFPool] = None
+        self._pool_key: Optional[tuple] = None
         self._probe_cache: Dict[str, Dict[str, Any]] = {}
         self._model_store = DecisionModelStore()
 
@@ -218,9 +238,13 @@ class ClassifierLoaderNode(ThreadedManualNode):
             datatype="str", add_to_layout=False)
 
         btn_row = QHBoxLayout()
-        self.btn_load = SyncButton(initial_text="Load Classifier Model",
-                                   initial_icon="download")
-        self.btn_load.clicked.connect(self.execute)
+        self.btn_load = SyncButton(initial_text="Unload Classifier",
+                                   initial_icon="player-eject")
+        self.btn_load.setToolTip(
+            "The model loads when a Classifier or Ensemble first asks it a "
+            "question. Unload stops its server and frees the memory; it "
+            "starts again when the next question comes.")
+        self.btn_load.clicked.connect(self._on_unload_clicked)
         btn_row.addWidget(self.btn_load)
         form.addRow("", btn_row)
         self._widget_core.register_widget(
@@ -235,6 +259,7 @@ class ClassifierLoaderNode(ThreadedManualNode):
         self._probe_timer.setInterval(250)
         self._probe_timer.timeout.connect(self._start_probe)
         self._probe_ready.connect(self._apply_probe)
+        self._pool_started.connect(self._on_pool_started)
 
         self.set_content_widget(self._widget_core)
         if hasattr(self._widget_core, "patch_proxy"):
@@ -378,6 +403,9 @@ class ClassifierLoaderNode(ThreadedManualNode):
     def _on_value_changed(self, port_name: str) -> None:
         self._update_estimation()
         self.on_ui_change()
+        if port_name not in ("status", "btn_load"):
+            # The settings are the server's: a new handle, a new server.
+            self.set_dirty(port_name)
 
     @Slot(str, object)
     def _on_port_value_written(self, port_name: str, value: Any) -> None:
@@ -390,40 +418,44 @@ class ClassifierLoaderNode(ThreadedManualNode):
     # ------------------------------------------------------------------
 
     def _is_model_loaded(self) -> bool:
-        if self.model_pool is not None:
-            return True
-        cached_val = self._get_cached_value("model_obj")
-        return bool(cached_val and isinstance(cached_val, dict)
-                    and "pool" in cached_val)
+        return self.model_pool is not None and self.model_pool.started
 
     def _unload_model(self) -> None:
-        log.info(f"Ejecting decision model for {self.node_name}...")
-        if self.model_pool is not None:
-            self.model_pool.cleanup()
-            self.model_pool = None
-        cached_val = self._get_cached_value("model_obj")
-        if cached_val is not None and "pool" in cached_val:
-            del cached_val["pool"]
+        """Stop the server. The handle stays: its next use starts it."""
+        if self.model_pool is None or not self.model_pool.started:
+            return
+        log.info(f"Unloading decision model for {self.node_name}...")
+        self.model_pool.cleanup()
         import gc as _gc
         _gc.collect()
-        self.emit_stream("pool_info", None)
+        self.emit_stream("pool_info", self.model_pool.snapshot())
         self.on_ui_change()
         self._update_button_idle()
 
-    def execute(self) -> None:
-        if self._is_computing:
-            self.cancel_compute()
-        elif self._is_model_loaded():
-            self._unload_model()
+    def _on_unload_clicked(self) -> None:
+        self._unload_model()
+        # Downstream holds the stopped server's address: re-evaluating
+        # gives it the handle again, and the next question starts it.
+        self.set_dirty("unloaded")
+
+    def _start_notice(self, result: Any) -> None:
+        """The lazy pool's on_start: any thread, so through a signal."""
+        self._pool_started.emit(result)
+
+    @Slot(object)
+    def _on_pool_started(self, result: Any) -> None:
+        if isinstance(result, BaseException):
+            self._widget_core.push_display(
+                "status", f"Decision server failed to start: {result}")
         else:
-            self.btn_load.set_label("Loading (Click to Cancel)...")
-            super().execute()
+            self._widget_core.push_display(
+                "status", f"Loaded {Path(result.model_path).name} "
+                          f"at {result.base_url}.")
+            self.emit_stream("pool_info", result.snapshot())
+        self._update_button_idle()
 
     def _update_button_idle(self) -> None:
-        if self._is_model_loaded():
-            self.btn_load.set_label("Eject Classifier Model")
-        else:
-            self.btn_load.set_label("Load Classifier Model")
+        self.btn_load.setEnabled(self._is_model_loaded())
 
     def _cleanup_after_worker(self, skip_results: bool = False) -> None:
         self._update_button_idle()
@@ -472,57 +504,59 @@ class ClassifierLoaderNode(ThreadedManualNode):
         if self.is_compute_cancelled():
             return {"model_obj": None}
 
-        try:
-            self.model_pool = GGUFModelPool(
-                model_path=model_path,
-                n_instances=1,
-                **llama_kwargs,
-            )
-        except Exception as exc:  # noqa: BLE001 - surface the reason to the UI
-            log.error(f"Decision server failed to start: {exc}")
-            self.compute_error.emit(f"Server failed to start: {exc}")
-            return {"model_obj": None}
-
-        # The file is up, but is it a *decision* model on a new enough
-        # server? A chat GGUF answers 501, an old llama.cpp answers 404 --
-        # both fail the load here, with the server's own reason attached,
-        # instead of failing the first triage call.
-        try:
-            SystemOneClient(self.model_pool.base_url,
-                            self.model_pool.model_alias).decide(
-                SMOKE_STATE, dict(SMOKE_QUESTIONS))
-        except Exception as exc:  # noqa: BLE001 - reported, never raised
-            log.error(f"Decision smoke test failed: {exc}")
-            try:
-                self.model_pool.cleanup()
-            except Exception:  # noqa: BLE001 - cleanup must not mask the cause
-                pass
-            self.model_pool = None
-            self.compute_error.emit(f"Not a usable decision model: {exc}")
-            return {"model_obj": None}
-
-        try:
-            self._model_store.remember(
-                model_path,
+        key = (model_path, tuple(sorted(llama_kwargs.items())))
+        if self.model_pool is None or key != self._pool_key:
+            if self.model_pool is not None:
+                self.model_pool.cleanup()   # settings changed: a new server
+            remembered = dict(
                 device=device,
                 n_ctx=int(inputs.get("n_ctx", 2048)),
                 n_threads=int(inputs.get("n_threads", 8)),
                 n_batch=int(inputs.get("n_batch", 512)),
                 use_mmap=bool(inputs.get("use_mmap", True)),
             )
-        except Exception as exc:
-            log.debug(f"Could not persist decision settings: {exc}")
+            # Nothing starts here: the server waits for its first question.
+            self.model_pool = LazyGGUFPool(
+                model_path, on_start=self._start_notice,
+                check=lambda pool: self._smoke_check(pool, model_path, remembered),
+                n_instances=1, **llama_kwargs,
+            )
+            self._pool_key = key
 
         pool_info = self.model_pool.snapshot()
         self._pending_pool_info = pool_info
+        self._sync_status = (
+            f"{Path(model_path).name} on {device.upper()}: "
+            + ("loaded." if self.model_pool.started
+               else "loads when a Classifier or Ensemble first asks it."))
         handle: Dict[str, Any] = {"backend": "systemone",
                                   "pool": self.model_pool,
                                   "role": "decision"}
         return {"model_obj": handle, "pool_info": pool_info}
 
+    def _smoke_check(self, pool: GGUFModelPool, model_path: str,
+                     remembered: Dict[str, Any]) -> None:
+        """The started server, before anyone else gets it: is it a
+        *decision* model on a new enough server? A chat GGUF answers 501,
+        an old llama.cpp 404 -- either fails the start, with the server's
+        own reason, instead of a triage answer. Settings that pass are
+        remembered for the file."""
+        try:
+            SystemOneClient(pool.base_url, pool.model_alias).decide(
+                SMOKE_STATE, dict(SMOKE_QUESTIONS))
+        except Exception as exc:
+            log.error(f"Decision smoke test failed: {exc}")
+            raise RuntimeError(f"Not a usable decision model: {exc}") from exc
+        try:
+            self._model_store.remember(model_path, **remembered)
+        except Exception as exc:
+            log.debug(f"Could not persist decision settings: {exc}")
+
     def on_evaluate_finished(self) -> None:
         super().on_evaluate_finished()
         self._update_button_idle()
+        if getattr(self, "_sync_status", ""):
+            self._widget_core.push_display("status", self._sync_status)
         if self._pending_pool_info is not None:
             self.emit_stream("pool_info", self._pending_pool_info)
             self._pending_pool_info = None
@@ -534,5 +568,7 @@ class ClassifierLoaderNode(ThreadedManualNode):
         except (RuntimeError, TypeError):
             pass
         self.cancel_compute()
-        self._unload_model()
+        if self.model_pool is not None:
+            self.model_pool.cleanup()
+            self.model_pool = None
         super().cleanup()

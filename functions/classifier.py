@@ -49,7 +49,7 @@ from typing import Any, Callable, Literal, Optional, Protocol, Sequence
 
 from pydantic import BaseModel, Field, field_validator
 
-from .systemone import SystemOneClient
+from .systemone import PoolSystemOneClient
 
 MODES = ("off", "shadow", "live")
 PURPOSES = ("gate", "hook", "tool")
@@ -572,10 +572,9 @@ def decision_member(handle: Any, *,
     if pool is not None:
         path = getattr(pool, "model_path", "") or ""
         model_id = f"local/{Path(path).stem}" if path else "local/decision"
-        try:
-            client = SystemOneClient(pool.base_url, pool.model_alias)
-        except AttributeError:
-            return None
+        # Asked for its address per question: building the classifier
+        # must not start a lazy pool's server.
+        client = PoolSystemOneClient(pool)
         return model_id, BackendConfig(kind="systemone", model=model_id,
                                        egress=False), {"systemone": client}
     url = str(handle.get("url") or "").strip().rstrip("/")

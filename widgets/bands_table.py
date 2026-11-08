@@ -26,7 +26,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
-    QPushButton,
     QStyledItemDelegate,
     QTableWidget,
     QTableWidgetItem,
@@ -35,6 +34,7 @@ from PySide6.QtWidgets import (
 
 from weave.panel.mirror_contracts import MirrorContract
 from weave.widgets.composite_value import CompositeValueWidget
+from weave.widgets.sync_button import SyncButton
 
 from ..functions.classifier import BandsConfig
 
@@ -115,9 +115,13 @@ class BandsTableWidget(CompositeValueWidget):
         self._table.setMinimumHeight(96)
         self.layout().addWidget(self._table)
 
+        # The Button Gallery's own Add / Remove: the label is what picks
+        # the icon and its colour, so the detail goes in the tooltip.
         buttons = QHBoxLayout()
-        self._btn_add = QPushButton("Add model")
-        self._btn_remove = QPushButton("Remove")
+        self._btn_add = SyncButton(initial_text="Add")
+        self._btn_add.setToolTip("Add a model row to calibrate.")
+        self._btn_remove = SyncButton(initial_text="Remove")
+        self._btn_remove.setToolTip("Remove the selected model rows.")
         buttons.addWidget(self._btn_add)
         buttons.addWidget(self._btn_remove)
         buttons.addStretch(1)
