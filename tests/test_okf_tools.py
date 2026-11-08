@@ -152,11 +152,18 @@ def test_search_forwards_its_arguments_to_the_op():
 def test_ingest_is_a_thoughts_ingest_and_drops_the_markdown():
     graph = FakeGraph({"ingest": {"concept_id": "thoughts/t/1", "markdown": "x" * 5000}})
     out = _call(_box(graph), "okf_ingest", thoughts="CRLF breaks the lexer.",
-                topic="lexer", type="finding", related=["lexer"])
+                topic="lexer", type="evidence", related=["lexer"])
     assert json.loads(out) == {"concept_id": "thoughts/t/1"}
     op, kwargs = graph.calls[-1]
     assert op == "ingest" and kwargs["kind"] == "thoughts"
     assert kwargs["topic"] == "lexer" and kwargs["related"] == ["lexer"]
+    assert kwargs["type"] == "evidence"
+
+
+def test_ingest_takes_only_the_shared_kinds():
+    graph = FakeGraph()
+    _call(_box(graph), "okf_ingest", thoughts="x", topic="t", type="finding")
+    assert not graph.calls, "'finding' is not one of dogma / rule / evidence / decision"
 
 
 def test_an_op_error_is_a_result_the_model_can_act_on():

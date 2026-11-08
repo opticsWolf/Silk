@@ -4,7 +4,7 @@ Copyright (c) 2026 opticsWolf
 
 SPDX-License-Identifier: AGPL-3.0-only
 
-The chat loop: Prompt node → Agent (run / stop / clear) → Chat Log.
+The chat loop: Prompt node → Agent (one `chat` → `run` wire) → Chat Log.
 
 Qt node tests with in-test imports, so the file still collects where
 PySide6 is missing. Runs never start: the agent's execute and cancel are
@@ -69,7 +69,7 @@ def test_context_cleared_is_part_of_the_vocabulary():
 def test_send_pulses_the_message_and_empties_the_box(prompt):
     prompt._editor.setPlainText("  summarise the plan  ")
     prompt.send()
-    assert prompt.pulses == [("send", "summarise the plan")]
+    assert prompt.pulses == [("chat", "summarise the plan")]
     assert prompt._editor.toPlainText() == ""
     assert prompt.compute({}) == {"prompt": "summarise the plan"}
 
@@ -80,18 +80,20 @@ def test_empty_box_sends_nothing(prompt):
     assert prompt.pulses == []
 
 
-def test_stop_and_new_chat_pulse_their_ports(prompt):
+def test_stop_and_new_chat_ride_the_chat_wire(prompt):
     prompt.stop()
     prompt.new_chat()
-    assert [p for p, _ in prompt.pulses] == ["stop", "new_chat"]
+    assert prompt.pulses == [("chat", {"action": "stop", "force": False}),
+                             ("chat", {"action": "clear"})]
+    assert [p.name for p in prompt.outputs if p.datatype == "exec"] == ["chat"]
 
 
 def test_prompt_stop_is_press_twice(prompt):
     prompt.stop()
     prompt.stop()
-    assert prompt.pulses == [("stop", True), ("stop", "force")]
+    assert prompt.pulses == [("chat", {"action": "stop", "force": False}), ("chat", {"action": "stop", "force": True})]
     prompt.force_stop()
-    assert prompt.pulses[-1] == ("stop", "force")
+    assert prompt.pulses[-1] == ("chat", {"action": "stop", "force": True})
 
 
 def test_steer_and_interrupt_send_a_mode(prompt):
@@ -105,7 +107,7 @@ def test_steer_and_interrupt_send_a_mode(prompt):
         prompt._editor.setPlainText("now this")
         key = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Return, mods)
         assert prompt.eventFilter(prompt._editor, key)
-        assert prompt.pulses[-1] == ("send", {"text": "now this", "mode": mode})
+        assert prompt.pulses[-1] == ("chat", {"text": "now this", "mode": mode})
 
 
 def test_history_steps_back_and_returns_to_the_draft(prompt):
@@ -183,19 +185,19 @@ def test_steer_while_idle_just_runs(agent):
 def test_stop_is_press_twice(agent):
     agent._is_computing = True
     agent.on_pulse("run", None, payload="later")
-    agent.on_pulse("stop", None, payload=True)
+    agent.on_pulse("run", None, payload={"action": "stop", "force": False})
     # First: after the current action -- no cancel, the queue is kept.
     assert agent.calls == []
     assert agent._control.stop_level() == 1 and agent._stop.stopping
     assert agent.btn_run.label() in ("Force Stop", "Stopping")
-    agent.on_pulse("stop", None, payload=True)
+    agent.on_pulse("run", None, payload={"action": "stop", "force": False})
     assert agent.calls == ["cancel"]               # second: now
     assert [i["text"] for i in agent._control.pending()] == ["later"]
 
 
 def test_force_payload_skips_the_first_step(agent):
     agent._is_computing = True
-    agent.on_pulse("stop", None, payload="force")
+    agent.on_pulse("run", None, payload={"action": "stop", "force": True})
     assert agent.calls == ["cancel"]
 
 
@@ -218,7 +220,7 @@ def test_a_stopped_run_holds_the_queue(agent, monkeypatch):
                         lambda _ms, fn: scheduled.append(fn))
     agent._is_computing = True
     agent.on_pulse("run", None, payload={"text": "late steer", "mode": "steer"})
-    agent.on_pulse("stop", None, payload=True)
+    agent.on_pulse("run", None, payload={"action": "stop", "force": False})
     agent._cleanup_after_worker()
     assert scheduled == []                         # no auto-run after a stop
     # The steer missed its run: it waits as the next run's prompt.
@@ -275,7 +277,7 @@ def test_queue_view_lists_messages_and_workers(agent):
 def test_clear_pulse_forgets_and_tells_the_wire(agent):
     agent._history[:] = [{"role": "user", "content": "x"},
                          {"role": "assistant", "content": "y"}]
-    agent.on_pulse("clear", None, payload=True)
+    agent.on_pulse("run", None, payload={"action": "clear"})
     assert agent._history == []
     [(port, wire)] = agent.wire
     assert port == "events"
@@ -297,7 +299,8 @@ def test_run_button_toggles_between_start_and_stop():
     node = SilkAgentNode()
     assert node.btn_run.label() == "Start"
     assert node.btn_clear.label() == "Clear"
-    assert {"stop", "clear", "run"} <= {p.name for p in node.inputs}
+    names = {p.name for p in node.inputs}
+    assert "run" in names and not names & {"stop", "clear"}
 
 
 def test_old_task_box_and_preview_are_dropped_on_load():
@@ -307,6 +310,74 @@ def test_old_task_box_and_preview_are_dropped_on_load():
                              "budget": "requests=3"}}
     out = SilkAgentNode.migrate_state(state, 4)
     assert out["widget_data"] == {"budget": "requests=3"}
+
+
+def test_old_stop_and_clear_inputs_merge_into_run():
+    from silk.nodes.agent import SilkAgentNode
+    exec_port = {"datatype": "exec"}
+    state = {"inputs": [{"name": "inbox", "datatype": "agent_message"},
+                        {"name": "run", **exec_port},
+                        {"name": "stop", **exec_port},
+                        {"name": "clear", **exec_port},
+                        {"name": "budget", "datatype": "string"}]}
+    out = SilkAgentNode.migrate_state(state, 2)
+    assert [p["name"] for p in out["inputs"]] == ["inbox", "run", "budget"]
+    assert SilkAgentNode.node_renamed_ports == {"stop": "run", "clear": "run"}
+
+
+class _Asking:
+    """Stands in for an agent waiting on a decision."""
+
+    def __init__(self):
+        self.answers = []
+
+    def _answer_decision(self, approved, remember, reason=None):
+        self.answers.append((approved, remember, reason))
+
+
+def test_unwired_prompt_shows_no_decisions(prompt):
+    assert prompt.chat_targets() == []
+    assert prompt._decisions.isHidden()
+
+
+def test_decision_strip_shows_only_its_agents_and_answers_through_them():
+    from silk.functions.decision_registry import DecisionRegistry
+    from silk.widgets.decision_strip import DecisionStrip
+    registry = DecisionRegistry()
+    mine, other = _Asking(), _Asking()
+    strip = DecisionStrip(lambda: [mine], registry=registry)
+    try:
+        registry.register({"decision_id": "x", "prompt": "elsewhere?"},
+                          node=other, agent="other")
+        strip.refresh()
+        assert strip.isHidden(), "another agent's question is not ours"
+
+        registry.register(
+            {"decision_id": "d1", "prompt": "delete fixtures?",
+             "detail": {"priority": 0.9, "suggestion": "deny"}},
+            node=mine, agent="builder")
+        strip.refresh()
+        assert not strip.isHidden()
+        assert "builder" in strip._title.text()
+        assert "Classifier suggests: deny" in strip._advice.text()
+
+        strip._reason.setText("they are generated")
+        assert strip.answer(False, "once")
+        assert mine.answers == [(False, "once", "they are generated")]
+        assert other.answers == []
+    finally:
+        strip.detach()
+
+
+def test_old_prompt_outputs_merge_into_chat():
+    from silk.nodes.prompt import SilkPromptNode
+    state = {"outputs": [{"name": "prompt", "datatype": "string"},
+                         {"name": "send", "datatype": "exec"},
+                         {"name": "stop", "datatype": "exec"},
+                         {"name": "new_chat", "datatype": "exec"}]}
+    out = SilkPromptNode.migrate_state(state, 1)
+    assert out["outputs"] == [{"name": "prompt", "datatype": "string"},
+                              {"name": "chat", "datatype": "exec"}]
 
 
 # ── Chat Log ─────────────────────────────────────────────────────────

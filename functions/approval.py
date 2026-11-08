@@ -74,6 +74,8 @@ from .decision_seam import (
     new_decision_id,
 )
 from .classifier_binding import GATE_USES_TRIAGE_ATTR, note_triaged, run_classifier
+from .decision_log import DECISION_LOG_ATTR, decision_log_of
+from .okf_knowledge import KNOWLEDGE_ATTR
 from .grants import SCOPE_ALWAYS, SCOPE_RUN, GrantStore, RunGrants
 from .hooks import HOOK_WRAP_TOOL_EXECUTE
 from .self_modify import ALWAYS_APPROVE
@@ -317,12 +319,25 @@ def attach_approval_gate(
         acceptance = list(plan.goal.acceptance) if plan is not None else []
         active = [t.title for t in (plan.tasks if plan is not None else [])
                   if t.status == "in_progress"]
-        knowledge = getattr(toolbox, "_knowledge", None)          # S6, when present
-        decisions = getattr(toolbox, "_decision_log", None)       # S2, when present
-        prior = decisions.similar(tool_name) if decisions is not None else []
+        knowledge = getattr(toolbox, KNOWLEDGE_ATTR, None)        # S6, a wired graph
+        decisions = getattr(toolbox, DECISION_LOG_ATTR, None)     # S2, the gate's own
+        prior = decisions.similar(tool_name, root) if decisions is not None else []
         rules = knowledge.rules_for(tool_name) if knowledge is not None else []
         return build_state(goal=goal, task="; ".join(active), acceptance=acceptance,
                            tool=tool_name, args=args, prior=prior, rules=rules)
+
+    def _log_decision(decision_id: str, tool_name: str, ctype: Optional[str],
+                      args: dict, decision: Decision, project: str) -> None:
+        try:
+            from .remember import run_identity
+            run_id = run_identity(toolbox).run_id
+        except Exception:                                          # no identity bound
+            run_id = ""
+        decision_log_of(toolbox).record(
+            decision_id=decision_id, tool=tool_name, prompt=_prompt(tool_name, ctype, args),
+            outcome="approved" if decision.approved else "denied",
+            actor=decision.actor or "user", reason=decision.reason,
+            run_id=run_id, project=project)
 
     def _prompt(tool_name: str, ctype: Optional[str], args: dict) -> str:
         if ctype is not None:
@@ -443,8 +458,9 @@ def attach_approval_gate(
                       "a human present."),
             )
 
+        decision_id = new_decision_id()
         decision = asker.await_decision(DecisionRequest(
-            decision_id=new_decision_id(),
+            decision_id=decision_id,
             kind=KIND_APPROVAL,
             prompt=_prompt(tool_name, ctype, args),
             tool_name=tool_name,
@@ -462,6 +478,9 @@ def attach_approval_gate(
                 **({"completion": completion} if completion is not None else {}),
             },
         ))
+        if decision.answered:
+            # What triage reads next time, and what findings_gate files (S2).
+            _log_decision(decision_id, tool_name, ctype, args, decision, root)
 
         if decision.approved:
             _remember(decision, tool_name)

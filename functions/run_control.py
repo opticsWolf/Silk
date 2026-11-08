@@ -47,6 +47,21 @@ MODE_STEER = "steer"
 MODE_INTERRUPT = "interrupt"
 MODES = (MODE_QUEUE, MODE_STEER, MODE_INTERRUPT)
 
+#: What a pulse on the one chat wire (Prompt ``chat`` → Agent ``run``) asks
+#: for, when it is not a message: ``{"action": "stop", "force": bool}`` or
+#: ``{"action": "clear"}``. A message keeps its old shape -- the text, or
+#: ``{"text", "mode"}`` -- so anything else wired to ``chat`` still reads it.
+ACTION_STOP = "stop"
+ACTION_CLEAR = "clear"
+ACTIONS = (ACTION_STOP, ACTION_CLEAR)
+
+
+def chat_action(payload: Any) -> Optional[str]:
+    """The action a chat pulse carries, or ``None`` for a message."""
+    if isinstance(payload, dict) and payload.get("action") in ACTIONS:
+        return payload["action"]
+    return None
+
 STOP_NONE = 0
 STOP_SOFT = 1
 STOP_FORCE = 2

@@ -12,7 +12,7 @@ nothing changes: every decision stays with the user.
 | Consumer | Installed as | Purpose key | Can it change what runs? |
 |---|---|---|---|
 | Approval gate | a step **inside** the gate, after grants | `gate` | Only at the `triage` level, in `live` mode, inside the bands calibrated for the model that answered |
-| Classifier hooks (`task_drift`, `prose_question`, `findings_gate`) | catalog entries, Role- or ToolBox-selected | `hook` | `task_drift` bounces a `task_add` once; the others file things. Never approve or deny |
+| Classifier hooks (`task_drift`, `prose_question`, `findings_gate`, `classify_ingest`) | catalog entries, Role- or ToolBox-selected | `hook` | `task_drift` bounces a `task_add` once; `classify_ingest` types an `okf_ingest` note; the others file things. Never approve or deny |
 | `classify` tool | registered for a run while the port is wired | `tool` | No: advisory results, own cache namespace, never read by the gate |
 
 ### `functions/triage.py` and the `triage` level
@@ -66,8 +66,25 @@ classifier hooks read the run's classifier, plan and identity) is declared as
 `ToolboxBound(make)`; `register_hook_map` calls `make(registry.owner)` when it
 registers it. `ToolBox` lends its registry itself as the owner.
 `prose_question` needs the work ledger and `findings_gate` decision records and a
-knowledge sink; until a toolbox carries those (`_work_ledger`, `_decision_log`,
-`_knowledge`), they are selectable and do nothing.
+knowledge sink. The Agent node gives every run's toolbox a decision log
+(`functions/decision_log.py`, `_decision_log`): the approval gate writes each
+answered question to it, with the human's reason, and triage reads the
+earlier answers for that tool back as `prior_decisions`. A wired Knowledge
+Graph puts an `OkfKnowledge` sink on the box (`functions/okf_knowledge.py`,
+`_knowledge`), which `findings_gate` files into and triage reads rules and
+dogmas from. The work ledger (`_work_ledger`) is still not set by anything,
+so `prose_question` is selectable and does nothing.
+
+### The four kinds of knowledge
+
+`functions/knowledge_kinds.py` is the one list: **dogma** (a fixed principle
+that is never argued with), **rule** (a standing instruction that can be
+superseded), **evidence** (an observed fact about the project) and
+**decision** (a choice made, with its reason). The `findings_gate` category
+question, the `classify_ingest` question and `okf_ingest`'s `type` all use
+it, so a note is typed the same way whoever types it. `classify_ingest`
+types an untyped note when the classifier is at least `min_confidence`
+sure, and overrides the agent's own type only above `override_above`.
 
 ### Calibration
 

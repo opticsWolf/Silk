@@ -974,23 +974,26 @@ class ToolBox:
         try:
             # The actual execution, as the innermost layer of the
             # wrap_tool_execute middleware chain: middleware can
-            # short-circuit it (deny) or post-process its result.
+            # short-circuit it (deny), repair its arguments (``handler(
+            # tool_args=...)``) or post-process its result.
             async def _run_tool(**_kw: Any) -> Any:
                 executable = meta["executable"]
+                given = _kw.get("tool_args")
+                call = given if isinstance(given, dict) else args
                 if meta.get("timeout") and meta["is_async"]:
                     return await asyncio.wait_for(
-                        executable(**args), timeout=meta["timeout"]
+                        executable(**call), timeout=meta["timeout"]
                     )
                 if meta.get("timeout") and not meta["is_async"]:
                     # For sync tools, use asyncio.to_thread with timeout
                     return await asyncio.wait_for(
-                        asyncio.to_thread(executable, **args),
+                        asyncio.to_thread(executable, **call),
                         timeout=meta["timeout"],
                     )
                 if meta["is_async"]:
-                    return await executable(**args)
+                    return await executable(**call)
                 # Keep sync tools off the event loop.
-                return await asyncio.to_thread(executable, **args)
+                return await asyncio.to_thread(executable, **call)
 
             if self.hooks.has_middleware(HOOK_WRAP_TOOL_EXECUTE, name):
                 output = await self.hooks.emit_middleware(

@@ -19,7 +19,12 @@ or file things for later:
                     on the task (S3), so it shows up in the Inbox.
 ``findings_gate``   after_run: user decisions with a reason are classified
                     (category / durable / grounded / relation); good ones go to
-                    the OKFgraph producer, borderline ones to an Inbox card.
+                    the knowledge graph, borderline ones too, tagged
+                    ``proposed`` (``okf_knowledge``).
+``classify_ingest`` wrap_tool_execute on ``okf_ingest``: types an untyped
+                    thought with one of the shared kinds (``knowledge_kinds``),
+                    and replaces the agent's own type only when the classifier
+                    is very sure of another. Tagged ``classified`` either way.
 
 Each hook is inert - passes through, writes nothing - when no classifier is
 bound, when it is ``off``, or when no backend answered. In ``shadow`` mode a
@@ -31,9 +36,10 @@ classifier, plan and ledger are bound per run, after the catalog or a Role
 built the hook map -- the same late binding the gate uses for its seam. The
 toolbox reaches them through :class:`~.hooks.ToolboxBound`.
 
-``prose_question`` needs the work ledger (S1/S3) and ``findings_gate`` the
-decision log (S2) and a knowledge sink (S6); until a toolbox carries those,
-the hooks are selectable and do nothing.
+``findings_gate`` reads the decision log the approval gate writes
+(``decision_log``) and the knowledge sink a wired Knowledge Graph puts on the
+box (``okf_knowledge``). ``prose_question`` needs the work ledger (S1/S3);
+until a toolbox carries one, it is selectable and does nothing.
 """
 from __future__ import annotations
 
@@ -46,6 +52,7 @@ from pydantic import BaseModel, Field
 from weave.logger import get_logger
 
 from .hooks import HOOK_AFTER_RUN, HOOK_WRAP_TOOL_EXECUTE, HookEntry, ToolboxBound
+from .knowledge_kinds import KNOWLEDGE_KINDS, kind_criteria
 
 log = get_logger("SilkClassifierHooks")
 
@@ -187,11 +194,7 @@ class FindingsGateConfig(BaseModel):
 FINDINGS_QUESTIONS = {
     "category": {"type": "choice", "instructions": "What kind of knowledge does this decision "
                  "express, if it were written down for future work?",
-                 "criteria": {"dogma": "a value or principle the user holds",
-                              "rule": "a standing rule for how work should be done",
-                              "evidence": "an observed fact about this project",
-                              "decision": "a choice made for a specific situation that will recur",
-                              "none": "nothing worth keeping"}},
+                 "criteria": kind_criteria()},
     "durable": {"type": "noul", "instructions":
                 "Will this still be true and useful in a month?"},
     "grounded": {"type": "noul", "instructions":
@@ -208,7 +211,7 @@ def route_finding(answers: dict, cfg: FindingsGateConfig) -> str:
     kind, p_kind = cat["choice"], float(cat["probabilities"].get(cat["choice"], 0.0))
     dur, gnd = float(answers["durable"]["noul"]), float(answers["grounded"]["noul"])
     rel = answers["relation"]["choice"]
-    if kind not in ("rule", "decision", "dogma"):
+    if kind not in KNOWLEDGE_KINDS:
         return "drop"
     if rel == "contradicts":
         return "ask"                          # never overwrite a rule silently
@@ -252,6 +255,56 @@ def make_findings_gate(config: Optional[BaseModel], ctx: HookContext):
                 ctx.offer_finding(note)
 
     return {HOOK_AFTER_RUN: [HookEntry(callback=after)]}
+
+
+# ── classify_ingest ──────────────────────────────────────────────────────────
+
+class ClassifyIngestConfig(BaseModel):
+    min_confidence: float = Field(
+        0.6, ge=0, le=1, description="Type an untyped thought when the classifier is this sure.")
+    override_above: float = Field(
+        0.9, ge=0, le=1,
+        description="Replace the agent's own type when the classifier is this sure of another.")
+
+
+INGEST_QUESTIONS = {
+    "kind": {"type": "choice", "instructions": "What kind of knowledge is this note, if it "
+             "were kept for future work?", "criteria": kind_criteria()},
+}
+
+
+def make_classify_ingest(config: Optional[BaseModel], ctx: HookContext):
+    cfg = config if isinstance(config, ClassifyIngestConfig) else ClassifyIngestConfig()
+
+    async def classify(handler: Optional[Callable] = None, tool_name: str = "",
+                       tool_args: Optional[dict] = None, **_kw: Any) -> Any:
+        if handler is None:
+            raise TypeError("classify_ingest is middleware: it wraps a handler")
+        c = _live(ctx)
+        args = dict(tool_args or {})
+        text = str(args.get("thoughts", "")).strip()
+        if c is None or not text:
+            return await handler()
+        given = args.get("type")
+        v = c.ask({"title": str(args.get("title") or ""), "note": text[:4000]},
+                  INGEST_QUESTIONS, purpose="hook")
+        if not v.ok:
+            return await handler()
+        a = v.answers["kind"]
+        kind, conf = str(a["choice"]), float(a.get("confidence", 0.0))
+        if kind not in KNOWLEDGE_KINDS or kind == given:
+            return await handler()
+        if given and conf < cfg.override_above or not given and conf < cfg.min_confidence:
+            return await handler()
+        if c.mode == "shadow":
+            ctx.shadow_log.append({"hook": "classify_ingest", "given": given, "would": kind,
+                                   "confidence": conf})
+            return await handler()
+        tags = [t for t in (args.get("tags") or []) if t != "classified"] + ["classified"]
+        return await handler(tool_args={**args, "type": kind, "tags": tags})
+
+    return {HOOK_WRAP_TOOL_EXECUTE: [HookEntry(callback=classify,
+                                               tools=frozenset({"okf_ingest"}))]}
 
 
 # ── the toolbox the hooks run on ─────────────────────────────────────────────
@@ -323,3 +376,7 @@ def prose_question_hooks(config: Optional[BaseModel] = None) -> dict:
 
 def findings_gate_hooks(config: Optional[BaseModel] = None) -> dict:
     return _toolbox_bound(make_findings_gate, config, "findings_gate")
+
+
+def classify_ingest_hooks(config: Optional[BaseModel] = None) -> dict:
+    return _toolbox_bound(make_classify_ingest, config, "classify_ingest")

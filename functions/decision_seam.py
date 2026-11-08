@@ -193,11 +193,12 @@ class DecisionSeam(BlockingSeam):
         return self.commit(decision.decision_id, decision)
 
     def approve(self, decision_id: str, *, actor: str = "user",
-                remember: str = "", kind: str = KIND_APPROVAL) -> bool:
+                remember: str = "", kind: str = KIND_APPROVAL,
+                reason: str = "") -> bool:
         """Convenience for the common answer."""
         return self.resolve(Decision(
             decision_id=decision_id, kind=kind, approved=True, actor=actor,
-            remember=remember,
+            remember=remember, reason=reason,
         ))
 
     def deny(self, decision_id: str, *, actor: str = "user",

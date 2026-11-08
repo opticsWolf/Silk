@@ -41,7 +41,9 @@ from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, Field
 
 from ..compaction import set_pre_compaction
+from ..knowledge_kinds import KNOWLEDGE_KINDS
 from ..okf_graph import OkfError
+from ..okf_knowledge import KNOWLEDGE_ATTR, OkfKnowledge
 
 if TYPE_CHECKING:
     from ..okf_graph import OkfGraph
@@ -116,11 +118,17 @@ PRE_COMPACTION_PROMPT = (
     "summarized and dropped. Before that happens, save what you have "
     "learned so far into the knowledge graph with okf_ingest: one call per "
     "finding, decision or line of reasoning worth keeping, with a "
-    "consistent topic for this project. Use type 'finding' for facts you "
-    "established and 'thought' for reasoning; list the concepts it is about "
-    "in 'related'. Skip anything already ingested or not worth finding "
-    "again. Then continue with the task."
+    "consistent topic for this project. Give each a type: 'evidence' for "
+    "facts you established, 'decision' for choices made, 'rule' for how the "
+    "work should be done, 'dogma' for what the user holds; leave it out for "
+    "plain reasoning. List the concepts it is about in 'related'. Skip "
+    "anything already ingested or not worth finding again. Then continue "
+    "with the task."
 )
+
+#: The ``type`` okf_ingest accepts: the shared kinds (knowledge_kinds).
+IngestKind = Literal["dogma", "rule", "evidence", "decision"]
+assert set(IngestKind.__args__) == set(KNOWLEDGE_KINDS)  # type: ignore[attr-defined]
 
 
 class OkfSearchArgs(BaseModel):
@@ -138,7 +146,8 @@ class OkfSearchArgs(BaseModel):
     )
     tags: Optional[List[str]] = Field(None, description="Only concepts carrying all these tags.")
     concept_type: Optional[str] = Field(
-        None, description="Only this concept type, e.g. 'finding' or 'thought'.",
+        None, description=("Only this concept type: 'evidence', 'decision', 'rule', "
+                           "'dogma', or 'thought' for unclassified reasoning."),
     )
 
 
@@ -183,8 +192,12 @@ class OkfIngestArgs(BaseModel):
     title: Optional[str] = Field(
         None, description="Short title, unique within the topic. Default: the first sentence.",
     )
-    type: Optional[str] = Field(
-        None, description="'finding', 'decision' or 'thought' (the default).",
+    type: Optional[IngestKind] = Field(
+        None, description=(
+            "'evidence' (an established fact), 'decision' (a choice that will "
+            "recur), 'rule' (how work should be done) or 'dogma' (a value the "
+            "user holds). Leave it out for plain reasoning: it is stored as "
+            "'thought', or classified when a classifier is wired."),
     )
     tags: Optional[List[str]] = Field(None, description="Extra tags.")
     related: Optional[List[str]] = Field(
@@ -377,5 +390,8 @@ def attach_okf_tools(toolbox: "ToolBox", sandbox: "FileToolSandbox",
     if graph is None:
         return    # the catalog probe: no grant to record, no round to ask
     setattr(toolbox, OKF_LEVEL_ATTR, coerce_level(level))
+    # What the approval triage and the findings_gate hook read and write.
+    setattr(toolbox, KNOWLEDGE_ATTR,
+            OkfKnowledge(graph, can_write=OKF_INGEST_TOOL in granted))
     if OKF_INGEST_TOOL in granted:
         set_pre_compaction(toolbox, OKF_INGEST_TOOL, PRE_COMPACTION_PROMPT)

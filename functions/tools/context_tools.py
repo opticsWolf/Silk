@@ -27,7 +27,11 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
-from ..compaction import COMPACTION_REQUESTS_ATTR
+from ..compaction import (
+    COMPACTION_REQUESTS_ATTR,
+    REQUEST_INGEST_ATTR,
+    coerce_ingest_mode,
+)
 
 if TYPE_CHECKING:
     from ..tool_box import ToolBox
@@ -51,10 +55,17 @@ class CompactContextResponse(BaseModel):
 
 
 def attach_context_tools(toolbox: "ToolBox", sandbox: "FileToolSandbox" = None,
-                         **_kw: Any) -> None:
-    """Mount ``compact_context`` on *toolbox*. *sandbox* is unused."""
+                         ingest_before: Any = None, **_kw: Any) -> None:
+    """Mount ``compact_context`` on *toolbox*. *sandbox* is unused.
+
+    *ingest_before* (``off`` / ``ask`` / ``require``) is what happens before
+    a compaction this tool asks for, when the box has a Knowledge Graph the
+    agent may write to: no round, a round asking it to save its findings,
+    or a round that must call ``okf_ingest``. Set on the ToolBox's gear.
+    """
     if not isinstance(getattr(toolbox, COMPACTION_REQUESTS_ATTR, None), list):
         setattr(toolbox, COMPACTION_REQUESTS_ATTR, [])
+    setattr(toolbox, REQUEST_INGEST_ATTR, coerce_ingest_mode(ingest_before))
 
     @toolbox.register(
         name="compact_context",

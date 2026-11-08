@@ -19,8 +19,8 @@ the full tool registry cannot reach a model by accident.
 Execution & chaining
 --------------------
 The prompt comes from outside: a Silk Prompt node is the chat box
-(``send`` → ``run``, carrying the message as the pulse payload;
-``stop`` → ``stop``; ``new_chat`` → ``clear``), or any text on
+(one wire, ``chat`` → ``run``: the message rides the pulse payload,
+and so do Stop and New chat), or any text on
 ``user_prompt``. The reply is read downstream (``events`` → Chat Log
 Display). The node itself keeps one icon row: Run/Stop and Clear
 context. A message sent during a run is queued for the next one, or --
@@ -62,6 +62,7 @@ from weave.node import VerticalSizePolicy
 from weave.registry import register_node
 from weave.canvas.rust_control import served_control
 from weave.logger import get_logger
+from weave.engine.migration import rename_saved_ports
 
 from weave.library.sync_tool_button.widgets.sync_tool_button import SyncToolButton
 
@@ -70,11 +71,13 @@ from .silk_ports import (  # noqa: F401
 )
 from ..functions.agent_loop import AgentLoop, DEFAULT_MAX_ROUNDS
 from ..functions.run_control import (
-    MODE_QUEUE, MODE_STEER, MODES, STOP_NONE, RunControl, merge_texts,
+    ACTION_CLEAR, ACTION_STOP, MODE_QUEUE, MODE_STEER, MODES, STOP_NONE,
+    RunControl, chat_action, merge_texts,
 )
 from ..widgets.run_queue import RunQueueView, StopEscalation
 from ..functions.event_sink import RunSink, sink_for
 from ..functions.approval import bind_run_seam, headless_refusals
+from ..functions.decision_log import decision_log_of, default_decision_path
 from ..functions.classifier_binding import begin_classifier_run, end_classifier_run
 from ..functions.graph_author import CanvasBinding, RunScope, bind_canvas
 from ..functions.tools.node_dev_tools import bind_weave
@@ -87,7 +90,7 @@ from ..functions.main_thread_call import (
 from .graph_canvas import CanvasAuthor
 from ..functions.compaction import compactor_for
 from ..functions.file_grants import resolve_grants
-from ..functions.decision_registry import REGISTRY as DECISIONS
+from ..functions.decision_registry import REGISTRY as DECISIONS, triage_advice
 from ..functions.decision_seam import (
     DEFAULT_TIMEOUT_S,
     DecisionRequest,
@@ -157,7 +160,7 @@ def _message(payload: Any) -> tuple[str, str]:
 @register_node
 class SilkAgentNode(ThreadedManualNode):
     """Autonomous tool-calling agent over model + toolbox + role."""
-    node_state_api = 2   # owns a hand-written state dict
+    node_state_api = 3   # owns a hand-written state dict
     # Bumped on any change to what this node persists or how its
     # ports are shaped; `node_state_api` is what says old state can
     # no longer be restored (G20).
@@ -169,7 +172,12 @@ class SilkAgentNode(ThreadedManualNode):
     # into it is dropped on load; re-draw from the loader instead.
     # 5: the Task box and Preview are gone (`user_prompt` is a plain
     # port), and `stop` / `clear` exec inputs are new.
-    node_version = 5
+    # 6 (api 3): `stop` and `clear` are gone again -- Stop and New chat
+    # ride the one `run` wire as {"action": ...} payloads. Old wires into
+    # them land on `run` (node_renamed_ports); migrate_state rewrites the
+    # saved port list.
+    node_version = 6
+    node_renamed_ports = {"stop": "run", "clear": "run"}
 
     # Weave declares `_widget_core` as `WidgetCoreLike` -- the subset the
     # *dataflow engine* relies on. A node uses the widget-facing whole
@@ -269,10 +277,9 @@ class SilkAgentNode(ThreadedManualNode):
         # Clean A2A: an inbound AgentMessage becomes the task when no direct
         # prompt is given, and its provenance/correlation flow to the outbox.
         self.add_input("inbox", datatype="agent_message")
-        self.add_input("run", datatype="exec")  # pulse → auto-execute (§13)
-        # The Prompt node's Stop and New chat; any exec source works.
-        self.add_input("stop", datatype="exec")
-        self.add_input("clear", datatype="exec")
+        # pulse → auto-execute (§13). The Prompt node's one `chat` wire:
+        # its messages, Stop and New chat all arrive here (on_pulse).
+        self.add_input("run", datatype="exec")
         # The last link of the ToolSet → Role → Agent chain (D16). Whatever
         # arrives here narrows the toolset's sandbox for this run and only
         # this run; it can never widen it, and it cannot switch confinement
@@ -374,6 +381,18 @@ class SilkAgentNode(ThreadedManualNode):
         self._label_decision.setWordWrap(True)
         self._label_decision.setStyleSheet("font-weight: bold;")
         decision_layout.addWidget(self._label_decision)
+        # What the classifier made of it, when one is wired: advice, never
+        # the answer (triage never denies).
+        self._label_advice = QLabel("")
+        self._label_advice.setWordWrap(True)
+        self._label_advice.setVisible(False)
+        decision_layout.addWidget(self._label_advice)
+        # Why, optionally: the decision log keeps it for the next triage,
+        # and findings_gate can file it as knowledge.
+        self._edit_reason = QLineEdit()
+        self._edit_reason.setPlaceholderText(
+            "Reason (optional): kept for future decisions")
+        decision_layout.addWidget(self._edit_reason)
         buttons = QHBoxLayout()
         # Deny first, and it is what Escape-by-closing amounts to: the
         # safe answer should never be the one that takes an extra look.
@@ -451,7 +470,14 @@ class SilkAgentNode(ThreadedManualNode):
         Any version: the Task box and the Preview are gone (the prompt is
         a wire now, the reply is read downstream). A typed-in task is not
         restored into anything; the wire, if there was one, still is.
+
+        api 2 → 3: the ``stop`` and ``clear`` inputs merged into ``run``.
+        The saved port list would rebuild them, so it is rewritten; their
+        wires land on ``run`` through :attr:`node_renamed_ports`.
         """
+        if from_version < 3:
+            state["inputs"] = rename_saved_ports(
+                state.get("inputs"), cls.node_renamed_ports)
         values = state.get("widget_data")
         if isinstance(values, dict):
             if from_version < 2:
@@ -493,6 +519,10 @@ class SilkAgentNode(ThreadedManualNode):
         """Show the question. **Main thread**, while the run is blocked."""
         self._pending_decision = request
         self._label_decision.setText(str(request.get("prompt") or "Approve?"))
+        advice = triage_advice(request.get("detail"))
+        self._label_advice.setText(advice)
+        self._label_advice.setVisible(bool(advice))
+        self._edit_reason.clear()
         self._decision_box.setVisible(True)
         # The canvas is the "who needs me" dashboard (D59): a blocked node
         # changes how it pulses, so a graph of ten agents shows which one
@@ -511,6 +541,7 @@ class SilkAgentNode(ThreadedManualNode):
         )
         self._pending_decision = None
         self._label_decision.setText("")
+        self._label_advice.setText("")
         self._decision_box.setVisible(False)
         self._enter_waiting_state(False)
         if settled:
@@ -539,14 +570,21 @@ class SilkAgentNode(ThreadedManualNode):
         except AttributeError:      # pragma: no cover - host without the mixin
             log.debug("Node has no pulse animation; waiting state is silent")
 
-    def _answer_decision(self, approved: bool, remember: str) -> None:
+    def _answer_decision(self, approved: bool, remember: str,
+                         reason: Optional[str] = None) -> None:
         """Deliver the user's answer to the waiting run. **Main thread.**
+
+        *reason* is what the user wrote; ``None`` reads the card's own
+        reason box (the dock and the Prompt node pass theirs).
 
         The seam decides whether the answer still applies -- the run may
         have been stopped or the request timed out while the panel was up --
         so nothing here reads or repairs its state (D42).
         """
         request, seam = self._pending_decision, self._seam
+        if reason is None:
+            reason = self._edit_reason.text()
+        reason = reason.strip()
         self._on_decision_settled("")
         if not request or seam is None:
             return
@@ -554,10 +592,10 @@ class SilkAgentNode(ThreadedManualNode):
         kind = str(request.get("kind") or "approval")
         if approved:
             landed = seam.approve(decision_id, actor="user", kind=kind,
-                                  remember=remember)
+                                  remember=remember, reason=reason)
         else:
             landed = seam.deny(decision_id, actor="user", kind=kind,
-                               reason="the user declined this call")
+                               reason=reason or "the user declined this call")
         if not landed:
             # Late: stopped, timed out, or already answered. The run has
             # long since been told no; saying so beats a silent no-op.
@@ -568,7 +606,7 @@ class SilkAgentNode(ThreadedManualNode):
             emit(EventDecisionResponse(
                 decision_id=decision_id, kind=kind, approved=approved,
                 actor="user",
-                reason="" if approved else "the user declined this call",
+                reason=reason or ("" if approved else "the user declined this call"),
             ))
 
     def clear_context(self) -> None:
@@ -610,28 +648,30 @@ class SilkAgentNode(ThreadedManualNode):
     # ── Exec inputs ─────────────────────────────────────────────────
 
     def on_pulse(self, port_name: str, sender: Any, payload: Any = None) -> None:
-        """``run`` sends a message, ``stop`` stops, ``clear`` clears context.
+        """``run`` is the one chat wire: a message, Stop or New chat.
 
-        A ``run`` pulse may carry the message as its payload: a string is
-        sent as queued, ``{"text", "mode"}`` says how (``queue``, ``steer``
+        ``{"action": "stop", "force": bool}`` is the press-twice Stop:
+        after the current action, and a second time (or ``force``) now.
+        ``{"action": "clear"}`` clears the conversation.
+
+        Anything else is a message, which a ``run`` pulse may carry as
+        its payload: a string is sent as queued, ``{"text", "mode"}`` says how (``queue``, ``steer``
         or ``interrupt``). It wins over ``user_prompt`` for that run. It
         rides the pulse rather than a data wire because a changed input
         stops a running node, and a message typed during a run is not a
         stop. Idle, any mode starts a run; during one, a queued message
         waits for it to end and a steer or interrupt joins it. Text that
         starts with ``@worker`` goes to that running worker instead.
-
-        ``stop`` is the press-twice Stop: after the current action, and
-        a second time (or a ``"force"`` payload) now.
         """
-        if port_name == "stop":
+        action = chat_action(payload)
+        if action == ACTION_STOP:
             if self._is_computing:
-                if payload == "force":
+                if payload.get("force"):
                     self._stop.press_force()
                 else:
                     self._stop.press()
             return
-        if port_name == "clear":
+        if action == ACTION_CLEAR:
             self.clear_context()
             return
         text, mode = _message(payload)
@@ -971,11 +1011,16 @@ class SilkAgentNode(ThreadedManualNode):
                         # Carried so the exit path can release what this
                         # run asked and never answered (D59).
                         "run_id": run_id,
+                        # The classifier's advice, for the card (S4).
+                        "detail": dict(request.detail or {}),
                     })
                     self.status_changed.emit("Waiting for your approval\u2026")
 
                 self._seam = DecisionSeam(_ask, timeout_s=DEFAULT_TIMEOUT_S)
                 bind_run_seam(toolset, self._seam)
+                # What the user answers is kept beside the grants, so the
+                # next run's triage and findings_gate can read it (S2).
+                decision_log_of(toolset, default_decision_path())
 
                 # The classifier, for this run only (D-S8, D38). A judge
                 # that is this agent's own model refuses the run (C3).

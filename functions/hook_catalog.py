@@ -51,9 +51,11 @@ from .approval import (
     tool_preset_policy,
 )
 from .classifier_hooks import (
+    ClassifyIngestConfig,
     FindingsGateConfig,
     ProseQuestionConfig,
     TaskDriftConfig,
+    classify_ingest_hooks,
     findings_gate_hooks,
     prose_question_hooks,
     task_drift_hooks,
@@ -638,6 +640,15 @@ class AutoCompactConfig(BaseModel):
             "value'. Empty for none."
         ),
     )
+    ingest_before: Literal["off", "ask", "require"] = Field(
+        "ask",
+        description=(
+            "With a Knowledge Graph the agent may write to: before compacting, "
+            "off skips it, ask gives the agent one round to save its findings "
+            "with okf_ingest, require makes that round call okf_ingest (asks "
+            "where the backend cannot force a tool)."
+        ),
+    )
 
 
 def _make_auto_compact(_config: Optional[BaseModel] = None) -> HookMap:
@@ -882,12 +893,23 @@ HOOK_CATALOG: dict[str, HookSpec] = {
         HookSpec(
             name="findings_gate",
             description=(
-                "Turn your decisions that carry a reason into knowledge findings, "
-                "or offer them (needs decision records and a knowledge sink). "
-                "Inert without a Classifier."
+                "Turn your approval answers that carry a reason into knowledge "
+                "graph entries (dogma, rule, evidence or decision); borderline "
+                "ones are filed tagged 'proposed'. Needs a Knowledge Graph the "
+                "agent may write to. Inert without a Classifier."
             ),
             factory=findings_gate_hooks,
             config_model=FindingsGateConfig,
+        ),
+        HookSpec(
+            name="classify_ingest",
+            description=(
+                "Give each okf_ingest note a kind (dogma, rule, evidence or "
+                "decision) when the agent left it out, and correct a kind the "
+                "Classifier is very sure is wrong. Inert without a Classifier."
+            ),
+            factory=classify_ingest_hooks,
+            config_model=ClassifyIngestConfig,
         ),
         HookSpec(
             name="tool_approval",

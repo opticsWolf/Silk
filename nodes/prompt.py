@@ -13,19 +13,24 @@ step of a network -- and so the agent stays a small row of controls.
 
 Wiring
 ------
-``send`` → the agent's ``run``. The message rides the pulse as its
-payload, so no data wire is needed, and a message sent while the agent
+One wire: ``chat`` → the agent's ``run``. Send, Stop and New chat all
+travel on it, told apart by the pulse's payload. The message rides the
+pulse, so no data wire is needed, and a message sent while the agent
 is busy is queued for the next run instead of stopping it (a changed
 data input would stop a running node). The Send button's arrow sends it
 as a *steer* instead -- it joins the running turn at its next step --
 or as an *interrupt*, which cuts the current action and carries on with
 the message. ``@worker message`` goes to that running worker of an
-Orchestrator. ``stop`` → ``stop`` and ``new_chat`` → ``clear`` are the
-other two buttons; Stop is press-twice (after the current action, then
-now). ``prompt`` carries the last sent
-message for anything else that wants it (a log, a file); wiring it into
-the agent's ``user_prompt`` as well works when idle, but a send during a
-run then stops that run.
+Orchestrator. Stop is press-twice (after the current action, then now);
+New chat clears the agent's conversation. ``prompt`` carries the last
+sent message for anything else that wants it (a log, a file); wiring it
+into the agent's ``user_prompt`` as well works when idle, but a send
+during a run then stops that run.
+
+A message pulse is the text, or ``{"text", "mode"}``; Stop is
+``{"action": "stop", "force": bool}`` and New chat ``{"action":
+"clear"}`` (``functions/run_control.py``). Graphs saved with the old
+``send`` / ``stop`` / ``new_chat`` outputs load onto ``chat``.
 
 Enter sends, Ctrl+Enter steers, Ctrl+Shift+Enter interrupts,
 Shift+Enter starts a new line, Ctrl+Up / Ctrl+Down step through what was
@@ -41,14 +46,21 @@ from PySide6.QtWidgets import (
     QHBoxLayout, QMenu, QPlainTextEdit, QToolButton, QVBoxLayout, QWidget,
 )
 
+from weave.engine.migration import rename_saved_ports
 from weave.library.sync_tool_button.widgets.sync_tool_button import SyncToolButton
 from weave.node.base import ActiveNode
 from weave.node import VerticalSizePolicy
 from weave.registry import register_node
 from weave.widgetcore import PortRole, WidgetCore
 
-from ..functions.run_control import MODE_INTERRUPT, MODE_QUEUE, MODE_STEER
+from ..functions.run_control import (
+    ACTION_CLEAR, ACTION_STOP, MODE_INTERRUPT, MODE_QUEUE, MODE_STEER,
+)
+from ..widgets.decision_strip import DecisionStrip
 from ..widgets.run_queue import StopEscalation
+
+#: The one exec output: messages, Stop and New chat all travel on it.
+CHAT_PORT = "chat"
 
 #: Sent messages kept for Ctrl+Up / Ctrl+Down, oldest dropped first.
 HISTORY_MAX = 50
@@ -72,16 +84,21 @@ class SilkPromptNode(ActiveNode):
     node_subclass: ClassVar[str] = "Agents"
     node_name: ClassVar[Optional[str]] = "Silk Prompt"
     node_description: ClassVar[Optional[str]] = (
-        "Chat input for an agent: Enter sends the message on an exec "
-        "pulse; Stop and New chat drive the agent's stop and clear."
+        "Chat input for an agent: wire `chat` to the agent's `run`. "
+        "Enter sends the message; Stop and New chat travel on the same wire."
     )
     node_tags: ClassVar[Optional[List[str]]] = [
         "silk", "agent", "prompt", "chat", "input", "llm",
     ]
     node_icon: ClassVar[Optional[str]] = "message"
     vertical_size_policy: ClassVar[VerticalSizePolicy] = VerticalSizePolicy.GROW_ONLY
-    node_state_api = 1   # owns a hand-written state dict
-    node_version = 1     # bump on any state-shape change (G20)
+    node_state_api = 2   # owns a hand-written state dict
+    # 2: `send`, `stop` and `new_chat` became the one `chat` output; the
+    # saved port list is rewritten in migrate_state and old wires land on
+    # `chat` through node_renamed_ports.
+    node_version = 2     # bump on any state-shape change (G20)
+    node_renamed_ports = {"send": CHAT_PORT, "stop": CHAT_PORT,
+                          "new_chat": CHAT_PORT}
 
     def __init__(self, title: str = "Silk Prompt", **kwargs: Any) -> None:
         super().__init__(title=title, **kwargs)
@@ -95,9 +112,7 @@ class SilkPromptNode(ActiveNode):
         self._draft: str = ""
 
         self.add_output("prompt", datatype="string")
-        self.add_output("send", datatype="exec")
-        self.add_output("stop", datatype="exec")
-        self.add_output("new_chat", datatype="exec")
+        self.add_output(CHAT_PORT, datatype="exec")
 
         layout = QVBoxLayout()
         layout.setContentsMargins(5, 5, 5, 5)
@@ -117,12 +132,17 @@ class SilkPromptNode(ActiveNode):
         self._editor.installEventFilter(self)
         layout.addWidget(self._editor, stretch=1)
 
+        # A question from an agent this box drives, answered here; hidden
+        # while none is waiting (widgets/decision_strip.py).
+        self._decisions = DecisionStrip(self.chat_targets)
+        layout.addWidget(self._decisions)
+
         buttons = QHBoxLayout()
         self._btn_send = SyncToolButton(
             initial_text="Send", show_label=False, dimensions=24,
         )
         self._btn_send.set_tooltip(
-            "Send the message (Enter). Wire `send` to the agent's `run`: "
+            "Send the message (Enter). Wire `chat` to the agent's `run`: "
             "the message travels with the pulse. Sent while the agent is "
             "busy, it is queued for the next run. The arrow steers the "
             "running turn instead (Ctrl+Enter) or interrupts it "
@@ -150,7 +170,7 @@ class SilkPromptNode(ActiveNode):
             self._btn_stop, on_stop=self._pulse_stop,
             stop_tip="Stop the agent after its current action; press "
                      "again to cut the action now. Queued messages stay "
-                     "on the agent. Wire `stop` to the agent's `stop`.",
+                     "on the agent. Travels on the `chat` wire.",
             window_ms=FORCE_WINDOW_MS,
             quiet=self._widget_core.suppress_signals,
         )
@@ -170,8 +190,7 @@ class SilkPromptNode(ActiveNode):
         )
         self._btn_new.set_tooltip(
             "New chat: the agent forgets the conversation and a wired "
-            "Chat Log starts over. Wire `new_chat` to the agent's "
-            "`clear`. The plan, the knowledge graph and always-allow "
+            "Chat Log starts over. Travels on the `chat` wire. The plan, the knowledge graph and always-allow "
             "grants are kept.")
         self._btn_new.clicked.connect(self.new_chat)
         buttons.addWidget(self._btn_new)
@@ -260,7 +279,7 @@ class SilkPromptNode(ActiveNode):
         # `prompt` follows for whatever else reads it; the agent takes
         # the message from the pulse (see the module docstring).
         self.set_dirty("prompt_sent")
-        self.pulse("send", payload=text if mode == MODE_QUEUE
+        self.pulse(CHAT_PORT, payload=text if mode == MODE_QUEUE
                    else {"text": text, "mode": mode})
 
     def stop(self) -> None:
@@ -271,10 +290,21 @@ class SilkPromptNode(ActiveNode):
         self._stop.press_force()
 
     def _pulse_stop(self, force: bool) -> None:
-        self.pulse("stop", payload="force" if force else True)
+        self.pulse(CHAT_PORT, payload={"action": ACTION_STOP, "force": bool(force)})
 
     def new_chat(self) -> None:
-        self.pulse("new_chat", payload=True)
+        self.pulse(CHAT_PORT, payload={"action": ACTION_CLEAR})
+
+    def chat_targets(self) -> List[Any]:
+        """The nodes the ``chat`` wire reaches -- whose questions show here."""
+        return [trace.target.node
+                for port in self.outputs if port.name == CHAT_PORT
+                for trace in port.connected_traces
+                if getattr(trace, "target", None) is not None]
+
+    def cleanup(self) -> None:
+        self._decisions.detach()
+        super().cleanup()
 
     # ── Dataflow ─────────────────────────────────────────────────────
 
@@ -282,6 +312,20 @@ class SilkPromptNode(ActiveNode):
         return {"prompt": self._sent}
 
     # ── State ────────────────────────────────────────────────────────
+
+    @classmethod
+    def migrate_state(cls, state: Dict[str, Any],
+                      from_version: int) -> Dict[str, Any]:
+        """api 1 → 2: the three exec outputs are one ``chat`` output.
+
+        The saved port list wins over the class's on restore, so the old
+        ports are taken out of it here; the wires into them land on
+        ``chat`` through :attr:`node_renamed_ports`.
+        """
+        if from_version < 2:
+            state["outputs"] = rename_saved_ports(
+                state.get("outputs"), cls.node_renamed_ports)
+        return state
 
     def get_state(self) -> Dict[str, Any]:
         state = super().get_state()

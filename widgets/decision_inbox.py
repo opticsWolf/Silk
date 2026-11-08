@@ -38,13 +38,14 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPushButton,
     QScrollArea,
     QVBoxLayout,
     QWidget,
 )
 
-from lace import DockManager, DockWidget, DockWidgetArea
+from lace import DockManager, DockWidget, DockWidgetArea, DockWidgetFeature
 
 from weave.logger import get_logger
 
@@ -64,6 +65,10 @@ ANSWERS: tuple[tuple[str, bool, str], ...] = (
 
 EMPTY_TEXT = "No agent is waiting on you."
 
+#: The same words as the node's own reason box: a reason given here is
+#: logged with the decision and read back when the next one is triaged.
+REASON_PLACEHOLDER = "Reason (optional): kept for future decisions"
+
 
 class DecisionInboxDock(DockWidget):
     """Every waiting agent, in one panel."""
@@ -81,6 +86,11 @@ class DecisionInboxDock(DockWidget):
         # call has a counterpart here: Lace models placement per manager
         # and every area is reachable.
         self.setObjectName("SilkDecisionInbox")
+        # Not closable: an inbox that can be closed is one a waiting agent
+        # can be lost behind. It moves, floats, and pins to a sidebar,
+        # where it takes no room until something is waiting.
+        self.set_features(DockWidgetFeature.movable | DockWidgetFeature.floatable
+                          | DockWidgetFeature.pinnable)
 
         self._registry = registry if registry is not None else REGISTRY
 
@@ -171,12 +181,22 @@ class DecisionInboxDock(DockWidget):
         prompt.setWordWrap(True)
         layout.addWidget(prompt)
 
+        if entry.advice:
+            advice = QLabel(entry.advice)
+            advice.setWordWrap(True)
+            advice.setStyleSheet("font-style: italic;")
+            layout.addWidget(advice)
+
+        reason = QLineEdit()
+        reason.setPlaceholderText(REASON_PLACEHOLDER)
+        layout.addWidget(reason)
+
         buttons = QHBoxLayout()
         for label, approved, remember in ANSWERS:
             button = QPushButton(label)
             button.clicked.connect(
-                lambda _checked=False, e=entry, a=approved, r=remember:
-                    self.answer(e, a, r)
+                lambda _checked=False, e=entry, a=approved, r=remember, box=reason:
+                    self.answer(e, a, r, box.text().strip())
             )
             buttons.addWidget(button)
 
@@ -189,7 +209,7 @@ class DecisionInboxDock(DockWidget):
     # ── Acting ────────────────────────────────────────────────────────
 
     def answer(self, entry: DecisionEntry, approved: bool,
-               remember: str) -> bool:
+               remember: str, reason: str = "") -> bool:
         """Answer through the asking node, never around it (D59).
 
         Returns whether the answer was delivered. A node that has gone --
@@ -201,7 +221,7 @@ class DecisionInboxDock(DockWidget):
             self._registry.unregister(entry.decision_id)
             return False
         try:
-            node._answer_decision(approved, remember)
+            node._answer_decision(approved, remember, reason)
         except RuntimeError:
             # The node's Qt object died between the click and the call.
             self._registry.unregister(entry.decision_id)
@@ -236,6 +256,7 @@ class DecisionInboxDock(DockWidget):
                area: DockWidgetArea = DockWidgetArea.right,
                manager: Optional[DockManager] = None,
                registry: Optional[DecisionRegistry] = None,
+               pinned: bool = False,
                ) -> "DecisionInboxDock":
         """Create the dock and place it in the host's Lace dock manager.
 
@@ -250,6 +271,9 @@ class DecisionInboxDock(DockWidget):
         would get a dock that is constructed, wired, subscribed and
         invisible, and the caller would be told it worked. Refusing is
         the honest answer.
+
+        *pinned* puts the dock in *area*'s sidebar instead of the dock
+        area: a tab on the window's edge that opens over the canvas.
         """
         docks = manager if manager is not None else getattr(
             main_window, "dock_manager", None)
@@ -261,5 +285,8 @@ class DecisionInboxDock(DockWidget):
                 "QMainWindow.addDockWidget."
             )
         dock = cls(main_window, registry=registry)
-        docks.add_dock_widget(area, dock)
+        if pinned:
+            docks.add_sidebar_widget(area, dock)
+        else:
+            docks.add_dock_widget(area, dock)
         return dock

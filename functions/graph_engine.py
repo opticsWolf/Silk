@@ -126,6 +126,8 @@ class GraphEngine:
         self._native_tools_enabled = False
         self._tool_schemas: list[dict[str, Any]] = []
         self._pending_tool_calls: list[dict[str, Any]] = []
+        #: A tool the next request must call (:meth:`force_tool_once`).
+        self._forced_tool: Optional[str] = None
 
         # Invariant I11: each request's message list must extend the last
         # one. The guard reports; it never repairs. A break is a bug in
@@ -247,9 +249,30 @@ class GraphEngine:
         return chain_supports_tools(self._chain)
 
     def enable_native_tools(self, schemas: list[dict[str, Any]]) -> None:
-        """Arm structured tool calling and advertise *schemas* to the model."""
+        """Arm structured tool calling and advertise *schemas* to the model.
+
+        Called at the start of every native run, so it also drops a forced
+        call (:meth:`force_tool_once`) a stopped run left behind -- or the
+        user's next message would be answered with a tool call.
+        """
         self._tool_schemas = list(schemas or [])
         self._native_tools_enabled = bool(self._tool_schemas)
+        self._forced_tool = None
+
+    def force_tool_once(self, name: str) -> bool:
+        """Make the next request call *name* (``tool_choice``), once.
+
+        False when that cannot be done -- tools travel as fences, or *name*
+        is not among the advertised schemas -- and the caller asks instead.
+        """
+        if not self._native_tools_enabled:
+            return False
+        known = {str((s.get("function") or {}).get("name") or s.get("name") or "")
+                 for s in self._tool_schemas}
+        if name not in known:
+            return False
+        self._forced_tool = name
+        return True
 
     def pull_tool_calls(self) -> list[Any]:
         """Structured calls captured during the last stream (consumed once).
@@ -450,7 +473,11 @@ class GraphEngine:
             params = {k: gen_params[k] for k in _GEN_PARAM_KEYS if k in gen_params}
             if self._native_tools_enabled and self._tool_schemas:
                 params["tools"] = self._tool_schemas
-                params["tool_choice"] = "auto"
+                # Kept until a request succeeds: a retried 429 still forces.
+                forced = self._forced_tool
+                params["tool_choice"] = (
+                    {"type": "function", "function": {"name": forced}}
+                    if forced else "auto")
             messages = self.build_messages()
             self.prefix_guard.observe(
                 messages, system_prompt=self.system_prompt,
@@ -494,6 +521,7 @@ class GraphEngine:
 
             if self._native_tools_enabled:
                 self._pending_tool_calls = _finalize_tool_calls(tool_frags)
+            self._forced_tool = None
         except Exception as exc:
             errored = True
             self.last_stats = {"error": str(exc), "text": full_text}

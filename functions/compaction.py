@@ -103,6 +103,18 @@ DEFAULT_KEEP_RECENT = 8
 #: Below this many dropped turns, compaction is not worth two prefills.
 DEFAULT_MIN_DROPPED = 4
 
+#: Whether the agent saves what it learned before a compaction, when the box
+#: has a pre-compaction tool (``okf_ingest``): not at all; one round with a
+#: prompt asking it to; or one round in which the request forces a call to
+#: the tool -- where the backend calls tools natively, else the same as
+#: asking. Separately for the automatic triggers (the ``auto_compact``
+#: hook) and for ``compact_context`` requests (the context tools' gear).
+INGEST_OFF = "off"
+INGEST_ASK = "ask"
+INGEST_REQUIRE = "require"
+INGEST_MODES = (INGEST_OFF, INGEST_ASK, INGEST_REQUIRE)
+DEFAULT_INGEST_BEFORE = INGEST_ASK
+
 #: How much the context must grow past the last compaction before another
 #: one is allowed, as a fraction of the window. This is the hysteresis: it
 #: stops a run that lands just under the threshold from compacting again
@@ -484,6 +496,10 @@ class Compactor:
     #: Steers what the summary keeps ("Additional focus: ..."), for every
     #: compaction of this run. :meth:`compact_now` can pass a one-off focus.
     focus: str = ""
+    #: Before an automatic compaction: :data:`INGEST_OFF`, :data:`INGEST_ASK`
+    #: or :data:`INGEST_REQUIRE` (the ``auto_compact`` hook's setting). A
+    #: ``compact_context`` request goes by the context tools' own setting.
+    ingest_before: str = DEFAULT_INGEST_BEFORE
     #: ``(prompt) -> str``: replaces the model request (a cheaper model, a
     #: test double). It receives the whole summarization prompt -- the
     #: transcript, the previous summary when there is one, and the format.
@@ -770,6 +786,10 @@ def _estimate_chars(text: str) -> int:
 COMPACTION_CONFIG_ATTR = "compaction_config"
 COMPACTION_REQUESTS_ATTR = "compaction_requests"
 
+#: Where the context tools' gear leaves its ingest setting for the
+#: compactions ``compact_context`` asks for (:data:`INGEST_MODES`).
+REQUEST_INGEST_ATTR = "compaction_request_ingest"
+
 #: Where a tool pack names the tool the agent should use before a
 #: compaction, and what to tell it: ``(tool_name, prompt)``. The knowledge
 #: graph pack sets it to ``okf_ingest``, so the agent writes its findings
@@ -810,7 +830,14 @@ def compactor_for(toolbox: Any, role: Any = None) -> Compactor:
     except (TypeError, ValueError) as exc:
         log.warning(f"Compaction settings partly ignored ({exc}).")
     out.focus = str(cfg.get("focus") or "")
+    out.ingest_before = coerce_ingest_mode(cfg.get("ingest_before"))
     return out
+
+
+def coerce_ingest_mode(value: Any) -> str:
+    """One of :data:`INGEST_MODES`; anything else is the default."""
+    text = str(value or "").strip().lower()
+    return text if text in INGEST_MODES else DEFAULT_INGEST_BEFORE
 
 
 def take_compaction_request(toolbox: Any) -> Optional[str]:
@@ -837,8 +864,14 @@ def set_pre_compaction(toolbox: Any, tool: str, prompt: str) -> None:
     setattr(toolbox, PRE_COMPACTION_ATTR, (str(tool), str(prompt)))
 
 
-def pre_compaction_prompt(toolbox: Any) -> Optional[str]:
-    """What to tell the agent before compacting, or ``None`` to just compact.
+def request_ingest_mode(toolbox: Any) -> str:
+    """The ingest setting for a ``compact_context`` request on *toolbox*."""
+    return coerce_ingest_mode(getattr(toolbox, REQUEST_INGEST_ATTR, None)
+                              if toolbox is not None else None)
+
+
+def pre_compaction_tool(toolbox: Any) -> Optional[tuple[str, str]]:
+    """``(tool, prompt)`` for the round before compacting, or ``None``.
 
     ``None`` unless a pack asked for the round *and* its tool would run if
     called: it is in this box (a ToolSet that left it out leaves the
@@ -855,4 +888,10 @@ def pre_compaction_prompt(toolbox: Any) -> Optional[str]:
     permits = getattr(toolbox, "role_permits", None)
     if callable(permits) and not permits(tool):
         return None
-    return prompt
+    return tool, prompt
+
+
+def pre_compaction_prompt(toolbox: Any) -> Optional[str]:
+    """What to tell the agent before compacting, or ``None`` to just compact."""
+    spec = pre_compaction_tool(toolbox)
+    return spec[1] if spec is not None else None

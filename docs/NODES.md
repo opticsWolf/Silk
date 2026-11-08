@@ -655,17 +655,21 @@ messages (kept with the graph). `@name message` goes to the running worker
 steer or an interrupt as `{"text", "mode"}`.
 
 Stop is press-twice: the first press stops after the current action; for
-a few seconds the button then pulses red, and a second press stops now
-(`stop` payload `"force"`).
+a few seconds the button then pulses red, and a second press stops now.
 
 | Direction | Port | Type |
 |---|---|---|
-| out | `send` | `exec` → the agent's `run` (payload: the message) |
-| out | `stop` | `exec` → the agent's `stop` |
-| out | `new_chat` | `exec` → the agent's `clear` |
+| out | `chat` | `exec` → the agent's `run` (payload: the message, Stop or New chat) |
 | out | `prompt` | `string` (the last message sent) |
 
-The message rides the `send` pulse, so `send → run` is the whole wiring.
+**One wire.** Send, Stop and New chat all travel on `chat`, told apart by
+the payload (`functions/run_control.py`): a message is the text or
+`{"text", "mode"}`, Stop is `{"action": "stop", "force": bool}`, New chat
+`{"action": "clear"}`. A graph saved with the old `send` / `stop` /
+`new_chat` outputs (and the agent's `stop` / `clear` inputs) loads with
+those wires merged onto `chat → run` (`node_renamed_ports`).
+
+The message rides the pulse, so `chat → run` is the whole wiring.
 It does not go over a data wire because a changed input stops a running
 node; this way a message sent mid-run is queued as the next one. `prompt`
 is there for anything else that wants the text — wiring it into the
@@ -673,11 +677,16 @@ agent's `user_prompt` too works while idle, but then a send during a run
 stops that run.
 
 ```
-[Silk Prompt] ─send──────▶ [Silk Agent] .run
-              ─stop──────▶ [Silk Agent] .stop
-              ─new_chat──▶ [Silk Agent] .clear
+[Silk Prompt] ─chat──────▶ [Silk Agent] .run
 [Silk Agent]  ─events────▶ [Chat Log Display] .event
 ```
+
+**A question from the agent shows under the box.** When an agent the
+`chat` wire reaches blocks on a decision, the Prompt node shows it below
+the text box — the classifier's advice when one is wired, a reason field,
+and the same four answers — and answers through the agent's own handler,
+like the Decision Inbox does (`widgets/decision_strip.py`). Hidden while
+nothing waits.
 
 ### Silk Agent — `nodes/agent.py`
 The autonomous tool-calling agent: wires model + toolset + role into the
@@ -693,9 +702,7 @@ for an Orchestrator to delegate to instead, use **Silk Worker** below.
 | in | `system_prompt` | `string` |
 | in | `user_prompt` | `string` |
 | in | `inbox` | `agent_message` |
-| in | `run` | `exec` |
-| in | `stop` | `exec` |
-| in | `clear` | `exec` |
+| in | `run` | `exec` (messages, Stop and New chat) |
 | in | `permissions` | `file_permissions` |
 | in | `budget` | `string` |
 | in | `classifier` | `silk_classifier` |
@@ -713,14 +720,15 @@ Consumers filter by `type`.
 toggle) and Clear context, next to the status. The prompt arrives from
 outside — a **Silk Prompt** node, or any text on `user_prompt` — and the
 reply is read downstream (`events` → Chat Log Display, or `response`).
-The exec inputs mirror the buttons:
+The `run` input carries all three buttons, by payload:
 
-- `run` starts a run. A pulse may carry the message as its payload (the
-  Prompt node's `send` does); it wins over `user_prompt` for that run.
-  During a run the message is filed by its mode (below) instead of
-  stopping the run; a bare `run` pulse runs again after it.
-- `stop` stops the run, press-twice like the button: the first after the
-  current action, a second (or a `"force"` payload) now.
+- A message (or a bare pulse) starts a run. The pulse may carry the
+  message as its payload (the Prompt node's `chat` does); it wins over
+  `user_prompt` for that run. During a run the message is filed by its
+  mode (below) instead of stopping the run; a bare `run` pulse runs again
+  after it.
+- `{"action": "stop"}` stops the run, press-twice like the button: the
+  first after the current action, a second (or `"force": true`) now.
 
 **What waits on the run** is listed under the icon row, hidden while
 empty. Each message has its mode as an icon — click to re-file it — and a
@@ -737,7 +745,7 @@ arrow has both stops. A soft stop finishes the current action, takes no
 next one, and ends the run `stopped`. A stop holds the queue rather than
 dropping it: the messages stay listed and Start sends them, ahead of any
 new one. Steers that missed the run are filed as queued.
-- `clear` forgets the conversation (the pool session and the history),
+- `{"action": "clear"}` forgets the conversation (the pool session and the history),
   then emits `context.cleared` on `events`, which starts a wired Chat Log
   over. During a run it waits for the run to end. The plan, the knowledge
   graph and always-allow grants are not conversation and are kept.
@@ -751,10 +759,20 @@ grants nothing rather than falling back to the wider one.
 
 **A blocked agent also shows on the canvas and in the Decision Inbox**
 (D59): the node switches its pulse to a heartbeat while waiting, and
-`DecisionInboxDock.attach(main_window)` opens a dock listing every waiting
-agent with the same four answers (a Lace dock: the host window needs its
-`dock_manager`, which a Weave host sets up). Answering there calls this node's own
-handler — the dock owns no seam, and closing it strands nothing.
+`DecisionInboxDock.attach(main_window, pinned=True)` puts a dock in the
+window's right sidebar listing every waiting agent with the same four
+answers, the classifier's advice and a reason field (a Lace dock: the host
+window needs its `dock_manager`, which a Weave host sets up). The example
+apps attach it whenever Silk is loaded. It cannot be closed — it moves,
+floats and pins — so a waiting agent has nowhere to hide. Answering there
+calls this node's own handler — the dock owns no seam.
+
+**A reason is kept.** The card, the inbox and the Prompt strip each take an
+optional reason with the answer. It reaches the model with a denial, is
+written to the decision log (`~/.weave/silk/decisions.jsonl`, or
+`$SILK_DECISION_LOG`), and is read back as `prior_decisions` the next time
+the classifier triages that tool; `findings_gate` can file it into a wired
+Knowledge Graph as a rule, dogma, evidence or decision.
 
 **The approval prompt is part of this node** (spec D48/I12). When a gated
 tool call blocks, the question appears in the node itself — Deny, Allow

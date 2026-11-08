@@ -47,7 +47,10 @@ from .compaction import (
     REASON_MANUAL,
     REASON_OVERFLOW,
     REASON_PRESSURE,
-    pre_compaction_prompt,
+    INGEST_OFF,
+    INGEST_REQUIRE,
+    pre_compaction_tool,
+    request_ingest_mode,
     take_compaction_request,
 )
 from weave.logger import get_logger
@@ -403,13 +406,22 @@ class AgentLoop:
         compacts without asking again. An overflow never comes here -- the
         backend has already refused the prompt, and another round on it
         would only be refused again.
+
+        The setting decides whether the round happens and how firmly: a
+        ``compact_context`` request goes by the context tools' setting, the
+        automatic triggers by the ``auto_compact`` hook's. ``require`` makes
+        the round's request call the tool, where the engine can force one
+        (:meth:`force_tool_once`); elsewhere it is asked, as with ``ask``.
         """
         compactor = self.compactor
         if compactor is None or self._pre_compaction_asked:
             return False
-        prompt = pre_compaction_prompt(self.toolbox)
-        if prompt is None:
+        mode = (request_ingest_mode(self.toolbox) if requested
+                else getattr(compactor, "ingest_before", INGEST_OFF))
+        spec = pre_compaction_tool(self.toolbox) if mode != INGEST_OFF else None
+        if spec is None:
             return False
+        tool, prompt = spec
         if not requested:
             should = getattr(compactor, "should_compact", None)
             if not getattr(compactor, "auto", True) or not callable(should):
@@ -419,9 +431,19 @@ class AgentLoop:
                     return False
             except Exception:  # noqa: BLE001 - a probe never fails a run
                 return False
+        forced = False
+        if mode == INGEST_REQUIRE:
+            force = getattr(self.engine, "force_tool_once", None)
+            try:
+                forced = bool(force(tool)) if callable(force) else False
+            except Exception:  # noqa: BLE001 - asking is the fallback
+                forced = False
+            if not forced:
+                log.info(f"This backend cannot force '{tool}'; asking for it instead.")
         self.engine.append_message("user", prompt)
         self._pre_compaction_asked = True
-        log.info("Context compaction deferred one round for the pre-compaction tool.")
+        log.info("Context compaction deferred one round for the pre-compaction tool"
+                 + (f" ('{tool}' required)." if forced else "."))
         return True
 
     def _stopped_by_budget(

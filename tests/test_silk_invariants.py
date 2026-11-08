@@ -315,8 +315,11 @@ class _StrictEngine(FakeEngine):
     #: The AgentEngine protocol, plus the optional extensions the loop is
     #: allowed to probe: a context window it may not have (G14c), and the
     #: native tool-call surface, which is about how *one request* advertises
-    #: tools -- not about running them.
+    #: tools -- not about running them. ``force_tool_once`` belongs to that
+    #: surface: it sets one request's ``tool_choice``; the tool still runs
+    #: in the toolbox.
     _PROTOCOL = {
+        "force_tool_once",
         "stream_response", "append_message", "count_prompt_tokens",
         "request_stop", "stop_requested", "usage_limits",
         "reflection_config", "history", "last_stats", "context_length",

@@ -46,6 +46,9 @@ class DecisionEntry:
     agent: str
     tool_name: str
     _node_ref: Any = None
+    #: What the classifier made of it (:func:`triage_advice`); empty when
+    #: no classifier was wired.
+    advice: str = ""
 
     @property
     def node(self) -> Optional[Any]:
@@ -106,6 +109,7 @@ class DecisionRegistry:
             agent=str(agent or fields.get("agent") or ""),
             tool_name=str(fields.get("tool_name") or ""),
             _node_ref=weakref.ref(node) if node is not None else None,
+            advice=triage_advice(fields.get("detail")),
         )
         with self._lock:
             self._entries[entry.decision_id] = entry
@@ -199,8 +203,33 @@ def _fields(request: Any) -> dict:
     return {
         name: getattr(request, name, None)
         for name in ("decision_id", "run_id", "kind", "prompt", "tool_name",
-                     "agent")
+                     "agent", "detail")
     }
+
+
+def triage_advice(detail: Any) -> str:
+    """One line of what the classifier made of a request, for the card.
+
+    From the gate's ``detail`` (S4): its suggestion, how urgent it ranked
+    the question, and why it did not let the call through -- or ``""``
+    when no classifier answered. Advice only: the human decides.
+    """
+    if not isinstance(detail, dict) or "priority" not in detail:
+        return ""
+    suggestion = detail.get("suggestion")
+    parts = [f"Classifier suggests: {suggestion}" if suggestion
+             else "Classifier: no suggestion"]
+    try:
+        parts.append(f"priority {float(detail['priority']):.2f}")
+    except (TypeError, ValueError):
+        pass
+    why = str(detail.get("why") or "").strip()
+    if why:
+        parts.append(why)
+    completion = detail.get("completion")
+    if isinstance(completion, dict) and completion.get("unmet"):
+        parts.append("unmet: " + "; ".join(str(u) for u in completion["unmet"][:3]))
+    return " · ".join(parts)
 
 
 #: The session's registry -- what the Agent node writes to and the Decision

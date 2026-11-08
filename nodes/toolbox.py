@@ -66,6 +66,8 @@ from ..functions.tool_groups import (
 from ..functions.tools.file_sandbox import FileToolSandbox
 from ..functions.tools.graph_authoring import attach_graph_tools
 from ..functions.tools.node_dev_tools import attach_node_dev_tools
+from ..functions.tools.context_tools import attach_context_tools
+from ..functions.compaction import DEFAULT_INGEST_BEFORE, INGEST_MODES, coerce_ingest_mode
 from ..functions.import_reach import import_reach_warning
 from ..functions.self_modify import user_plugin_root
 from ..functions.tools.recall_tool import attach_recall_tool
@@ -107,7 +109,7 @@ class SilkToolBoxNode(SplitFormState, ActiveNode):
     node_icon: ClassVar[Optional[str]] = "grid-dots"
     # Keeps the height the user drags it to: the groups share it.
     vertical_size_policy: ClassVar[VerticalSizePolicy] = VerticalSizePolicy.GROW_ONLY
-    node_state_api = 6   # owns a hand-written state dict
+    node_state_api = 7   # owns a hand-written state dict
     node_version = 6     # bump on any state-shape change (G20); 6: splitter sizes
 
     def __init__(self, title: str = "Silk ToolBox", **kwargs: Any) -> None:
@@ -210,6 +212,26 @@ class SilkToolBoxNode(SplitFormState, ActiveNode):
             "node_dev_promote_root", self._promote_root, role=PortRole.INTERNAL,
             datatype="dirpath", default="", add_to_layout=False,
         )
+        # What happens before a compaction compact_context asks for, when
+        # a Knowledge Graph is wired. Behind the gear on the context row;
+        # the automatic triggers have the same setting on auto_compact.
+        self._ingest_before = QComboBox()
+        self._ingest_before.addItems(list(INGEST_MODES))
+        self._ingest_before.setToolTip(
+            "off: compact at once. ask: one round first, asking the agent to "
+            "save its findings with okf_ingest. require: that round must "
+            "call okf_ingest (asks where the backend cannot force a tool).")
+        self._ingest_before.intro = (  # type: ignore[attr-defined]
+            "Before a compaction the agent asks for with compact_context, "
+            "it can save what it learned into the knowledge graph, so the "
+            "summary is not the only record left. Needs a wired Knowledge "
+            "Graph at write level or above. Automatic compactions go by the "
+            "auto_compact hook's setting.")
+        self._widget_core.register_widget(
+            "context_ingest_before", self._ingest_before, role=PortRole.INTERNAL,
+            datatype="string", default=DEFAULT_INGEST_BEFORE, add_to_layout=False,
+        )
+        self._ingest_before.setCurrentText(DEFAULT_INGEST_BEFORE)
         self._config_dialogs = ConfigDialogs()
 
         # Infrastructure hooks: part of the recipe, so every derived
@@ -305,7 +327,11 @@ class SilkToolBoxNode(SplitFormState, ActiveNode):
 
     @staticmethod
     def migrate_state(state: Dict[str, Any], from_version: int) -> Dict[str, Any]:
-        """api 1 → 6.
+        """api 1 → 7.
+
+        6 → 7: what happens before a compaction ``compact_context`` asks
+        for (``context_ingest_before``). Nothing to translate: absent is
+        ``ask``, the round every such compaction got before.
 
         5 → 6: node-dev's promote folder (``node_dev_promote_root``).
         Nothing to translate: absent is empty, Weave's user plugin
@@ -405,6 +431,8 @@ class SilkToolBoxNode(SplitFormState, ActiveNode):
             return self._knowledge_level
         if category in categories_of("node_dev"):
             return self._promote_root
+        if category in categories_of("context"):
+            return self._ingest_before
         return None
 
     def _adopt_new_tools(self, catalog: List[Dict[str, Any]]) -> None:
@@ -578,6 +606,11 @@ class SilkToolBoxNode(SplitFormState, ActiveNode):
                 promote_root = str(inputs.get("node_dev_promote_root") or "").strip()
                 attacher = (partial(attach_node_dev_tools, promote_root=Path(promote_root).expanduser())
                             if promote_root else attach_node_dev_tools)
+            elif group == "context":
+                attacher = partial(
+                    attach_context_tools,
+                    ingest_before=coerce_ingest_mode(inputs.get("context_ingest_before")),
+                )
             else:
                 attacher = GROUP_ATTACHERS[group]
             recipe.append((group, attacher))

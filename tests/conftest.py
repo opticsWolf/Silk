@@ -76,11 +76,13 @@ _SETTINGS_DIR = ""
 
 def pytest_configure(config):
     global _SETTINGS_DIR
+    _SETTINGS_DIR = tempfile.mkdtemp(prefix="silk-test-settings-")
+    # The decision log an Agent run keeps (functions/decision_log.py).
+    os.environ["SILK_DECISION_LOG"] = str(Path(_SETTINGS_DIR) / "decisions.jsonl")
     try:
         import weave.app_settings as store
     except Exception:  # a run without Qt installed
         return
-    _SETTINGS_DIR = tempfile.mkdtemp(prefix="silk-test-settings-")
     store._ini_path = str(Path(_SETTINGS_DIR) / "weave.ini")
 
 

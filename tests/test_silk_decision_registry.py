@@ -27,8 +27,9 @@ class _Node:
         self.title = title
         self.answered = []
 
-    def _answer_decision(self, approved, remember):
+    def _answer_decision(self, approved, remember, reason=None):
         self.answered.append((approved, remember))
+        self.reason = reason
 
 
 def _request(decision_id="d1", run_id="run-a", prompt="Run pytest?"):
