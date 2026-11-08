@@ -198,7 +198,7 @@ read, traverse and, by access level, ingest and curation.
 | in | `roots` | `dirpath_list` (where to find or create `.okfgraph/okfgraph.db`) |
 | in | `embedder` | `model_handle` (the Embedder Loader's `model_obj`) |
 | in | `onnx_embedder` | `onnx_embedder` (an ONNX Embedder node) |
-| in | `reranker` | `reranker_model` (an ONNX Reranker node) |
+| in | `reranker` | `reranker_model` (an ONNX Reranker or Reranker Loader node) |
 | out | `knowledge` | `okf_graph` |
 
 The node has **no model fields**: the models come on the wires, and the
@@ -208,7 +208,7 @@ picks which wire embeds; the other is ignored.
 | Embedder | Lane in okf | What the node passes |
 |---|---|---|
 | gguf | external (`/v1/embeddings` on Silk's llama.cpp server) | the server URL, pin `gguf/<file stem>`, and from the GGUF header: family, pooling, width; token counts from the file too |
-| onnx, `onnx_embedder` wired | embroider, in okf's process | model id, device, precision, cache folder |
+| onnx, `onnx_embedder` wired | embroider, in okf's process | model id, device, precision, cache folder, image model and its precision |
 | onnx, nothing wired | embroider | the ONNX model the graph was last embedded with; `google/embeddinggemma-2` (Silk's default, `DEFAULT_EMBED_MODEL`) for a new graph |
 
 With nothing wired, okf finds the model itself: embroider looks it up in
@@ -249,9 +249,36 @@ search is reranked (`rank='cross'` on concepts, `rerank` on chunks; the
 `hub` and `ppr` graph walks keep their order); with none wired no search
 is, and okf's default cross-encoder is never loaded. The reranker writes
 no vectors, so changing it restarts the server and never re-embeds.
-Silk's Python llama.cpp server cannot rerank, so a GGUF reranker is not
-offered; `reranker_model` also carries okfgraph's external
-form (a `/v1/rerank` host by URL and family) for a node that serves one.
+An ONNX Reranker is loaded by okf itself (embroider); a Reranker Loader's
+GGUF model is reached on okf's external rerank lane (okfgraph 0.12):
+the node starts the loader's `/v1/rerank` server, passes its address,
+the model's family, the loader's context as the pair ceiling
+(`rerank_max_tokens`) and `rerank_count = server-tokenize`, so okf counts
+pairs with the server's own `/tokenize`. `reranker_model` also carries
+the plain external form (any `/v1/rerank` host by URL and family).
+
+### Reranker Loader — `nodes/reranker_loader.py` (`RerankerLoaderNode`) *(Silk AI / Loaders)*
+A GGUF reranker for the Knowledge Graph — a cross-encoder with a
+classification head (bge-reranker-v2-m3) or a Qwen3-Reranker — served on
+`POST /v1/rerank` by `functions/rerank_server.py` in its own process
+(`functions/rerank_pool.py`). The Python `llama_cpp.server` has no rerank
+endpoint, so Silk scores pairs with llama.cpp directly: rank pooling for
+a file with a head, and for a Qwen3 reranker converted without one,
+Qwen3's own prompt and P("yes"). The pair is built like `llama-server`
+builds it (the GGUF's rerank template, else `[BOS] q [EOS] [SEP] doc
+[EOS]`); a pair longer than the context keeps the query and cuts the
+document.
+
+| Direction | Port | Type |
+|---|---|---|
+| in | `model_path` | `filepath` |
+| out | `reranker` | `reranker_model` (`runtime: gguf`) |
+
+Fields: model path, Device (CPU / GPU), Context (the pair ceiling, also
+told to okf), CPU threads, mmap. Like the Embedder Loader it is **loaded
+on demand**: the handle goes out at once and the server starts when the
+Knowledge Graph serves a graph with it; Unload stops it. A server that
+will not start turns the Knowledge Graph red with the reason.
 
 ### ONNX Embedder / ONNX Reranker — `nodes/onnx_loader.py` (`SilkOnnxEmbedderNode`, `SilkOnnxRerankerNode`) *(Silk AI / Loaders)*
 Choose an embroider model (id, device, precision, cache folder) and put the
@@ -267,7 +294,75 @@ is why the wires are `onnx_embedder` / `reranker_model` and not
 | ONNX Reranker | `reranker` | `reranker_model` |
 
 The model lists are embroider's registry and editable, so a model a newer
-embroider gained can be typed in.
+embroider gained can be typed in. embroider 0.14 adds the English
+`cross-encoder/ms-marco-MiniLM-L-6-v2` beside the multilingual default.
+
+The ONNX Embedder's **Precision** offers only what the chosen model ships:
+int8 is jina nano's alone. Asked for one it lacks, the node turns red
+instead of okf failing at start.
+
+**Images** and **Image prec.** choose how okf embeds images for
+image-content search (`OKFGRAPH_IMAGE_MODEL_ID`, `OKFGRAPH_IMAGE_PRECISION`).
+An image model's vectors only compare against its text partner, so each
+text model has at most one:
+
+| Text model | Image model |
+|---|---|
+| `google/embeddinggemma-2` | `google/embeddinggemma-2-vision` |
+| `jinaai/jina-embeddings-v5-text-nano-retrieval` | `jina-v5-omni-nano-retrieval-vision` |
+| `jinaai/jina-embeddings-v5-text-small-retrieval` | none: images are searched by caption |
+
+`auto` is okf's own pairing (the table). A partner that does not match is
+greyed out, and wiring one anyway turns the node red. Image weights come
+in fp32 and fp16 only, and image search needs a vector width of 768 or
+less. okf pins the image model on the first image it embeds; the
+Knowledge Graph's Info says which one embeds images.
+
+## Documents
+
+Documents to Markdown with [bobine](https://pypi.org/project/bobine/)
+(Silk's `documents` extra): PDF (formulas as LaTeX, table structure, OCR
+for scans), Office files including the legacy formats, JATS XML articles
+and text. **bobine runs in a child process per call**
+(`functions/bobine_worker.py`): `import bobine` loads ONNX Runtime, which
+must not run in Weave's process. That also makes Cancel exact. The PDF
+model routes need an `onnxruntime` install in the environment; without
+one, PDFs keep to the text layer and the nodes say so. Without bobine the
+nodes say how to install it and output nothing.
+
+### Converter Settings — `nodes/document_nodes.py` (`SilkConverterSettingsNode`) *(Silk AI / Documents)*
+bobine's options on a `bobine_settings` wire, as plain data: PDF route
+(`never` text layer only · `surgical` + formula OCR · `auto` + layout
+and OCR where needed · `always` every page), device, precision, formula
+weights (int8, CPU only), table backend, images (link / embed), extract
+images, detect headings, formula and page DPI, OCR language, model cache.
+**Check models** reports which models are downloaded and whether an ONNX
+Runtime is there to run them; it downloads nothing. Unwired, the
+converters use bobine's defaults.
+
+### Document Converter — `nodes/document_nodes.py` (`SilkDocumentConverterNode`) *(Silk AI / Documents)*
+A file, or every file bobine reads in a folder (optionally with
+subfolders), to `<output>/<stem>/<stem>.md` with its images and, for
+workbooks, a CSV per sheet. Output empty: a `markdown` folder beside the
+source. Runs on **Convert**, with page progress and **Cancel** (files
+already done stay); a folder keeps going past a file that fails and
+reports it.
+
+| Direction | Port | Type |
+|---|---|---|
+| in | `settings` | `bobine_settings` |
+| in | `source` / `folder` / `out_dir` | `filepath` / `dirpath` / `dirpath` |
+| out | `markdown` | `string` (a folder's files joined, each under a `<!-- name -->` marker) |
+| out | `md_path` | `filepath` (the first file's) |
+| out | `output_dir` | `dirpath` |
+| out | `report` | `dict` (per file: paths, pages, images, data files; failures; settings) |
+
+### Excel Converter / JATS Converter — `nodes/document_nodes.py` (`SilkExcelConverterNode`, `SilkJatsConverterNode`) *(Silk AI / Documents)*
+One file each, converted when the path changes. **Excel** (xlsx, xlsm,
+xls, xlsb, ods): `markdown` (a table per sheet), `sheets`, `csv_by_sheet`
+and the cell `json`. **JATS** (.xml / .nxml, takes `settings` and an
+output folder): `markdown` with LaTeX math, `md_path`, `title` and an
+`info` dict of formula, figure and table counts.
 
 ## Tool assembly
 

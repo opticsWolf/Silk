@@ -39,6 +39,7 @@ from .tools.context_tools import attach_context_tools
 from .tools.recall_tool import attach_recall_tool
 from .tools.okf_tools import attach_okf_tools
 from .tools.web_tools import attach_web_tools
+from .tools.document_tools import attach_document_tools
 from .tools.ripgrep_tool import attach_ripgrep_tools
 from .tools.suite_tools import attach_suite_tools
 from .tools.task_tracker import attach_task_tools
@@ -68,6 +69,10 @@ GROUP_ATTACHERS: Dict[str, Callable[..., None]] = {
     # probes to empty and the tree simply doesn't list it). Unticked by
     # default -- the tick is the off-machine grant.
     "web": attach_web_tools,
+    # Documents to Markdown via bobine (soft dependency, like the web).
+    # Reads a sandbox file, writes the result beside it under the write
+    # grant a write tool's tick gives.
+    "documents": attach_document_tools,
     # The model's own request for a compaction (spec §12, T8 option B);
     # the automatic kind is the ToolBox's auto_compact hook.
     "context": attach_context_tools,

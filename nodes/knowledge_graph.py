@@ -49,9 +49,12 @@ loader nodes, and the Embedder row picks which wire embeds.
   (``<arch>.embedding_length``). The pin is ``gguf/<file stem>``.
 * ``onnx_embedder`` -- an ONNX Embedder node's choice, which okf loads
   with embroider in its own process (device, precision, cache folder).
-* ``reranker`` -- an ONNX Reranker node's cross-encoder (or any external
-  ``/v1/rerank`` host described on that port). Rerank writes no vectors,
-  so changing it restarts the server and never re-embeds.
+* ``reranker`` -- an ONNX Reranker node's cross-encoder, or the Reranker
+  Loader's GGUF reranker (Silk's own ``/v1/rerank`` server, which okf
+  reaches on its external rerank lane, counting pairs with the server's
+  ``/tokenize``), or any external host described on that port. Rerank
+  writes no vectors, so changing it restarts the server and never
+  re-embeds.
 
 With no embedder wired the graph keeps the model it was last embedded
 with -- unplugging a loader is not a request to re-embed. A GGUF model
@@ -88,9 +91,9 @@ from ..functions.port_text import text_input
 from ..functions.gguf_meta import EmbeddingMeta, read_embedding_meta
 from ..functions.okf_graph import (
     DEFAULT_EMBED_MODEL, DEVICES, DIM_RANGE, EMBED_PRECISIONS, FAMILY_LADDERS,
-    LADDER_DIMS, RERANK_PRECISIONS, OkfError, OkfGraph, OkfSpec,
-    default_bundle_root, default_db_path, default_executable, find_databases,
-    mismatch_text, model_cache,
+    IMAGE_PRECISIONS, LADDER_DIMS, RERANK_PRECISIONS, VISION_MAX_DIM, OkfError,
+    OkfGraph, OkfSpec, default_bundle_root, default_db_path, default_executable,
+    find_databases, mismatch_text, model_cache, vision_partner,
 )
 
 log = get_logger("SilkKnowledgeGraphNode")
@@ -455,6 +458,9 @@ class SilkKnowledgeGraphNode(ThreadedNode):
                     device=_choice(onnx.get("device"), DEVICES),
                     precision=_choice(onnx.get("precision"), EMBED_PRECISIONS),
                     cache_dir=str(onnx.get("cache_dir") or ""),
+                    image_model_id=str(onnx.get("image_model_id") or ""),
+                    image_precision=_choice(onnx.get("image_precision"),
+                                            IMAGE_PRECISIONS),
                 )
             else:
                 spec = replace(spec, model_id=DEFAULT_EMBED_MODEL)
@@ -463,6 +469,9 @@ class SilkKnowledgeGraphNode(ThreadedNode):
     @staticmethod
     def wiring_problem(inputs: Dict[str, Any]) -> str:
         """Why the wired models cannot be used as they are, or ``""``."""
+        failed = _gguf_reranker(inputs.get("reranker")).get("error")
+        if failed:
+            return f"The reranker's server did not start: {failed}"
         handle = inputs.get("embedder")
         if SilkKnowledgeGraphNode.embed_source(inputs) == "onnx" or not handle:
             return ""
@@ -638,6 +647,8 @@ class SilkKnowledgeGraphNode(ThreadedNode):
                 "db_path": spec.db_path, "device": spec.device,
                 "model_id": spec.model_id, "embedding_dim": spec.embedding_dim,
                 "precision": spec.precision, "cache_dir": spec.cache_dir,
+                "image_model_id": spec.image_model_id,
+                "image_precision": spec.image_precision,
                 "backend": spec.backend,
                 "source": "wire" if wired else "fields", "embed_family": spec.embed_family,
                 "endpoint_url": spec.endpoint_url,
@@ -871,6 +882,8 @@ def _model_lines(spec: OkfSpec, wired: str) -> List[str]:
             f"{spec.model_id or 'its default model (jina v5 small)'} itself, on "
             f"{spec.device}. Wire an ONNX Embedder or Embedder Loader to "
             "change it.")
+    if wired != "gguf":
+        lines.append(_image_line(spec))
     if spec.rerank_model_id:
         where = (f"at {spec.rerank_endpoint_url}" if spec.rerank_backend == "external"
                  else f"on {spec.rerank_device} ({spec.rerank_precision})")
@@ -880,11 +893,57 @@ def _model_lines(spec: OkfSpec, wired: str) -> List[str]:
     return lines
 
 
+def _image_line(spec: OkfSpec) -> str:
+    """How images are embedded for image-content search."""
+    image = spec.image_model_id or vision_partner(spec.model_id)
+    if not image:
+        return (f"No image model pairs with {spec.model_id or 'the default model'}: "
+                "images are searched by their captions.")
+    if spec.embedding_dim > VISION_MAX_DIM:
+        return (f"Image search needs a vector width of at most {VISION_MAX_DIM} "
+                f"({spec.embedding_dim} here): images are searched by their captions.")
+    return f"Embedding images with {image} ({spec.image_precision})."
+
+
+def _gguf_reranker(handle: Any) -> Dict[str, Any]:
+    """``{endpoint_url}`` for a Reranker Loader handle, ``{error}`` when
+    its server would not start, empty for anything else.
+
+    Asking the lazy pool for its address starts the server: this is the
+    demand the Reranker Loader waits for.
+    """
+    if not (isinstance(handle, dict) and handle.get("runtime") == "gguf"
+            and handle.get("role") == "rerank"):
+        return {}
+    pool = handle.get("pool")
+    if pool is None:
+        return {}
+    try:
+        base = pool.base_url
+        base = str(base() if callable(base) else base).rstrip("/")
+    except Exception as exc:  # noqa: BLE001 - reported, never raised
+        return {"error": str(exc) or type(exc).__name__}
+    return {"endpoint_url": base} if base else {}
+
+
 def _with_reranker(spec: OkfSpec, reranker: Any) -> OkfSpec:
     """*spec* with the wired reranker's rows; unchanged when none is."""
     if not (isinstance(reranker, dict) and reranker.get("role") == "rerank"):
         return spec
     model_id = str(reranker.get("model_id") or "")
+    if reranker.get("runtime") == "gguf":
+        gguf = _gguf_reranker(reranker)
+        if not gguf.get("endpoint_url"):
+            return spec
+        # Silk's rerank server on okf's external lane: okf cuts pairs to
+        # the server's context and counts them with its /tokenize.
+        return replace(
+            spec, rerank_backend="external", rerank_model_id=model_id,
+            rerank_endpoint_url=gguf["endpoint_url"],
+            rerank_family=str(reranker.get("family") or "gguf-reranker"),
+            rerank_max_tokens=int(reranker.get("max_tokens") or 0),
+            rerank_count="server-tokenize",
+        )
     if reranker.get("runtime") == "external" and reranker.get("endpoint_url"):
         return replace(
             spec, rerank_backend="external", rerank_model_id=model_id,

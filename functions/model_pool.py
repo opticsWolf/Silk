@@ -733,15 +733,19 @@ class LazyGGUFPool:
     the start failed; the exception is raised to the consumer either way.
     *check* (optional) is asked about a freshly started pool before anyone
     gets it -- a decision model's smoke question, say; when it raises, the
-    server is stopped and the start counts as failed.
+    server is stopped and the start counts as failed. *pool_class* is what
+    runs (a :class:`~functions.rerank_pool.RerankPool`, say); it takes the
+    model path and *pool_kwargs* and has ``cleanup`` and ``snapshot``.
     """
 
     def __init__(self, model_path: str, on_start: Any = None,
-                 check: Any = None, **pool_kwargs: Any) -> None:
+                 check: Any = None, pool_class: Any = None,
+                 **pool_kwargs: Any) -> None:
         self._model_path = model_path
         self._pool_kwargs = pool_kwargs
         self._on_start = on_start
         self._check = check
+        self._pool_class = pool_class or GGUFModelPool
         self._pool: Optional[GGUFModelPool] = None
         self._lock = threading.Lock()
 
@@ -759,7 +763,7 @@ class LazyGGUFPool:
             if self._pool is None:
                 pool: Optional[GGUFModelPool] = None
                 try:
-                    pool = GGUFModelPool(self._model_path, **self._pool_kwargs)
+                    pool = self._pool_class(self._model_path, **self._pool_kwargs)
                     if self._check is not None:
                         self._check(pool)
                 except Exception as exc:

@@ -347,7 +347,8 @@ if "onnx_embedder" not in PortRegistry._by_name:
 
 # A reranker (the second retrieval stage) as a description, whoever runs
 # it: ``runtime: embroider`` is a cross-encoder okf loads itself (the ONNX
-# Reranker node); ``runtime: external`` is a ``POST /v1/rerank`` host
+# Reranker node); ``runtime: gguf`` is the Reranker Loader's lazy server
+# pool; ``runtime: external`` is a ``POST /v1/rerank`` host
 # (llama-server --rerank, TEI) by URL and declared family. Typed by role,
 # not by runtime, so one port takes either.
 if "reranker_model" not in PortRegistry._by_name:
@@ -360,6 +361,8 @@ if "reranker_model" not in PortRegistry._by_name:
         validator=lambda v: v is None or (isinstance(v, dict)
                             and (not v or (v.get("role") == "rerank" and (
                                 v.get("runtime") == "embroider"
+                                or (v.get("runtime") == "gguf"
+                                    and v.get("pool") is not None)
                                 or (v.get("runtime") == "external"
                                     and bool(v.get("endpoint_url"))))))),
         formatter=lambda v: (
@@ -370,7 +373,27 @@ if "reranker_model" not in PortRegistry._by_name:
         casts_to={},
     )
 
+# bobine's converter settings as plain data (functions/bobine_convert.py):
+# the route, device and options a Converter Settings node chose. Data,
+# not a live ConverterConfig -- bobine runs in a child process, which
+# builds the config; an unwired port means bobine's defaults.
+if "bobine_settings" not in PortRegistry._by_name:
+    PortRegistry.register(
+        name="bobine_settings",
+        python_type=dict,
+        color_index=158,
+        type_id=None,
+        default=lambda: None,
+        validator=lambda v: v is None or isinstance(v, dict),
+        formatter=lambda v: (
+            f"<bobine: route {v.get('routing', 'auto')}, {v.get('device', 'cpu')}>"
+            if isinstance(v, dict) and v else "<bobine defaults>"
+        ),
+        casts_to={},
+    )
+
 ONNX_EMBEDDER_TYPE = PortRegistry._by_name["onnx_embedder"]
+BOBINE_SETTINGS_TYPE = PortRegistry._by_name["bobine_settings"]
 RERANKER_MODEL_TYPE = PortRegistry._by_name["reranker_model"]
 
 MODEL_HANDLE_TYPE = PortRegistry._by_name["model_handle"]

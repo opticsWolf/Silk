@@ -43,6 +43,11 @@ def test_args_caps_are_skill_budgets():
     # them for other providers (the skill documents the rejection).
     args = web_tools.ResearchArgs(query="x", title="y", author="z")
     assert args.title == "y"
+    # gossamer 0.11: a scholarly merge across up to four providers.
+    merged = web_tools.ResearchArgs(query="x", providers=["openalex", "arxiv"])
+    assert merged.model_dump(exclude_none=True)["providers"] == ["openalex", "arxiv"]
+    with pytest.raises(ValidationError):
+        web_tools.ResearchArgs(query="x", providers=["a", "b", "c", "d", "e"])
     with pytest.raises(ValidationError):
         web_tools.DownloadArgs(source="http://x/y.pdf", filename="")
     for bad in ("", ".", "..", "sub/dir.pdf", "/abs.pdf", "a\\b.pdf"):

@@ -48,11 +48,20 @@ ledger = ["macrame-db>=0.16"]
 # The knowledge graph (Knowledge Graph node, okf_* tools). OKFgraph runs as
 # its own `okf serve` process, so its ONNX Runtime and Ladybug never load
 # into Weave's; the extra only puts `okf` beside this interpreter. One of
-# the two: CPU (FP32 vectors) or GPU (CUDA, FP16). Above 0.11.0 because
-# Silk reads `pin_info`, calls `reembed` and stops the server through
-# `POST /shutdown`, none of which 0.11.0 has.
-knowledge-cpu = ["okfgraph[cpu]>0.11.0"]
-knowledge-gpu = ["okfgraph[gpu]>0.11.0"]
+# the two: CPU (FP32 vectors) or GPU (CUDA, FP16). 0.12 because Silk
+# reads `pin_info`, re-embeds as a cancellable job, stops the server
+# through `POST /shutdown` and reranks over the external lane (a GGUF
+# Reranker Loader's /v1/rerank), none of which 0.11 has.
+knowledge-cpu = ["okfgraph[cpu]>=0.12"]
+knowledge-gpu = ["okfgraph[gpu]>=0.12"]
+# The public web tools (gossamer). 0.11: the in-house JATS route and the
+# legacy Office reads the tool descriptions promise.
+web = ["gossamer-web>=0.11"]
+# Document conversion (bobine): the convert_document tool and the
+# Document nodes. Plain, not bobine[cpu]: that extra pins an ONNX Runtime
+# that okfgraph's extras contradict. bobine finds whichever onnxruntime
+# is installed, and its fast PDF/Office/text paths need none.
+documents = ["bobine>=0.8"]
 # The runtime test suite (tests/, this repo). The seam tests that drive a
 # real Canvas or weave.registry live in the Weave tree's tests/ instead.
 test = ["pytest>=8"]

@@ -19,7 +19,9 @@ What was taken from the skill, per tool:
     courtlistener/oldp/hudoc, patent -> EPO/KIPRIS/patentsview/lens
     key-gated, financial -> yahoo/frankfurter/eurostat/..., geo ->
     open-meteo/overpass, else DuckDuckGo). ``filter``/``select``/
-    ``title``/``author`` are OpenAlex-only and rejected otherwise.
+    ``title``/``author`` are OpenAlex-only and rejected otherwise;
+    ``providers`` (scholarly only) merges several sources by DOI / arXiv
+    id, the Hugging Face model and paper adapters among them (0.10.1).
 ``inspect_html_page``
     ``check_sources`` first for shaky URLs; ``query`` slices long pages;
     paging re-reads the cached full text -- skill "Budgets" + "Cache
@@ -42,6 +44,10 @@ What was taken from the skill, per tool:
     bare filename is joined onto ``<sandbox>/downloads/`` and anything
     else is refused. Atomic stream, byte cap, PDF signature check,
     resume, robots/SSRF enforced -- skill "Documents" + QUICKREF.
+
+Checked against gossamer-web 0.11.0, whose JATS route runs on its own
+converter (bobine is no longer a dependency of it) and which reads the
+legacy Office formats (0.10.2). The ``web`` extra sets the floor.
 
 Egress: every tool sends the query or URL off-machine. The group stays
 out of ``DEFAULT_GROUPS``, so a fresh box leaves these unticked -- the
@@ -183,7 +189,7 @@ def _run(name: str, args: Dict[str, Any]) -> str:
         return (
             f"error: web backend unavailable: {exc}\n"
             "remedy: install gossamer-web for the Weave environment "
-            "(uv pip install gossamer-web, or maturin develop from a "
+            "(Silk's `web` extra: uv pip install 'gossamer-web>=0.11', or maturin develop from a "
             "checkout) and retry"
         )
     try:
@@ -247,6 +253,13 @@ class ResearchArgs(BaseModel):
     )
     author: Optional[str] = Field(
         None, description="OpenAlex author search; rejected otherwise."
+    )
+    providers: Optional[List[str]] = Field(
+        None, max_length=4,
+        description=(
+            "Scholarly only: search these in turn and merge the hits by "
+            "DOI / arXiv id, e.g. ['openalex', 'arxiv']. Not with provider."
+        ),
     )
 
 
@@ -354,7 +367,9 @@ def attach_web_tools(toolbox: Any, sandbox: Any) -> None:
         name="research_by_category",
         description=(
             "Classify-first research (sends the query off-machine): "
-            "scholarly->OpenAlex, legal->courtlistener/oldp/hudoc, "
+            "scholarly->OpenAlex (also arxiv, crossref, semanticscholar, "
+            "and huggingface / huggingface-papers for models and papers; "
+            "`providers` merges several), legal->courtlistener/oldp/hudoc, "
             "patent->EPO/KIPRIS/patentsview/lens, "
             "financial->yahoo/frankfurter/eurostat, geo->open-meteo/overpass, "
             "else general web search. Patent and some providers are "
@@ -399,7 +414,8 @@ def attach_web_tools(toolbox: Any, sandbox: Any) -> None:
         name="extract_document",
         description=(
             "Extract text and tables from a document URL, DOI, or a file "
-            "inside the sandbox (PDF/DOCX/XLSX/PPTX/feeds). Scholarly sources prefer "
+            "inside the sandbox (PDF, DOCX/XLSX/PPTX and legacy "
+            "DOC/XLS/PPT, text formats, feeds). Scholarly sources prefer "
             "publisher full text when DOI-resolvable -- math then renders "
             "correctly. Large PDFs: page with `pages`, and overlong output "
             "is truncated."

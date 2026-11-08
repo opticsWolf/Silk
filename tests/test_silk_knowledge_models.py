@@ -64,7 +64,8 @@ def write_gguf(path, basename, width, pooling_type):
 
 ONNX = {"runtime": "embroider", "role": "embedding",
         "model_id": "google/embeddinggemma-2", "device": "cuda",
-        "precision": "fp16", "cache_dir": "D:/hf"}
+        "precision": "fp16", "cache_dir": "D:/hf",
+        "image_model_id": "", "image_precision": "auto"}
 RERANK = {"runtime": "embroider", "role": "rerank",
           "model_id": "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1",
           "device": "cpu", "precision": "q8", "cache_dir": "D:/rerank"}
@@ -238,6 +239,68 @@ def test_loader_nodes_describe_and_never_load(qt_app):
     assert rerank["precision"] == "auto", "fp16 is not a reranker precision"
 
 
+def test_the_embedder_names_its_image_model_and_refuses_a_mismatch(qt_app):
+    from silk.nodes.onnx_loader import SilkOnnxEmbedderNode
+    node = SilkOnnxEmbedderNode()
+    gemma = {"model_id": "google/embeddinggemma-2", "device": "cuda",
+             "image_model_id": "google/embeddinggemma-2-vision",
+             "image_precision": "fp16"}
+    out = node.compute(gemma)["onnx_embedder"]
+    assert (out["image_model_id"], out["image_precision"]) == (
+        "google/embeddinggemma-2-vision", "fp16")
+    assert "Images: google/embeddinggemma-2-vision (named" in node._sync_status
+    auto = node.compute(dict(gemma, image_model_id="auto", image_precision="int8"))
+    assert auto["onnx_embedder"]["image_model_id"] == "", "auto is okf's pairing"
+    assert auto["onnx_embedder"]["image_precision"] == "auto", "no int8 image weights"
+    with pytest.raises(ValueError, match="embeds images for google/embeddinggemma-2"):
+        node.compute(dict(gemma, model_id="jinaai/jina-embeddings-v5-text-nano-retrieval"))
+    small = node.compute({"model_id": "jinaai/jina-embeddings-v5-text-small-retrieval"})
+    assert small["onnx_embedder"]["image_model_id"] == ""
+    assert "searched by their captions" in node._sync_status
+
+
+def test_the_embedder_offers_only_the_precisions_a_model_ships(qt_app):
+    from silk.nodes.onnx_loader import SilkOnnxEmbedderNode
+    node = SilkOnnxEmbedderNode()
+    with pytest.raises(ValueError, match="ships no int8"):
+        node.compute({"model_id": "google/embeddinggemma-2", "precision": "int8"})
+    nano = "jinaai/jina-embeddings-v5-text-nano-retrieval"
+    assert node.compute({"model_id": nano, "precision": "int8"})[
+        "onnx_embedder"]["precision"] == "int8"
+
+    def enabled(combo):
+        return [combo.itemText(i) for i in range(combo.count())
+                if combo.model().item(i).isEnabled()]
+    node._model.setCurrentText(nano)
+    node._precision.setCurrentText("int8")
+    node._image.setCurrentText("jina-v5-omni-nano-retrieval-vision")
+    node._model.setCurrentText("google/embeddinggemma-2")
+    assert enabled(node._precision) == ["auto", "fp32", "fp16"]
+    assert enabled(node._image) == ["auto", "google/embeddinggemma-2-vision"]
+    assert node._precision.currentText() == "auto", "int8 went grey"
+    assert node._image.currentText() == "auto", "the jina image model went grey"
+
+
+def test_image_rows_reach_okf_and_the_info():
+    from silk.nodes.knowledge_graph import _image_line
+    onnx = dict(ONNX, image_model_id="google/embeddinggemma-2-vision",
+                image_precision="fp32")
+    spec = SilkKnowledgeGraphNode.spec_from({"db_path": "kb.db", "onnx_embedder": onnx})
+    assert (spec.image_model_id, spec.image_precision) == (
+        "google/embeddinggemma-2-vision", "fp32")
+    env = spec.launch_env()
+    assert env["OKFGRAPH_IMAGE_MODEL_ID"] == "google/embeddinggemma-2-vision"
+    assert env["OKFGRAPH_IMAGE_PRECISION"] == "fp32"
+    plain = SilkKnowledgeGraphNode.spec_from({"db_path": "kb.db", "onnx_embedder": ONNX})
+    assert not {"OKFGRAPH_IMAGE_MODEL_ID", "OKFGRAPH_IMAGE_PRECISION"} & set(
+        plain.launch_env()), "okf's pairing: nothing to say"
+    assert "google/embeddinggemma-2-vision" in _image_line(plain)
+    assert "captions" in _image_line(OkfSpec(
+        db_path="", model_id="jinaai/jina-embeddings-v5-text-small-retrieval"))
+    assert "at most 768" in _image_line(OkfSpec(
+        db_path="", model_id="google/embeddinggemma-2", embedding_dim=1024))
+
+
 def test_the_node_has_no_model_fields(qt_app):
     node = SilkKnowledgeGraphNode()
     names = {p.name for p in node.inputs}
@@ -255,6 +318,12 @@ def test_old_scenes_keep_their_lane():
     auto = migrate({"widget_data": {"embed_source": "auto"},
                     "applied": {"backend": "external"}}, 5)
     assert auto["widget_data"]["embed_source"] == "gguf", "the lane it served"
+
+    from silk.nodes.onnx_loader import SilkOnnxEmbedderNode
+    onnx = SilkOnnxEmbedderNode.migrate_state(
+        {"widget_data": {"model_id": "google/embeddinggemma-2"}}, 1)
+    assert onnx["widget_data"]["image_model_id"] == "auto", "okf's pairing, as before"
+    assert onnx["widget_data"]["image_precision"] == "auto"
 
     from silk.nodes.embedder_loader import EmbedderLoaderNode
     loader = EmbedderLoaderNode.migrate_state({"dataflow": {"manual_mode": True}}, 1)

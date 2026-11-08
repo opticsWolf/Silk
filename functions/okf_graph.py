@@ -46,7 +46,7 @@ import threading
 import time
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import urlparse
 
 from weave.logger import get_logger
@@ -81,15 +81,59 @@ KNOWN_MODELS = (
 )
 
 #: The cross-encoders embroider ships, default first (okfgraph's
-#: ``DEFAULT_RERANK_MODEL_ID``).
+#: ``DEFAULT_RERANK_MODEL_ID``); embroider 0.14 adds the English MiniLM.
 KNOWN_RERANK_MODELS = (
     "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1",
+    "cross-encoder/ms-marco-MiniLM-L-6-v2",
 )
+
+#: The external rerank lane's pair ceiling okf accepts, in tokens.
+RERANK_MAX_TOKENS = (64, 1048576)
+#: How okf counts tokens for the external rerank lane: by estimate, or by
+#: asking the host's root ``/tokenize`` (Silk's rerank server has one).
+RERANK_COUNTS = ("heuristic", "server-tokenize")
 
 #: Precisions ``okf`` accepts per stage. ``auto`` follows the device
 #: (FP32 on CPU, FP16 on a GPU); an explicit one is part of the pin.
 EMBED_PRECISIONS = ("auto", "fp32", "fp16", "int8")
 RERANK_PRECISIONS = ("auto", "fp32", "q8")
+#: Image weights: no int8 artifact ships, and explicit fp16 on the CPU
+#: fails fast in okf.
+IMAGE_PRECISIONS = ("auto", "fp32", "fp16")
+
+#: The explicit precisions each text model ships (embroider's registry);
+#: a model not listed here may be asked for any of EMBED_PRECISIONS.
+MODEL_PRECISIONS = {
+    "google/embeddinggemma-2": ("fp32", "fp16"),
+    "jinaai/jina-embeddings-v5-text-small-retrieval": ("fp32", "fp16"),
+    "jinaai/jina-embeddings-v5-text-nano-retrieval": ("fp32", "fp16", "int8"),
+}
+
+#: Each image (vision) model and the text model whose vector space it
+#: shares -- embroider's registry ``text_partner``. Image vectors only
+#: compare against their partner, so an image model belongs to one text
+#: model; okf picks the pair itself when none is named. The jina small
+#: text model has no partner: its graphs search images by caption.
+VISION_MODELS = {
+    "google/embeddinggemma-2-vision": "google/embeddinggemma-2",
+    "jina-v5-omni-nano-retrieval-vision":
+        "jinaai/jina-embeddings-v5-text-nano-retrieval",
+}
+#: The widest vector an image model makes; wider graphs get no image search.
+VISION_MAX_DIM = 768
+
+
+def precisions_for(model_id: str) -> Tuple[str, ...]:
+    """The precisions an embedding model can be asked for, ``auto`` first."""
+    return ("auto",) + MODEL_PRECISIONS.get(model_id, EMBED_PRECISIONS[1:])
+
+
+def vision_partner(model_id: str) -> str:
+    """The image model sharing *model_id*'s vectors, or ``""`` for none."""
+    for image_model, text_model in VISION_MODELS.items():
+        if text_model == model_id:
+            return image_model
+    return ""
 
 #: How the external lane pools token vectors; declared, never probed.
 POOLINGS = ("mean", "last", "cls")
@@ -169,8 +213,15 @@ class OkfSpec:
 
     The ``rerank_*`` rows choose the second retrieval stage. ``embroider``
     (the default) is a cross-encoder in okf's own process; ``external`` is
-    a ``POST /v1/rerank`` host. Rerank writes no vectors, so none of it is
-    pinned: changing it restarts the server and nothing else.
+    a ``POST /v1/rerank`` host, told its pair ceiling (``rerank_max_tokens``)
+    and how to count toward it (``rerank_count``). Rerank writes no
+    vectors, so none of it is pinned: changing it restarts the server and
+    nothing else.
+
+    ``image_model_id`` / ``image_precision`` choose how images are embedded
+    for image-content search. Empty is okf's own pairing (the vision model
+    sharing the text model's vectors); okf pins the image model on the
+    first image it embeds.
     """
 
     db_path: str
@@ -188,6 +239,8 @@ class OkfSpec:
     embed_pooling: str = "mean"
     embed_counter: str = ""
     embed_counter_gguf: str = ""
+    image_model_id: str = ""
+    image_precision: str = "auto"
     rerank_backend: str = "embroider"
     rerank_model_id: str = ""
     rerank_device: str = "auto"
@@ -195,6 +248,8 @@ class OkfSpec:
     rerank_endpoint_url: str = ""
     rerank_family: str = ""
     rerank_api_key_env: str = ""
+    rerank_max_tokens: int = 0
+    rerank_count: str = ""
     allow_repin: bool = False
 
     def resolved_executable(self) -> str:
@@ -225,6 +280,10 @@ class OkfSpec:
             env["OKFGRAPH_PRECISION"] = self.precision
         if self.cache_dir.strip():
             env["OKFGRAPH_CACHE_DIR"] = self.cache_dir.strip()
+        if self.image_model_id.strip():
+            env["OKFGRAPH_IMAGE_MODEL_ID"] = self.image_model_id.strip()
+        if self.image_precision in IMAGE_PRECISIONS and self.image_precision != "auto":
+            env["OKFGRAPH_IMAGE_PRECISION"] = self.image_precision
         if self.backend == "external":
             env["OKFGRAPH_BACKEND"] = "external"
             if self.endpoint_url.strip():
@@ -251,6 +310,10 @@ class OkfSpec:
                                ("OKFGRAPH_RERANK_API_KEY_ENV", self.rerank_api_key_env)):
                 if value.strip():
                     env[key] = value.strip()
+            if RERANK_MAX_TOKENS[0] <= self.rerank_max_tokens <= RERANK_MAX_TOKENS[1]:
+                env["OKFGRAPH_RERANK_MAX_TOKENS"] = str(self.rerank_max_tokens)
+            if self.rerank_count in RERANK_COUNTS:
+                env["OKFGRAPH_RERANK_COUNT"] = self.rerank_count
         else:
             if self.rerank_device in DEVICES and self.rerank_device != "auto":
                 env["OKFGRAPH_RERANK_DEVICE"] = self.rerank_device
@@ -318,7 +381,7 @@ class OkfClient:
             raise OkfError("UNHEALTHY", f"okf serve at {self.url} did not answer /health")
         return dict(envelope.get("data") or {})
 
-    # -- the job lane (okfgraph 0.12.1) -------------------------------------
+    # -- the job lane (okfgraph 0.12.0) -------------------------------------
 
     def job(self, job_id: str, timeout: float = DEFAULT_CALL_TIMEOUT) -> dict:
         """One job record (``GET /jobs/<id>``): status, phase progress and,
@@ -507,7 +570,7 @@ class OkfGraph:
         runs pin-exempt. The caller closes any existing server first --
         the node's compute does (one server owns the file).
 
-        The re-embed rides the 0.12.1 job lane: *on_progress* sees each
+        The re-embed rides the 0.12.0 job lane: *on_progress* sees each
         job record, and *should_stop* cancels the job at its next batch
         boundary. A cancelled run still reopens the graph cleanly -- the
         report then says ``cancelled: true``, the old pin stands, and a
@@ -643,7 +706,7 @@ class OkfGraph:
         """What the vectors are pinned to, against what the server runs with."""
         return dict(self.call("pin_info", timeout=30.0) or {})
 
-    #: Seconds between polls of ``GET /jobs/<id>`` (0.12.1 job lane).
+    #: Seconds between polls of ``GET /jobs/<id>`` (0.12.0 job lane).
     REEMBED_POLL = 2.0
 
     def reembed(self, *, dry_run: bool = False,
@@ -658,7 +721,7 @@ class OkfGraph:
         ``OKFGRAPH_ALLOW_REPIN=1`` -- :meth:`open`/`repinned` handles
         that cycle.
 
-        0.12.1 job lane: submitted as a job (``mode: "job"``) instead of
+        0.12.0 job lane: submitted as a job (``mode: "job"``) instead of
         one blocking request — a blocking call owns the graph's op lock
         for hours and nothing could stop it, so every other call (search,
         ingest, pin_info) queued behind it. The job id answers inline;
@@ -674,7 +737,7 @@ class OkfGraph:
         sub = self.call("reembed", mode="job", dry_run=dry_run) or {}
         job_id = str(sub.get("job") or "")
         if not job_id:
-            # An owner older than 0.12.1 falls through to the blocking call;
+            # An owner older than 0.12.0 falls through to the blocking call;
             # its report shape is the same, nothing else changes.
             return dict(self.call("reembed", timeout=REEMBED_TIMEOUT,
                                   dry_run=dry_run) or {})
