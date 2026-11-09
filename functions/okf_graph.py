@@ -204,10 +204,13 @@ class OkfSpec:
     and is refused as a re-embed once it has vectors (okfgraph reports the
     pinned width; a change needs a fresh database by design).
 
-    ``embed_pooling`` / ``embed_counter`` / ``embed_counter_gguf`` are the
-    rest of that declaration: a GGUF embedder from Silk's loader counts
-    tokens from its own file (``gguf-meta``), because the Python
-    ``llama_cpp.server`` serves no root ``/tokenize``.
+    ``embed_pooling`` / ``embed_counter`` / ``embed_counter_gguf`` /
+    ``embed_prefixes`` are the rest of that declaration: a GGUF embedder
+    from Silk's loader counts on its server's ``/tokenize``
+    (``server-tokenize``; ``gguf-meta``, a prior from its own file, for a
+    server without one), and ``embed_prefixes`` is okf's
+    ``Query=...|Document=...`` row (:mod:`functions.embed_prefixes`);
+    empty, a family okf has a table for brings that one.
 
     The ``rerank_*`` rows choose the second retrieval stage. ``embroider``
     (the default) is a cross-encoder in okf's own process; ``external`` is
@@ -237,6 +240,7 @@ class OkfSpec:
     embed_pooling: str = "mean"
     embed_counter: str = ""
     embed_counter_gguf: str = ""
+    embed_prefixes: str = ""
     image_model_id: str = ""
     image_precision: str = "auto"
     rerank_backend: str = "embroider"
@@ -289,7 +293,9 @@ class OkfSpec:
             family = self.embed_family.strip()
             if family:
                 env["OKFGRAPH_EMBED_FAMILY"] = family
-                if family in FAMILY_PREFIXES:
+                if self.embed_prefixes:
+                    env["OKFGRAPH_EMBED_PREFIXES"] = self.embed_prefixes
+                elif family in FAMILY_PREFIXES:
                     env["OKFGRAPH_EMBED_PREFIXES"] = family
             if self.api_key_env.strip():
                 env["OKFGRAPH_API_KEY_ENV"] = self.api_key_env.strip()

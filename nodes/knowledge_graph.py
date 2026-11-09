@@ -51,7 +51,13 @@ loader nodes, and the Embedder row picks which wire embeds.
   from the GGUF file, never typed: the family (``nomic-v1.5`` when it is
   one, which brings okf's prefixes; otherwise the model's own name), the
   pooling the server applies (``<arch>.pooling_type``) and the width
-  (``<arch>.embedding_length``). The pin is ``gguf/<file stem>``.
+  (``<arch>.embedding_length``). The query/document prefixes come from
+  the model's name (``functions/embed_prefixes.py``) unless the loader
+  overrides them, and are declared to okf. The pin is
+  ``gguf/<file stem>``, plus ``+p<6 hex>`` naming a declared table, so a
+  graph is never searched with prefixes its vectors were made without;
+  one embedded before Silk declared them is served without them until
+  Re-embed. Tokens are counted by the server's ``/tokenize``.
 * ``onnx_embedder`` -- an ONNX Embedder node's choice, which okf loads
   with embroider in its own process (device, precision, cache folder).
 * ``reranker`` -- an ONNX Reranker node's cross-encoder, or the Reranker
@@ -93,9 +99,11 @@ from .silk_ports import (  # noqa: F401
     MODEL_HANDLE_TYPE, OKF_GRAPH_TYPE, ONNX_EMBEDDER_TYPE, RERANKER_MODEL_TYPE,
 )
 from ..functions.port_text import text_input
+from ..functions import embed_prefixes
 from ..functions.gguf_meta import EmbeddingMeta, read_embedding_meta
 from ..functions.okf_graph import (
     DEFAULT_EMBED_MODEL, DEVICES, DIM_RANGE, EMBED_PRECISIONS, FAMILY_LADDERS,
+    FAMILY_PREFIXES,
     IMAGE_PRECISIONS, LADDER_DIMS, RERANK_PRECISIONS, VISION_MAX_DIM, OkfError,
     OkfGraph, OkfSpec, default_bundle_root, default_db_path, default_executable,
     find_databases, mismatch_text, model_cache, vision_partner,
@@ -449,7 +457,8 @@ class SilkKnowledgeGraphNode(ThreadedNode):
                     model_id=gguf["model_id"], embed_family=gguf["family"],
                     embed_pooling=gguf["pooling"],
                     embedding_dim=_gguf_dim(gguf, dim),
-                    embed_counter="gguf-meta", embed_counter_gguf=gguf["path"],
+                    embed_counter=gguf["counter"], embed_counter_gguf=gguf["path"],
+                    embed_prefixes=gguf["prefixes"],
                 )
         else:
             onnx = _onnx_description(inputs.get("onnx_embedder"))
@@ -481,6 +490,8 @@ class SilkKnowledgeGraphNode(ThreadedNode):
         if SilkKnowledgeGraphNode.embed_source(inputs) == "onnx" or not handle:
             return ""
         gguf = _gguf_embedder(handle)
+        if gguf.get("prefix_error"):
+            return f"The Embedder Loader's prefixes: {gguf['prefix_error']}"
         if gguf.get("error"):
             return f"The embedder's server did not start: {gguf['error']}"
         if not gguf:
@@ -525,6 +536,9 @@ class SilkKnowledgeGraphNode(ThreadedNode):
         spec = self.spec_from(dict(inputs, db_path=db_path, bundle_root=bundle),
                               self._applied)
         reembed_requested, self._reembed_requested = self._reembed_requested, False
+        held = None if reembed_requested else _held_unprefixed(spec, self._applied)
+        if held is not None:
+            spec = held
         source = self.embed_source(inputs)
         wired = _wired_embedder(inputs, source)
         if source == "gguf" and not wired:
@@ -589,6 +603,13 @@ class SilkKnowledgeGraphNode(ThreadedNode):
         adopted = (_adopt_pinned_model(spec, pins)
                    if not wired and graph.owned
                    and self._applied.get("db_path") != spec.db_path else None)
+        unprefixed = (_adopt_unprefixed(spec, pins)
+                      if adopted is None and graph.owned and not reembed_requested
+                      else None)
+        if unprefixed is not None:
+            # Embedded before Silk declared this model's prefixes: served
+            # as it was made, rather than re-embedded unasked.
+            adopted = unprefixed
         if adopted is not None:
             # A graph this node has not served before, embedded with
             # another model: keep that model rather than re-embed it (or
@@ -603,12 +624,18 @@ class SilkKnowledgeGraphNode(ThreadedNode):
                 self._sync_status = _error_text("Not running", exc)
                 return {"knowledge": None}
             self._graph, spec = graph, adopted
-            kept = (f"Kept {spec.model_id}: the graph was embedded with it. "
-                    f"New graphs get {DEFAULT_EMBED_MODEL}.")
+            if unprefixed is None:
+                kept = (f"Kept {spec.model_id}: the graph was embedded with it. "
+                        f"New graphs get {DEFAULT_EMBED_MODEL}.")
 
         lines = [graph.describe(), *_model_lines(spec, wired)]
         if kept:
             lines.append(kept)
+        if unprefixed is not None or held is not None:
+            lines.append(
+                "Embedded without the query/document prefixes this model is "
+                "trained with, and served that way. Press Re-embed to embed "
+                "with them: search gets better.")
         if spec.backend == "embroider" and graph.owned:
             lines.extend(self._cache_lines(spec))
         if self._last_reembed:
@@ -856,8 +883,24 @@ def _gguf_embedder(handle: Any) -> Dict[str, Any]:
     if not base or not path:
         return {}
     meta = _embedding_meta(path)
-    return {"endpoint_url": base, "model_id": f"gguf/{Path(path).stem}",
-            "path": path, "family": _family_for(meta.name, path),
+    family = _family_for(meta.name, path)
+    name = f"{meta.name or ''} {Path(path).stem}"
+    try:
+        table = embed_prefixes.resolve(str(handle.get("prefixes") or ""), name)
+    except ValueError as exc:
+        return {"prefix_error": str(exc)}
+    # okf brings its own table for the families it knows: declared as the
+    # family, under the pin graphs made before Silk had tables carry.
+    builtin = (family in FAMILY_PREFIXES
+               and table == embed_prefixes.prefixes_for(name))
+    tag = "" if builtin else embed_prefixes.pin_tag(table)
+    return {"endpoint_url": base,
+            "model_id": f"gguf/{Path(path).stem}" + (f"+p{tag}" if tag else ""),
+            "plain_model_id": f"gguf/{Path(path).stem}",
+            "prefixes": "" if builtin else embed_prefixes.declaration(table),
+            "counter": ("server-tokenize" if getattr(pool, "serves_tokenize", False)
+                        else "gguf-meta"),
+            "path": path, "family": family,
             "pooling": meta.pooling or "mean", "width": meta.width or 0}
 
 
@@ -965,6 +1008,40 @@ def _with_reranker(spec: OkfSpec, reranker: Any) -> OkfSpec:
         # One cache per server: the embedder's folder, if it named one.
         cache_dir=spec.cache_dir or str(reranker.get("cache_dir") or ""),
     )
+
+
+#: The pin suffix naming a GGUF model's prefix table (``+p`` and six hex).
+_PREFIX_PIN = re.compile(r"\+p[0-9a-f]{6}$")
+
+
+def _unprefixed(spec: OkfSpec) -> Optional[OkfSpec]:
+    """*spec* without its prefix table, or None when it declares none."""
+    if spec.backend != "external" or not _PREFIX_PIN.search(spec.model_id):
+        return None
+    return replace(spec, model_id=_PREFIX_PIN.sub("", spec.model_id),
+                   embed_prefixes="")
+
+
+def _adopt_unprefixed(spec: OkfSpec, pins: Dict[str, Any]) -> Optional[OkfSpec]:
+    """*spec* without prefixes when the graph was embedded with this model
+    before Silk declared its table: the pin is the plain id, nothing else
+    disagrees."""
+    plain = _unprefixed(spec)
+    if plain is None or pins.get("empty"):
+        return None
+    pinned = str((pins.get("pinned") or {}).get("model_id") or "")
+    fields = [str(f) for f in (pins.get("mismatch") or ())]
+    return plain if pinned == plain.model_id and fields == ["model_id"] else None
+
+
+def _held_unprefixed(spec: OkfSpec, applied: Dict[str, Any]) -> Optional[OkfSpec]:
+    """*spec* without prefixes while this node last served the same graph
+    on the same model without them (until Re-embed)."""
+    plain = _unprefixed(spec)
+    if (plain is None or applied.get("db_path") != spec.db_path
+            or applied.get("model_id") != plain.model_id):
+        return None
+    return plain
 
 
 def _adopt_pinned_model(spec: OkfSpec, pins: Dict[str, Any]) -> Optional[OkfSpec]:

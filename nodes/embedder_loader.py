@@ -9,7 +9,9 @@ Embedder Loader -- a GGUF loader specialised for embedding models.
 Same pool machinery as the chat loader (a background ``llama_cpp.server``
 via :class:`functions.model_pool.GGUFModelPool`), but the server is always
 started with ``embedding=True`` and the UI only exposes what matters for
-an embedder: model file, CPU/GPU device, context, threads, batch, mmap.
+an embedder: model file, CPU/GPU device, context, threads, batch, mmap,
+and the query/document prefixes the Knowledge Graph embeds with
+(``functions/embed_prefixes.py``; ``auto`` picks the family's own).
 
 Where the settings come from, in order:
 
@@ -70,6 +72,7 @@ from ..functions.model_pool import (
 )
 from ..functions.gguf_meta import read_gguf_meta, read_gguf_meta_fallback
 from ..functions.presets import EmbedderModelStore
+from ..functions import embed_prefixes
 
 if not LLAMA_CPP_AVAILABLE:
     log = get_logger("EmbedderLoader")
@@ -167,6 +170,21 @@ class EmbedderLoaderNode(ThreadedNode):
         self._widget_core.register_widget(
             "device", self._combo_device, role=PortRole.INTERNAL,
             datatype="str", default="cpu", add_to_layout=False)
+
+        self._combo_prefixes = QComboBox()
+        self._combo_prefixes.setEditable(True)
+        self._combo_prefixes.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self._combo_prefixes.addItems([embed_prefixes.AUTO, embed_prefixes.NONE])
+        self._combo_prefixes.setToolTip(
+            "Query/document prefixes the Knowledge Graph embeds with. "
+            "'auto' uses this model family's own (e5, bge, nomic, arctic, "
+            "mxbai, Qwen3-Embedding); 'none' embeds text as it is; or type "
+            "Query=...|Document=... for another model. A graph keeps the "
+            "prefixes it was embedded with: changing them asks for a re-embed.")
+        form.addRow("Prefixes:", self._combo_prefixes)
+        self._widget_core.register_widget(
+            "prefixes", self._combo_prefixes, role=PortRole.INTERNAL,
+            datatype="str", default=embed_prefixes.AUTO, add_to_layout=False)
 
         self.spin_ctx = QSpinBox()
         self.spin_ctx.setRange(256, 131072)
@@ -509,7 +527,8 @@ class EmbedderLoaderNode(ThreadedNode):
             + ("loaded." if self.model_pool.started
                else "loads when a downstream node uses it."))
         handle: Dict[str, Any] = {"backend": "gguf", "pool": self.model_pool,
-                                  "role": "embedding"}
+                                  "role": "embedding",
+                                  "prefixes": str(inputs.get("prefixes") or "")}
         return {"model_obj": handle, "pool_info": pool_info}
 
     def on_evaluate_finished(self) -> None:

@@ -207,7 +207,7 @@ picks which wire embeds; the other is ignored.
 
 | Embedder | Lane in okf | What the node passes |
 |---|---|---|
-| gguf | external (`/v1/embeddings` on Silk's llama.cpp server) | the server URL, pin `gguf/<file stem>`, and from the GGUF header: family, pooling, width; token counts from the file too |
+| gguf | external (`/v1/embeddings` on Silk's llama.cpp server) | the server URL, pin `gguf/<file stem>` (`+p<6 hex>` with declared prefixes), the query/document prefixes, and from the GGUF header: family, pooling, width; exact token counts from the server's `/tokenize` |
 | onnx, `onnx_embedder` wired | embroider, in okf's process | model id, device, precision, cache folder, image model and its precision |
 | onnx, nothing wired | embroider | the ONNX model the graph was last embedded with; `google/embeddinggemma-2` (Silk's default, `DEFAULT_EMBED_MODEL`) for a new graph |
 
@@ -233,11 +233,29 @@ node asks for its address, which is when the graph is served.
 What a GGUF embedder is, okf is told from its file, never from a field:
 the **family** is `nomic-v1.5` when the model is one (okf then adds its
 `search_query:` / `search_document:` prefixes and the 64–768 ladder),
-otherwise the model's own name, which embeds without prefixes; the
+otherwise the model's own name; the
 **pooling** is the file's `<arch>.pooling_type`, which is what llama.cpp
 pools by; the **width** is the file's `<arch>.embedding_length` (Vector
 dim applies to ONNX models and nomic only). A model wider than 1024 is
 refused, as is a chat model on `embedder`.
+
+**Prefixes.** Retrieval embedders are trained to read a query and a
+passage differently, told apart by a prefix (`query: ` / `passage: ` for
+e5, an instruction before the query for bge, mxbai, arctic and
+Qwen3-Embedding). okf adds only the prefixes it is declared, so Silk
+declares them from the model's name (`functions/embed_prefixes.py`);
+the Embedder Loader's **Prefixes** field overrides that (`auto`, `none`,
+or `Query=...|Document=...`). A declared table tags the pin
+(`gguf/<stem>+p<6 hex>`): changing the prefixes asks for a re-embed, as
+changing the model does. A graph embedded before Silk declared them is
+served without them ("Embedded without the query/document prefixes…")
+until Re-embed is pressed; nothing re-embeds unasked. nomic keeps okf's
+own table and its untagged pin.
+
+**Token counts** are exact: Silk's llama.cpp server
+(`functions/llama_server.py`) answers llama-server's `POST /tokenize`,
+and okf counts chunk lengths with it (`server-tokenize`) instead of
+estimating from the file.
 
 Unplugging a loader never re-embeds. On the ONNX lane the graph keeps its
 model; a graph embedded with a GGUF model stops serving and waits for it

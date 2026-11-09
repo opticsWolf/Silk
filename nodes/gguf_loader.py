@@ -1009,6 +1009,10 @@ class GGUFLNode(ThreadedManualNode):
         # False when unknown, so the handle says "not established" instead
         # of asserting something the file never claimed.
         handle: Dict[str, Any] = {"backend": "gguf", "pool": self.model_pool}
+        if inputs.get("embedding", False):
+            # The Knowledge Graph takes only an embedding model's handle on
+            # its embedder port, as the Embedder Loader's is marked.
+            handle["role"] = "embedding"
         if supports_tools:
             handle["supports_tools"] = True
         if llama_kwargs.get("mmproj"):

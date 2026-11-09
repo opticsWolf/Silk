@@ -45,6 +45,10 @@ from .version import __version__
 
 log = get_logger("SilkModelPool")
 
+#: ``llama_cpp.server`` with llama-server's ``POST /tokenize`` added; run
+#: as a script, so it imports nothing from Silk.
+SERVER_SCRIPT = str(Path(__file__).with_name("llama_server.py"))
+
 #: Sent on every request to a model server. urllib's own default,
 #: ``Python-urllib/3.x``, is banned outright by Cloudflare-fronted gateways
 #: (OpenCode Zen and Go answer it with 403 "error code: 1010"), which reads
@@ -265,6 +269,9 @@ class OpenAICompatClient:
 class GGUFModelPool:
     """Single background ``llama_cpp.server`` process, shared by all agents."""
 
+    #: The server answers llama-server's ``POST /tokenize`` (SERVER_SCRIPT).
+    serves_tokenize = True
+
     def __init__(
         self,
         model_path: str,
@@ -358,8 +365,7 @@ class GGUFModelPool:
         self._queued_requests = 0
         self._queue_reported = False
 
-        cmd = [sys.executable, "-m", "llama_cpp.server",
-               "--config_file", self._config_path]
+        cmd = [sys.executable, SERVER_SCRIPT, "--config_file", self._config_path]
         log.info(
             f"GGUF server starting on {self._server_url} "
             f"(model {Path(model_path).name})"
@@ -761,6 +767,11 @@ class LazyGGUFPool:
     @property
     def started(self) -> bool:
         return self._pool is not None
+
+    @property
+    def serves_tokenize(self) -> bool:
+        """Asked of the class, so the question starts no server."""
+        return bool(getattr(self._pool_class, "serves_tokenize", False))
 
     def ensure(self) -> GGUFModelPool:
         """The running pool, starting the server if it is not up."""
