@@ -325,6 +325,96 @@ def test_old_stop_and_clear_inputs_merge_into_run():
     assert SilkAgentNode.node_renamed_ports == {"stop": "run", "clear": "run"}
 
 
+def test_a_send_during_a_run_queues_without_stopping_it():
+    """Wired for real: a send must not dirty the running agent.
+
+    A dirty ThreadedNode cancels its run. While the dirty mark cascaded
+    down every wire, a send stopped the very run it meant to queue
+    behind; now the ``chat`` exec wire carries no dirtiness.
+    """
+    from PySide6.QtWidgets import QApplication
+    from weave.canvas.core import Canvas
+    from weave.node.port_utils import ConnectionFactory
+    from silk.nodes.agent import SilkAgentNode
+    from silk.nodes.prompt import SilkPromptNode
+    app = QApplication.instance()
+
+    canvas = Canvas()
+    prompt, agent, reader = SilkPromptNode(), SilkAgentNode(), SilkPromptNode()
+    try:
+        for node, x in ((prompt, 0), (agent, 400), (reader, 800)):
+            canvas.add_node(node, (x, 0))
+
+        def wire(src, out_name, dst, in_name):
+            out = next(p for p in src.outputs if p.name == out_name)
+            into = next(p for p in dst.inputs if p.name == in_name)
+            ConnectionFactory.create(canvas, out, into, validate=False,
+                                     trigger_compute=False)
+
+        wire(prompt, "chat", agent, "run")
+        # Something else reads `prompt`: it is still marked, the agent is not.
+        reader.add_input("seen", datatype="string")
+        wire(prompt, "prompt", reader, "seen")
+        for _ in range(5):
+            app.processEvents()
+
+        cancels = []
+        agent.cancel_compute = lambda: cancels.append(True)
+        agent._is_computing = True
+        agent._is_dirty = prompt._is_dirty = reader._is_dirty = False
+        for text in ("first", "second"):
+            prompt._editor.setPlainText(text)
+            prompt.send()
+            for _ in range(5):
+                app.processEvents()
+
+        assert cancels == []
+        assert [(i["text"], i["mode"]) for i in agent._control.pending()] == [
+            ("first", "queue"), ("second", "queue")]
+        assert prompt.chat_targets() == [agent]
+    finally:
+        agent._is_computing = False
+        agent._control.take_queued()
+        for node in (prompt, agent, reader):
+            node.cleanup()
+
+
+def test_a_finishing_agent_does_not_stop_the_agent_it_chains_into():
+    """``done`` -> ``run`` is an exec wire: the upstream agent finishing
+    (or turning dirty) leaves a running downstream agent alone."""
+    from PySide6.QtWidgets import QApplication
+    from weave.canvas.core import Canvas
+    from weave.node.port_utils import ConnectionFactory
+    from silk.nodes.agent import SilkAgentNode
+    app = QApplication.instance()
+
+    canvas = Canvas()
+    first, second = SilkAgentNode(), SilkAgentNode()
+    try:
+        canvas.add_node(first, (0, 0))
+        canvas.add_node(second, (400, 0))
+        done = next(p for p in first.outputs if p.name == "done")
+        run = next(p for p in second.inputs if p.name == "run")
+        ConnectionFactory.create(canvas, done, run, validate=False,
+                                 trigger_compute=False)
+        for _ in range(5):
+            app.processEvents()
+
+        cancels = []
+        second.cancel_compute = lambda: cancels.append(True)
+        second._is_computing = True
+        first._is_dirty = second._is_dirty = False
+        first._mark_downstream_dirty("upstream_evaluated")  # a run finished
+        first.set_dirty("value_change")                     # an edit upstream
+        assert cancels == []
+        assert not second._is_dirty
+        assert second._barrier_blockers() == []
+    finally:
+        second._is_computing = False
+        for node in (first, second):
+            node.cleanup()
+
+
 class _Asking:
     """Stands in for an agent waiting on a decision."""
 
