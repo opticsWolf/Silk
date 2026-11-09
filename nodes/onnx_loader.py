@@ -4,7 +4,7 @@ Copyright (c) 2026 opticsWolf
 
 SPDX-License-Identifier: AGPL-3.0-only
 
-Silk ONNX Embedder and ONNX Reranker nodes.
+Silk KG Embedder (ONNX) and Silk KG Reranker (ONNX) nodes.
 
 Choose an ONNX model for the Knowledge Graph node -- the embedding model
 that makes a graph's vectors, or the cross-encoder that reranks its
@@ -12,11 +12,14 @@ search results -- and put the choice on a wire.
 
 **Nothing loads here.** An ONNX model never runs in Weave's process: a
 second ONNX Runtime beside one already running takes the interpreter
-down. These nodes emit a *description* (the embroider model id, device,
+down. These nodes emit a *specification* (the embroider model id, device,
 precision and cache folder); the Knowledge Graph node passes it to
 ``okf serve``, which loads the model with embroider in its own process.
 That is also why the wires are not ``model_handle`` -- that type is a
-model live in Weave, callable here.
+model live in Weave, callable here -- and why the outputs are called
+``embedder_spec`` / ``reranker_spec``. A model to use from other nodes
+or code is the ONNX Embedder Loader / ONNX Reranker Loader's
+(``nodes/onnx_model_loader.py``).
 
 The model ids are embroider's registry; the lists are editable, so a
 model a newer embroider gained is usable by typing its id.
@@ -35,6 +38,7 @@ from weave.widgetcore import WidgetCore, PortRole
 from weave.node.base import ActiveNode
 from weave.node import VerticalSizePolicy
 from weave.registry import register_node
+from weave.engine.migration import rename_saved_ports
 from weave.widgets.path_history_picker import PathHistoryPicker
 
 from .silk_ports import ONNX_EMBEDDER_TYPE, RERANKER_MODEL_TYPE  # noqa: F401
@@ -106,7 +110,7 @@ class _OnnxModelNode(ActiveNode):
     _widget_core: WidgetCore
 
     node_class: ClassVar[str] = "Silk AI"
-    node_subclass: ClassVar[str] = "Loaders"
+    node_subclass: ClassVar[str] = "Knowledge"
     vertical_size_policy: ClassVar[VerticalSizePolicy] = VerticalSizePolicy.FIT
     node_state_api = 1
     node_version = 1
@@ -218,24 +222,36 @@ class _OnnxModelNode(ActiveNode):
         if hasattr(self, "_sync_status"):
             self._widget_core.push_display("status", self._sync_status)
 
+    @classmethod
+    def _rename_output(cls, state: Dict[str, Any]) -> Dict[str, Any]:
+        """The output's old name out of a saved port list; its wires land
+        on the new one through :attr:`node_renamed_ports`."""
+        state["outputs"] = rename_saved_ports(
+            state.get("outputs"), cls.node_renamed_ports)
+        return state
+
 
 @register_node
 class SilkOnnxEmbedderNode(_OnnxModelNode):
     """An embroider embedding model for the Knowledge Graph node."""
 
-    node_name: ClassVar[Optional[str]] = "ONNX Embedder"
+    node_name: ClassVar[Optional[str]] = "Silk KG Embedder (ONNX)"
     node_description: ClassVar[Optional[str]] = (
-        "Chooses an ONNX embedding model (embroider) for the Knowledge Graph "
-        "node. Described, not loaded: okf serve loads it in its own process."
+        "Chooses the ONNX embedding model (embroider) a Knowledge Graph "
+        "embeds with. A specification, not a model: okf serve loads it in "
+        "its own process. For a model other nodes can use, take the ONNX "
+        "Embedder Loader."
     )
     node_tags: ClassVar[Optional[List[str]]] = [
-        "silk", "onnx", "embedding", "embroider", "okfgraph", "loader",
+        "silk", "onnx", "embedding", "embroider", "okfgraph", "knowledge",
     ]
     node_icon: ClassVar[Optional[str]] = "vector"
-    node_state_api = 2
+    # 3: the output `onnx_embedder` is `embedder_spec`.
+    node_state_api = 3
+    node_renamed_ports = {"onnx_embedder": "embedder_spec"}
 
     _ROLE = "embedding"
-    _OUTPUT = "onnx_embedder"
+    _OUTPUT = "embedder_spec"
     _OUTPUT_TYPE = "onnx_embedder"
     _MODELS = KNOWN_MODELS
     _PRECISIONS = EMBED_PRECISIONS
@@ -247,7 +263,7 @@ class SilkOnnxEmbedderNode(_OnnxModelNode):
         "graph's pin, so changing it re-embeds. Only the precisions the "
         "model ships can be picked (int8: jina nano).")
 
-    def __init__(self, title: str = "ONNX Embedder", **kwargs: Any) -> None:
+    def __init__(self, title: str = "Silk KG Embedder (ONNX)", **kwargs: Any) -> None:
         super().__init__(title=title, **kwargs)
         self._model.currentTextChanged.connect(self._sync_choices)
         self._sync_choices(self._model.currentText())
@@ -256,12 +272,15 @@ class SilkOnnxEmbedderNode(_OnnxModelNode):
     def migrate_state(cls, state: Dict[str, Any],
                       from_version: int) -> Dict[str, Any]:
         """api 1 → 2: the image rows are new; a scene saved before them
-        gets okf's pairing, which is what it embedded images with."""
+        gets okf's pairing, which is what it embedded images with.
+        2 → 3: the output is renamed."""
         if from_version < 2:
             widgets = state.get("widget_data")
             if isinstance(widgets, dict):
                 widgets.setdefault("image_model_id", IMAGE_AUTO)
                 widgets.setdefault("image_precision", "auto")
+        if from_version < 3:
+            state = cls._rename_output(state)
         return state
 
     def _extra_rows(self, form: QFormLayout) -> None:
@@ -326,18 +345,23 @@ class SilkOnnxEmbedderNode(_OnnxModelNode):
 class SilkOnnxRerankerNode(_OnnxModelNode):
     """An embroider cross-encoder for the Knowledge Graph node's search."""
 
-    node_name: ClassVar[Optional[str]] = "ONNX Reranker"
+    node_name: ClassVar[Optional[str]] = "Silk KG Reranker (ONNX)"
     node_description: ClassVar[Optional[str]] = (
-        "Chooses an ONNX reranker (embroider cross-encoder) for the Knowledge "
-        "Graph node's search. Described, not loaded: okf serve loads it."
+        "Chooses the ONNX reranker (embroider cross-encoder) a Knowledge "
+        "Graph's search reranks with. A specification, not a model: okf "
+        "serve loads it. For a model other nodes can use, take the ONNX "
+        "Reranker Loader."
     )
     node_tags: ClassVar[Optional[List[str]]] = [
-        "silk", "onnx", "rerank", "embroider", "okfgraph", "loader",
+        "silk", "onnx", "rerank", "embroider", "okfgraph", "knowledge",
     ]
     node_icon: ClassVar[Optional[str]] = "list-numbers"
+    # 2: the output `reranker` is `reranker_spec`.
+    node_state_api = 2
+    node_renamed_ports = {"reranker": "reranker_spec"}
 
     _ROLE = "rerank"
-    _OUTPUT = "reranker"
+    _OUTPUT = "reranker_spec"
     _OUTPUT_TYPE = "reranker_model"
     _MODELS = KNOWN_RERANK_MODELS
     _PRECISIONS = RERANK_PRECISIONS
@@ -346,5 +370,13 @@ class SilkOnnxRerankerNode(_OnnxModelNode):
         "vectors, so changing it never re-embeds the graph.")
     _PRECISION_TIP = "auto: FP32 on the CPU, FP16 on a GPU; q8 is quantized."
 
-    def __init__(self, title: str = "ONNX Reranker", **kwargs: Any) -> None:
+    def __init__(self, title: str = "Silk KG Reranker (ONNX)", **kwargs: Any) -> None:
         super().__init__(title=title, **kwargs)
+
+    @classmethod
+    def migrate_state(cls, state: Dict[str, Any],
+                      from_version: int) -> Dict[str, Any]:
+        """api 1 → 2: the output is renamed."""
+        if from_version < 2:
+            state = cls._rename_output(state)
+        return state

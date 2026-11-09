@@ -237,8 +237,8 @@ def test_loader_nodes_describe_and_never_load(qt_app):
     out = SilkOnnxEmbedderNode().compute(
         {"model_id": "google/embeddinggemma-2", "device": "cuda",
          "precision": "fp16", "cache_dir": "D:/hf"})
-    assert out == {"onnx_embedder": ONNX}
-    rerank = SilkOnnxRerankerNode().compute({"precision": "fp16"})["reranker"]
+    assert out == {"embedder_spec": ONNX}
+    rerank = SilkOnnxRerankerNode().compute({"precision": "fp16"})["reranker_spec"]
     assert rerank["role"] == "rerank" and rerank["runtime"] == "embroider"
     assert rerank["model_id"] == "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1"
     assert rerank["precision"] == "auto", "fp16 is not a reranker precision"
@@ -250,17 +250,17 @@ def test_the_embedder_names_its_image_model_and_refuses_a_mismatch(qt_app):
     gemma = {"model_id": "google/embeddinggemma-2", "device": "cuda",
              "image_model_id": "google/embeddinggemma-2-vision",
              "image_precision": "fp16"}
-    out = node.compute(gemma)["onnx_embedder"]
+    out = node.compute(gemma)["embedder_spec"]
     assert (out["image_model_id"], out["image_precision"]) == (
         "google/embeddinggemma-2-vision", "fp16")
     assert "Images: google/embeddinggemma-2-vision (named" in node._sync_status
     auto = node.compute(dict(gemma, image_model_id="auto", image_precision="int8"))
-    assert auto["onnx_embedder"]["image_model_id"] == "", "auto is okf's pairing"
-    assert auto["onnx_embedder"]["image_precision"] == "auto", "no int8 image weights"
+    assert auto["embedder_spec"]["image_model_id"] == "", "auto is okf's pairing"
+    assert auto["embedder_spec"]["image_precision"] == "auto", "no int8 image weights"
     with pytest.raises(ValueError, match="embeds images for google/embeddinggemma-2"):
         node.compute(dict(gemma, model_id="jinaai/jina-embeddings-v5-text-nano-retrieval"))
     small = node.compute({"model_id": "jinaai/jina-embeddings-v5-text-small-retrieval"})
-    assert small["onnx_embedder"]["image_model_id"] == ""
+    assert small["embedder_spec"]["image_model_id"] == ""
     assert "searched by their captions" in node._sync_status
 
 
@@ -271,7 +271,7 @@ def test_the_embedder_offers_only_the_precisions_a_model_ships(qt_app):
         node.compute({"model_id": "google/embeddinggemma-2", "precision": "int8"})
     nano = "jinaai/jina-embeddings-v5-text-nano-retrieval"
     assert node.compute({"model_id": nano, "precision": "int8"})[
-        "onnx_embedder"]["precision"] == "int8"
+        "embedder_spec"]["precision"] == "int8"
 
     def enabled(combo):
         return [combo.itemText(i) for i in range(combo.count())

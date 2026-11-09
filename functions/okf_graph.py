@@ -121,6 +121,24 @@ VISION_MODELS = {
 VISION_MAX_DIM = 768
 
 
+#: Each text model's Matryoshka widths, native last (embroider's
+#: registry ``ladder``); the ONNX Embedder Loader offers these.
+MODEL_LADDERS = {
+    "google/embeddinggemma-2": (128, 256, 512, 768),
+    "jinaai/jina-embeddings-v5-text-small-retrieval":
+        (32, 64, 128, 256, 512, 768, 1024),
+    "jinaai/jina-embeddings-v5-text-nano-retrieval":
+        (32, 64, 128, 256, 512, 768),
+}
+
+#: Tokens per query + candidate pair each cross-encoder reads (embroider's
+#: registry ``max_tokens``).
+RERANK_MODEL_MAX_TOKENS = {
+    "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1": 512,
+    "cross-encoder/ms-marco-MiniLM-L-6-v2": 512,
+}
+
+
 def precisions_for(model_id: str) -> Tuple[str, ...]:
     """The precisions an embedding model can be asked for, ``auto`` first."""
     return ("auto",) + MODEL_PRECISIONS.get(model_id, EMBED_PRECISIONS[1:])

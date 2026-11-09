@@ -58,12 +58,15 @@ loader nodes, and the Embedder row picks which wire embeds.
   graph is never searched with prefixes its vectors were made without;
   one embedded before Silk declared them is served without them until
   Re-embed. Tokens are counted by the server's ``/tokenize``.
-* ``onnx_embedder`` -- an ONNX Embedder node's choice, which okf loads
-  with embroider in its own process (device, precision, cache folder).
-* ``reranker`` -- an ONNX Reranker node's cross-encoder, or the Reranker
-  Loader's GGUF reranker (Silk's own ``/v1/rerank`` server, which okf
-  reaches on its external rerank lane, counting pairs with the server's
-  ``/tokenize``), or any external host described on that port. Rerank
+* ``onnx_embedder`` -- Silk KG Embedder (ONNX)'s ``embedder_spec``, which
+  okf loads with embroider in its own process (device, precision, cache
+  folder). The ONNX Embedder Loader's model is refused here: a graph's
+  vectors are okf's own.
+* ``reranker`` -- Silk KG Reranker (ONNX)'s cross-encoder, or the Reranker
+  Loader's GGUF reranker or the ONNX Reranker Loader's embroider one
+  (Silk's own ``/v1/rerank`` servers, which okf reaches on its external
+  rerank lane, counting pairs with the server's ``/tokenize``), or any
+  external host described on that port. Rerank
   writes no vectors, so changing it restarts the server and never
   re-embeds.
 
@@ -133,7 +136,7 @@ class SilkKnowledgeGraphNode(ThreadedNode):
     _widget_core: WidgetCore
 
     node_class: ClassVar[str] = "Silk AI"
-    node_subclass: ClassVar[str] = "Agents"
+    node_subclass: ClassVar[str] = "Knowledge"
     node_name: ClassVar[Optional[str]] = "Silk Knowledge Graph"
     node_description: ClassVar[Optional[str]] = (
         "Serves one OKFgraph knowledge graph (okf serve) to downstream "
@@ -215,7 +218,7 @@ class SilkKnowledgeGraphNode(ThreadedNode):
         self._embed_source.addItems(list(EMBED_SOURCES))
         self._embed_source.setToolTip(
             "Which embedding model makes the graph's vectors.\n"
-            "onnx: the ONNX Embedder on onnx_embedder, which okf runs itself "
+            "onnx: Silk KG Embedder (ONNX) on onnx_embedder, which okf runs itself "
             "(embroider). Unwired: the ONNX model the graph was last "
             "embedded with, else okf's default.\n"
             "gguf: the Embedder Loader's model_obj on embedder, served by "
@@ -494,6 +497,11 @@ class SilkKnowledgeGraphNode(ThreadedNode):
             return f"The Embedder Loader's prefixes: {gguf['prefix_error']}"
         if gguf.get("error"):
             return f"The embedder's server did not start: {gguf['error']}"
+        if not gguf and isinstance(handle, dict) and handle.get("backend") == "onnx":
+            return ("The embedder input takes a GGUF embedding model. An ONNX "
+                    "model for the graph is chosen with Silk KG Embedder "
+                    "(ONNX) on onnx_embedder (Embedder row onnx): okf runs it "
+                    "itself, so the graph's vectors and pin stay okf's.")
         if not gguf:
             return ("The embedder input takes the Embedder Loader's model_obj "
                     "(a GGUF embedding model on Silk's llama.cpp server); "
@@ -811,7 +819,7 @@ def _choice(value: Any, choices: Tuple[str, ...]) -> str:
 
 
 def _onnx_description(value: Any) -> Optional[Dict[str, Any]]:
-    """An ONNX Embedder node's wire value, or ``None``."""
+    """A Silk KG Embedder (ONNX) node's wire value, or ``None``."""
     if isinstance(value, dict) and value.get("runtime") == "embroider":
         return value
     return None
@@ -928,7 +936,7 @@ def _model_lines(spec: OkfSpec, wired: str) -> List[str]:
         lines.append(
             f"No embedder wired: okf loads "
             f"{spec.model_id or 'its default model (jina v5 small)'} itself, on "
-            f"{spec.device}. Wire an ONNX Embedder or Embedder Loader to "
+            f"{spec.device}. Wire Silk KG Embedder (ONNX) or an Embedder Loader to "
             "change it.")
     if wired != "gguf":
         lines.append(_image_line(spec))
@@ -954,13 +962,14 @@ def _image_line(spec: OkfSpec) -> str:
 
 
 def _gguf_reranker(handle: Any) -> Dict[str, Any]:
-    """``{endpoint_url}`` for a Reranker Loader handle, ``{error}`` when
-    its server would not start, empty for anything else.
+    """``{endpoint_url}`` for a Reranker Loader (or ONNX Reranker Loader)
+    handle, ``{error}`` when its server would not start, empty for
+    anything else.
 
     Asking the lazy pool for its address starts the server: this is the
-    demand the Reranker Loader waits for.
+    demand the loader waits for.
     """
-    if not (isinstance(handle, dict) and handle.get("runtime") == "gguf"
+    if not (isinstance(handle, dict) and handle.get("runtime") in _POOL_RUNTIMES
             and handle.get("role") == "rerank"):
         return {}
     pool = handle.get("pool")
@@ -979,11 +988,11 @@ def _with_reranker(spec: OkfSpec, reranker: Any) -> OkfSpec:
     if not (isinstance(reranker, dict) and reranker.get("role") == "rerank"):
         return spec
     model_id = str(reranker.get("model_id") or "")
-    if reranker.get("runtime") == "gguf":
+    if reranker.get("runtime") in _POOL_RUNTIMES:
         gguf = _gguf_reranker(reranker)
         if not gguf.get("endpoint_url"):
             return spec
-        # Silk's rerank server on okf's external lane: okf cuts pairs to
+        # A Silk rerank server on okf's external lane: okf cuts pairs to
         # the server's context and counts them with its /tokenize.
         return replace(
             spec, rerank_backend="external", rerank_model_id=model_id,
@@ -1009,6 +1018,10 @@ def _with_reranker(spec: OkfSpec, reranker: Any) -> OkfSpec:
         cache_dir=spec.cache_dir or str(reranker.get("cache_dir") or ""),
     )
 
+
+#: Reranker runtimes that are a Silk server behind a lazy pool: the
+#: Reranker Loader's GGUF one and the ONNX Reranker Loader's embroider one.
+_POOL_RUNTIMES = ("gguf", "onnx")
 
 #: The pin suffix naming a GGUF model's prefix table (``+p`` and six hex).
 _PREFIX_PIN = re.compile(r"\+p[0-9a-f]{6}$")

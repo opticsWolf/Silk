@@ -197,8 +197,8 @@ read, traverse and, by access level, ingest and curation.
 |---|---|---|
 | in | `roots` | `dirpath_list` (where to find or create `.okfgraph/okfgraph.db`) |
 | in | `embedder` | `model_handle` (the Embedder Loader's `model_obj`) |
-| in | `onnx_embedder` | `onnx_embedder` (an ONNX Embedder node) |
-| in | `reranker` | `reranker_model` (an ONNX Reranker or Reranker Loader node) |
+| in | `onnx_embedder` | `onnx_embedder` (Silk KG Embedder (ONNX)'s `embedder_spec`) |
+| in | `reranker` | `reranker_model` (Silk KG Reranker (ONNX), Reranker Loader, or ONNX Reranker Loader) |
 | out | `knowledge` | `okf_graph` |
 
 The node has **no model fields**: the models come on the wires, and the
@@ -298,24 +298,32 @@ on demand**: the handle goes out at once and the server starts when the
 Knowledge Graph serves a graph with it; Unload stops it. A server that
 will not start turns the Knowledge Graph red with the reason.
 
-### ONNX Embedder / ONNX Reranker — `nodes/onnx_loader.py` (`SilkOnnxEmbedderNode`, `SilkOnnxRerankerNode`) *(Silk AI / Loaders)*
-Choose an embroider model (id, device, precision, cache folder) and put the
-choice on a wire. **Nothing loads in Weave**: a second ONNX Runtime in
-Weave's process can take the interpreter down, so the Knowledge Graph node
-passes the description to `okf serve`, which loads it with embroider. That
-is why the wires are `onnx_embedder` / `reranker_model` and not
-`model_handle`, which means a model live in Weave's process.
+### Silk KG Embedder (ONNX) / Silk KG Reranker (ONNX) — `nodes/onnx_loader.py` (`SilkOnnxEmbedderNode`, `SilkOnnxRerankerNode`) *(Silk AI / Knowledge)*
+Choose the embroider model (id, device, precision, cache folder) a
+Knowledge Graph embeds or reranks with, and put the choice on a wire.
+These are **specifications, not models**: nothing loads in Weave. A second
+ONNX Runtime in Weave's process can take the interpreter down, so the
+Knowledge Graph node passes the specification to `okf serve`, which loads
+it with embroider, and the graph's vectors and pin stay okf's. Only the
+Knowledge Graph reads these wires; for an ONNX model other nodes or your
+own code can call, use the ONNX Embedder Loader / ONNX Reranker Loader
+below.
 
 | Node | Output | Type |
 |---|---|---|
-| ONNX Embedder | `onnx_embedder` | `onnx_embedder` |
-| ONNX Reranker | `reranker` | `reranker_model` |
+| Silk KG Embedder (ONNX) | `embedder_spec` | `onnx_embedder` |
+| Silk KG Reranker (ONNX) | `reranker_spec` | `reranker_model` (`runtime: embroider`) |
+
+Until Silk 2026-11 they were called ONNX Embedder and ONNX Reranker, sat
+under Loaders, and their outputs were `onnx_embedder` and `reranker`.
+Scenes saved then load with their wires on the renamed outputs
+(`node_renamed_ports`).
 
 The model lists are embroider's registry and editable, so a model a newer
 embroider gained can be typed in. embroider 0.14 adds the English
 `cross-encoder/ms-marco-MiniLM-L-6-v2` beside the multilingual default.
 
-The ONNX Embedder's **Precision** offers only what the chosen model ships:
+Silk KG Embedder (ONNX)'s **Precision** offers only what the chosen model ships:
 int8 is jina nano's alone. Asked for one it lacks, the node turns red
 instead of okf failing at start.
 
@@ -335,6 +343,42 @@ greyed out, and wiring one anyway turns the node red. Image weights come
 in fp32 and fp16 only, and image search needs a vector width of 768 or
 less. okf pins the image model on the first image it embeds; the
 Knowledge Graph's Info says which one embeds images.
+
+### ONNX Embedder Loader / ONNX Reranker Loader — `nodes/onnx_model_loader.py` (`OnnxEmbedderLoaderNode`, `OnnxRerankerLoaderNode`) *(Silk AI / Loaders)*
+An embroider model as a real model: it runs in its own process
+(`functions/embroider_server.py`, run by `functions/embroider_pool.py`),
+and the handle on the wire speaks HTTP to it, in the shapes the GGUF
+servers answer. A consumer cannot tell it from its GGUF twin.
+
+| Node | Output | Type | Serves |
+|---|---|---|---|
+| ONNX Embedder Loader | `model_obj` | `model_handle` (`backend: onnx`) | `POST /v1/embeddings` |
+| ONNX Reranker Loader | `reranker` | `reranker_model` (`runtime: onnx`) | `POST /v1/rerank` |
+
+Both also answer `GET /health`, `GET /v1/models` (the width, max length,
+precision, and whether CUDA runs it) and `POST /tokenize` (an exact
+count). Fields: Model (embroider's registry, editable), Device (CPU by
+default, leaving VRAM to the chat model), Precision, Cache; the embedder
+adds **Width** (the model's Matryoshka steps, `native` for its own).
+
+- **The embedder** works wherever `functions.embeddings.embedder_for`
+  takes a handle: a ToolSet's `embedding_model`, memory recall, your own
+  nodes. `/v1/embeddings` takes `task` (`Document`, the default, or
+  `Query`; `input_type` `query` / `document` too), because the retrieval
+  models embed a query and a passage differently.
+- **The reranker** works on the Knowledge Graph's `reranker` port, which
+  hands it to okf's external rerank lane like the Reranker Loader's
+  (pair ceiling and family from the registry, exact counts from
+  `/tokenize`), and on any `/v1/rerank` client.
+- **Not the Knowledge Graph's embedder.** A graph's vectors are okf's own,
+  so its ONNX model is chosen with Silk KG Embedder (ONNX); the Knowledge
+  Graph refuses this loader on `embedder` and says so.
+
+**Loaded on demand**, like the GGUF loaders: the handle goes out at once,
+the process starts the first time something uses the model, and Unload
+stops it. Without embroider (`okfgraph[cpu]` or `okfgraph[gpu]`) the node
+says so. If the same model is also chosen with Silk KG Embedder (ONNX), it
+is in memory twice: once in okf's process, once in this one.
 
 ## Documents
 

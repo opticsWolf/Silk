@@ -10,8 +10,9 @@ The Embedder Loader's twin for the second retrieval stage. A GGUF
 reranker (bge-reranker-v2-m3, Qwen3-Reranker, …) runs in its own process
 behind ``POST /v1/rerank`` (``functions/rerank_server.py``, which scores
 pairs with llama.cpp itself), and the Knowledge Graph hands that host to
-OKFgraph's external rerank lane. The ONNX Reranker stays the other way to
-rerank: embroider's cross-encoders, loaded by okf in its own process.
+OKFgraph's external rerank lane. The other ways to rerank are embroider's
+cross-encoders: Silk KG Reranker (ONNX), loaded by okf in its own
+process, or the ONNX Reranker Loader, hosted by Silk like this one.
 
 **Loaded on demand,** like the Embedder Loader: the node hands out its
 ``reranker`` at once and the server starts when the Knowledge Graph

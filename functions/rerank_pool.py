@@ -18,6 +18,9 @@ when it serves a graph.
 Its consumer is OKFgraph's external rerank lane, which posts to
 ``<base_url>/v1/rerank`` and, for exact pair counts, ``<base_url>/tokenize``
 -- so ``base_url`` here is the host root, not an OpenAI ``.../v1`` base.
+
+:class:`ChildServerPool` is the process half, shared with the ONNX host
+(:class:`functions.embroider_pool.EmbroiderPool`).
 """
 from __future__ import annotations
 
@@ -29,7 +32,7 @@ import threading
 import time
 import urllib.request
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, List, Optional
 
 from weave.logger import get_logger
 
@@ -45,44 +48,40 @@ _READY_TIMEOUT_S = 120.0
 _SHUTDOWN_TIMEOUT_S = 10.0
 
 
-class RerankPool:
-    """One running reranker server."""
+class ChildServerPool:
+    """One model server in a child process, on a free loopback port.
 
-    def __init__(self, model_path: str, n_ctx: int = 2048,
-                 n_gpu_layers: int = 0, n_threads: Optional[int] = None,
-                 use_mmap: bool = True) -> None:
-        if not LLAMA_CPP_AVAILABLE:
-            raise RuntimeError(
-                "llama-cpp-python is not installed: pip install llama-cpp-python")
+    *script* is run as a plain file with *args* plus ``--host`` and
+    ``--port``; it must answer ``GET /health`` once it serves. *label*
+    names the server in the log and the shutdown registry.
+    """
+
+    def __init__(self, model_path: str, script: str, args: List[str],
+                 label: str, log_prefix: str = "silk-server-") -> None:
         self._model_path = model_path
+        self._label = label
         self._lock = threading.Lock()
         self._host = "127.0.0.1"
         self._port = find_free_port()
         self._url = f"http://{self._host}:{self._port}"
-        self.context_length = int(n_ctx)
         self._participant: Any = None
-        fd, self._log_path = tempfile.mkstemp(prefix="silk-rerank-", suffix=".log")
+        fd, self._log_path = tempfile.mkstemp(prefix=log_prefix, suffix=".log")
         os.close(fd)
         self._log_handle: Any = open(self._log_path, "w", encoding="utf-8")
-        cmd = [sys.executable, SERVER_SCRIPT, "--model", model_path,
-               "--host", self._host, "--port", str(self._port),
-               "--n_ctx", str(int(n_ctx)), "--n_gpu_layers", str(int(n_gpu_layers))]
-        if n_threads:
-            cmd += ["--n_threads", str(int(n_threads))]
-        if not use_mmap:
-            cmd.append("--no_mmap")
-        log.info(f"Reranker server starting on {self._url} "
+        cmd = [sys.executable, script, *args,
+               "--host", self._host, "--port", str(self._port)]
+        log.info(f"{label} starting on {self._url} "
                  f"(model {Path(model_path).name})")
         self._process: Optional[subprocess.Popen] = subprocess.Popen(
             cmd, stdout=subprocess.DEVNULL, stderr=self._log_handle)
         self._wait_until_ready()
         self._register_for_shutdown()
 
-    # -- what the Knowledge Graph reads -----------------------------------
+    # -- what consumers read ----------------------------------------------
 
     @property
     def base_url(self) -> str:
-        """The host root; okf appends ``/v1/rerank`` and ``/tokenize``."""
+        """The host root."""
         return self._url
 
     @property
@@ -118,19 +117,19 @@ class RerankPool:
                 tail = self._read_log_tail()
                 self.cleanup()
                 raise RuntimeError(
-                    f"the reranker server exited during startup "
+                    f"the {self._label.lower()} exited during startup "
                     f"(code {process.returncode}).\n{tail}")
             try:
                 with urllib.request.urlopen(f"{self._url}/health", timeout=2.0) as r:
                     if r.status == 200:
-                        log.info("Reranker server ready.")
+                        log.info(f"{self._label} ready.")
                         return
             except Exception:  # noqa: BLE001 - not up yet
                 time.sleep(0.5)
         tail = self._read_log_tail()
         self.cleanup()
         raise RuntimeError(
-            f"the reranker server did not answer within {timeout:.0f}s.\n{tail}")
+            f"the {self._label.lower()} did not answer within {timeout:.0f}s.\n{tail}")
 
     def _register_for_shutdown(self) -> None:
         try:
@@ -141,7 +140,7 @@ class RerankPool:
             return
         install_shutdown_handlers()
         self._participant = get_shutdown_registry().register(
-            f"Reranker server :{self._port}", self._release, force=self._force,
+            f"{self._label} :{self._port}", self._release, force=self._force,
             timeout_s=_SHUTDOWN_TIMEOUT_S)
 
     def _release(self, timeout: float = _SHUTDOWN_TIMEOUT_S) -> bool:
@@ -181,3 +180,27 @@ class RerankPool:
                     os.unlink(self._log_path)
                 except OSError:
                     pass
+
+
+class RerankPool(ChildServerPool):
+    """One running GGUF reranker server (``rerank_server.py``).
+
+    ``base_url`` is the host root: okf appends ``/v1/rerank`` and
+    ``/tokenize``.
+    """
+
+    def __init__(self, model_path: str, n_ctx: int = 2048,
+                 n_gpu_layers: int = 0, n_threads: Optional[int] = None,
+                 use_mmap: bool = True) -> None:
+        if not LLAMA_CPP_AVAILABLE:
+            raise RuntimeError(
+                "llama-cpp-python is not installed: pip install llama-cpp-python")
+        self.context_length = int(n_ctx)
+        args = ["--model", model_path, "--n_ctx", str(int(n_ctx)),
+                "--n_gpu_layers", str(int(n_gpu_layers))]
+        if n_threads:
+            args += ["--n_threads", str(int(n_threads))]
+        if not use_mmap:
+            args.append("--no_mmap")
+        super().__init__(model_path, SERVER_SCRIPT, args, "Reranker server",
+                         log_prefix="silk-rerank-")

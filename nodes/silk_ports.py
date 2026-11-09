@@ -351,9 +351,10 @@ if "onnx_embedder" not in PortRegistry._by_name:
     )
 
 # A reranker (the second retrieval stage) as a description, whoever runs
-# it: ``runtime: embroider`` is a cross-encoder okf loads itself (the ONNX
-# Reranker node); ``runtime: gguf`` is the Reranker Loader's lazy server
-# pool; ``runtime: external`` is a ``POST /v1/rerank`` host
+# it: ``runtime: embroider`` is a cross-encoder okf loads itself (the Silk
+# KG Reranker (ONNX) node); ``runtime: gguf`` / ``onnx`` is the Reranker
+# Loader's / ONNX Reranker Loader's lazy server pool;
+# ``runtime: external`` is a ``POST /v1/rerank`` host
 # (llama-server --rerank, TEI) by URL and declared family. Typed by role,
 # not by runtime, so one port takes either.
 if "reranker_model" not in PortRegistry._by_name:
@@ -366,7 +367,7 @@ if "reranker_model" not in PortRegistry._by_name:
         validator=lambda v: v is None or (isinstance(v, dict)
                             and (not v or (v.get("role") == "rerank" and (
                                 v.get("runtime") == "embroider"
-                                or (v.get("runtime") == "gguf"
+                                or (v.get("runtime") in ("gguf", "onnx")
                                     and v.get("pool") is not None)
                                 or (v.get("runtime") == "external"
                                     and bool(v.get("endpoint_url"))))))),
