@@ -60,10 +60,10 @@ loader nodes, and the Embedder row picks which wire embeds.
   Re-embed. Tokens are counted by the server's ``/tokenize``.
 * ``onnx_embedder`` -- Silk KG Embedder (ONNX)'s ``embedder_spec``, which
   okf loads with embroider in its own process (device, precision, cache
-  folder). The ONNX Embedder Loader's model is refused here: a graph's
+  folder). The ONNX Loader's embedder is refused here: a graph's
   vectors are okf's own.
 * ``reranker`` -- Silk KG Reranker (ONNX)'s cross-encoder, or the Reranker
-  Loader's GGUF reranker or the ONNX Reranker Loader's embroider one
+  Loader's GGUF reranker or the ONNX Loader's embroider one
   (Silk's own ``/v1/rerank`` servers, which okf reaches on its external
   rerank lane, counting pairs with the server's ``/tokenize``), or any
   external host described on that port. Rerank
@@ -962,7 +962,7 @@ def _image_line(spec: OkfSpec) -> str:
 
 
 def _gguf_reranker(handle: Any) -> Dict[str, Any]:
-    """``{endpoint_url}`` for a Reranker Loader (or ONNX Reranker Loader)
+    """``{endpoint_url}`` for a Reranker Loader (or ONNX Loader as a reranker)
     handle, ``{error}`` when its server would not start, empty for
     anything else.
 
@@ -1020,7 +1020,7 @@ def _with_reranker(spec: OkfSpec, reranker: Any) -> OkfSpec:
 
 
 #: Reranker runtimes that are a Silk server behind a lazy pool: the
-#: Reranker Loader's GGUF one and the ONNX Reranker Loader's embroider one.
+#: Reranker Loader's GGUF one and the ONNX Loader's embroider one.
 _POOL_RUNTIMES = ("gguf", "onnx")
 
 #: The pin suffix naming a GGUF model's prefix table (``+p`` and six hex).

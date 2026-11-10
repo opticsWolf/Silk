@@ -198,7 +198,7 @@ read, traverse and, by access level, ingest and curation.
 | in | `roots` | `dirpath_list` (where to find or create `.okfgraph/okfgraph.db`) |
 | in | `embedder` | `model_handle` (the Embedder Loader's `model_obj`) |
 | in | `onnx_embedder` | `onnx_embedder` (Silk KG Embedder (ONNX)'s `embedder_spec`) |
-| in | `reranker` | `reranker_model` (Silk KG Reranker (ONNX), Reranker Loader, or ONNX Reranker Loader) |
+| in | `reranker` | `reranker_model` (Silk KG Reranker (ONNX), Reranker Loader, or ONNX Loader as Reranker) |
 | out | `knowledge` | `okf_graph` |
 
 The node has **no model fields**: the models come on the wires, and the
@@ -306,8 +306,7 @@ ONNX Runtime in Weave's process can take the interpreter down, so the
 Knowledge Graph node passes the specification to `okf serve`, which loads
 it with embroider, and the graph's vectors and pin stay okf's. Only the
 Knowledge Graph reads these wires; for an ONNX model other nodes or your
-own code can call, use the ONNX Embedder Loader / ONNX Reranker Loader
-below.
+own code can call, use the ONNX Loader below.
 
 | Node | Output | Type |
 |---|---|---|
@@ -344,29 +343,33 @@ in fp32 and fp16 only, and image search needs a vector width of 768 or
 less. okf pins the image model on the first image it embeds; the
 Knowledge Graph's Info says which one embeds images.
 
-### ONNX Embedder Loader / ONNX Reranker Loader — `nodes/onnx_model_loader.py` (`OnnxEmbedderLoaderNode`, `OnnxRerankerLoaderNode`) *(Silk AI / Loaders)*
+### ONNX Loader — `nodes/onnx_model_loader.py` (`OnnxLoaderNode`) *(Silk AI / Loaders)*
 An embroider model as a real model: it runs in its own process
 (`functions/embroider_server.py`, run by `functions/embroider_pool.py`),
 and the handle on the wire speaks HTTP to it, in the shapes the GGUF
-servers answer. A consumer cannot tell it from its GGUF twin.
+servers answer. A consumer cannot tell it from its GGUF twin. **Role**
+picks what the model is, and fills one of two outputs (the other carries
+nothing):
 
-| Node | Output | Type | Serves |
+| Role | Output | Type | Serves |
 |---|---|---|---|
-| ONNX Embedder Loader | `model_obj` | `model_handle` (`backend: onnx`) | `POST /v1/embeddings` |
-| ONNX Reranker Loader | `reranker` | `reranker_model` (`runtime: onnx`) | `POST /v1/rerank` |
+| Embedding | `model_obj` | `model_handle` (`backend: onnx`) | `POST /v1/embeddings` |
+| Reranker | `reranker` | `reranker_model` (`runtime: onnx`) | `POST /v1/rerank` |
 
 Both also answer `GET /health`, `GET /v1/models` (the width, max length,
 precision, and whether CUDA runs it) and `POST /tokenize` (an exact
-count). Fields: Model (embroider's registry, editable), Device (CPU by
-default, leaving VRAM to the chat model), Precision, Cache; the embedder
-adds **Width** (the model's Matryoshka steps, `native` for its own).
+count). Fields: Role, Model (the role's models from embroider's registry,
+editable; a typed id survives a role change), Device (CPU by default,
+leaving VRAM to the chat model), Precision, Width (embedders only: the
+model's Matryoshka steps, `native` for its own), Cache.
 
-- **The embedder** works wherever `functions.embeddings.embedder_for`
+- **As an embedder** it works wherever `functions.embeddings.embedder_for`
   takes a handle: a ToolSet's `embedding_model`, memory recall, your own
   nodes. `/v1/embeddings` takes `task` (`Document`, the default, or
   `Query`; `input_type` `query` / `document` too), because the retrieval
   models embed a query and a passage differently.
-- **The reranker** works on the Knowledge Graph's `reranker` port, which
+- **As a reranker** it works on the Knowledge Graph's `reranker` port, which
+
   hands it to okf's external rerank lane like the Reranker Loader's
   (pair ceiling and family from the registry, exact counts from
   `/tokenize`), and on any `/v1/rerank` client.

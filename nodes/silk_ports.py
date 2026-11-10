@@ -353,7 +353,7 @@ if "onnx_embedder" not in PortRegistry._by_name:
 # A reranker (the second retrieval stage) as a description, whoever runs
 # it: ``runtime: embroider`` is a cross-encoder okf loads itself (the Silk
 # KG Reranker (ONNX) node); ``runtime: gguf`` / ``onnx`` is the Reranker
-# Loader's / ONNX Reranker Loader's lazy server pool;
+# Loader's / ONNX Loader's lazy server pool;
 # ``runtime: external`` is a ``POST /v1/rerank`` host
 # (llama-server --rerank, TEI) by URL and declared family. Typed by role,
 # not by runtime, so one port takes either.

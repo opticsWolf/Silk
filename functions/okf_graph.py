@@ -122,7 +122,7 @@ VISION_MAX_DIM = 768
 
 
 #: Each text model's Matryoshka widths, native last (embroider's
-#: registry ``ladder``); the ONNX Embedder Loader offers these.
+#: registry ``ladder``); the ONNX Loader offers these.
 MODEL_LADDERS = {
     "google/embeddinggemma-2": (128, 256, 512, 768),
     "jinaai/jina-embeddings-v5-text-small-retrieval":

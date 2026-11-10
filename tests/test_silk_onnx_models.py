@@ -136,7 +136,7 @@ def test_the_pool_gives_each_consumer_the_base_it_expects():
         EmbroiderPool("m/x", kind="decide")
 
 
-# -- L1: the loader nodes -------------------------------------------------
+# -- L1: the loader node --------------------------------------------------
 
 @pytest.fixture()
 def fake_host(monkeypatch):
@@ -162,11 +162,12 @@ def fake_host(monkeypatch):
     return started
 
 
-def test_the_embedder_loader_hands_out_a_model_that_starts_on_use(qt_app, fake_host):
-    from silk.nodes.onnx_model_loader import OnnxEmbedderLoaderNode
-    node = OnnxEmbedderLoaderNode()
+def test_the_loader_as_embedder_hands_out_a_model_that_starts_on_use(qt_app, fake_host):
+    from silk.nodes.onnx_model_loader import OnnxLoaderNode
+    node = OnnxLoaderNode()
     out = node.compute({"model_id": "google/embeddinggemma-2", "dim": "256"})
     handle = out["model_obj"]
+    assert out["reranker"] is None, "the role fills one output"
     assert (handle["backend"], handle["role"]) == ("onnx", "embedding")
     assert fake_host == [], "nothing runs until it is used"
     embedder = embedder_for(handle)
@@ -182,39 +183,72 @@ def test_the_embedder_loader_hands_out_a_model_that_starts_on_use(qt_app, fake_h
         node.compute({"model_id": "google/embeddinggemma-2", "precision": "int8"})
 
 
-def test_the_embedder_loader_offers_the_models_widths(qt_app, fake_host):
-    from silk.nodes.onnx_model_loader import NATIVE, OnnxEmbedderLoaderNode
-    node = OnnxEmbedderLoaderNode()
-    node._model.setCurrentText("jinaai/jina-embeddings-v5-text-small-retrieval")
-    widths = [node._width.itemText(i) for i in range(node._width.count())]
+def test_the_loader_offers_the_models_widths(qt_app, fake_host):
+    from silk.nodes.onnx_model_loader import NATIVE, OnnxLoaderNode
+    node = OnnxLoaderNode()
+    node._combo_model.setCurrentText("jinaai/jina-embeddings-v5-text-small-retrieval")
+    widths = [node._combo_dim.itemText(i) for i in range(node._combo_dim.count())]
     assert widths[0] == NATIVE and widths[-1] == "1024"
-    node._width.setCurrentText("1024")
-    node._model.setCurrentText("google/embeddinggemma-2")
-    assert node._width.currentText() == NATIVE, "gemma stops at 768"
+    node._combo_dim.setCurrentText("1024")
+    node._combo_model.setCurrentText("google/embeddinggemma-2")
+    assert node._combo_dim.currentText() == NATIVE, "gemma stops at 768"
 
 
-def test_the_reranker_loader_feeds_the_graph_and_unloads(qt_app, fake_host):
-    from silk.nodes.onnx_model_loader import OnnxRerankerLoaderNode
-    node = OnnxRerankerLoaderNode()
-    reranker = node.compute({"model_id": "cross-encoder/ms-marco-MiniLM-L-6-v2",
-                             "precision": "q8"})["reranker"]
+def test_the_role_row_swaps_the_models_and_keeps_a_typed_one(qt_app, fake_host):
+    from silk.functions.okf_graph import KNOWN_MODELS, KNOWN_RERANK_MODELS
+    from silk.nodes.onnx_model_loader import OnnxLoaderNode
+    node = OnnxLoaderNode()
+    node._combo_role.setCurrentIndex(1)
+    models = [node._combo_model.itemText(i) for i in range(node._combo_model.count())]
+    assert models == list(KNOWN_RERANK_MODELS)
+    assert node._combo_model.currentText() == KNOWN_RERANK_MODELS[0]
+    assert not node._combo_dim.isEnabled(), "a reranker has no width"
+    node._combo_model.setCurrentText("my-org/my-cross-encoder")
+    node._combo_role.setCurrentIndex(0)
+    assert node._combo_model.currentText() == "my-org/my-cross-encoder"
+    node._combo_role.setCurrentIndex(1)
+    node._combo_role.setCurrentIndex(0)
+    node._combo_model.setCurrentText(KNOWN_RERANK_MODELS[0])
+    node._combo_role.setCurrentIndex(1)
+    node._combo_role.setCurrentIndex(0)
+    assert node._combo_model.currentText() == KNOWN_MODELS[0], \
+        "a model of the other role is swapped for this role's first"
+
+
+def test_the_loader_as_reranker_feeds_the_graph_and_unloads(qt_app, fake_host):
+    from silk.nodes.onnx_model_loader import OnnxLoaderNode
+    node = OnnxLoaderNode()
+    out = node.compute({"role": "reranker", "precision": "q8",
+                        "model_id": "cross-encoder/ms-marco-MiniLM-L-6-v2"})
+    reranker = out["reranker"]
+    assert out["model_obj"] is None, "the role fills one output"
     assert RERANKER_MODEL_TYPE.validator(reranker)
     assert (reranker["runtime"], reranker["max_tokens"]) == ("onnx", 512)
     spec = SilkKnowledgeGraphNode.spec_from({"db_path": "kb.db", "reranker": reranker})
     assert spec.rerank_backend == "external" and fake_host[0][1]["kind"] == "rerank"
-    assert fake_host[0][1]["precision"] == "q8"
+    assert fake_host[0][1]["precision"] == "q8" and "dim" not in fake_host[0][1]
     assert node._is_loaded()
     node._on_unload_clicked()
     assert not node._is_loaded() and fake_host[-1] == "stopped"
 
 
-def test_a_loader_without_embroider_says_so(qt_app, monkeypatch):
+def test_the_loader_survives_the_canvas(qt_app, fake_host):
+    """A widget named ``_width`` once shadowed the node's own width and
+    took the app down on the first resize."""
+    from silk.nodes.onnx_model_loader import OnnxLoaderNode
+    node = OnnxLoaderNode()
+    assert isinstance(node._width, (int, float))
+    node.auto_resize()
+    node.cleanup()
+
+
+def test_the_loader_without_embroider_says_so(qt_app, monkeypatch):
     from silk.nodes import onnx_model_loader as loader
     monkeypatch.setattr(loader, "embroider_available", lambda: False)
-    node = loader.OnnxRerankerLoaderNode()
+    node = loader.OnnxLoaderNode()
     errors = []
     node.compute_error.connect(errors.append)
-    assert node.compute({}) == {"reranker": None}
+    assert node.compute({}) == {"model_obj": None, "reranker": None}
     assert errors and "embroider is not installed" in errors[0]
 
 

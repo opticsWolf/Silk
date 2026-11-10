@@ -18,7 +18,7 @@ precision and cache folder); the Knowledge Graph node passes it to
 That is also why the wires are not ``model_handle`` -- that type is a
 model live in Weave, callable here -- and why the outputs are called
 ``embedder_spec`` / ``reranker_spec``. A model to use from other nodes
-or code is the ONNX Embedder Loader / ONNX Reranker Loader's
+or code is the ONNX Loader's
 (``nodes/onnx_model_loader.py``).
 
 The model ids are embroider's registry; the lists are editable, so a

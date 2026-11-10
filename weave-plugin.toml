@@ -40,7 +40,7 @@ contract = "weave-node 1.0"
 nodes = [
     "AgentInferenceSettingsNode", "ChatDisplayNode", "ClassifierLoaderNode",
     "EmbedderLoaderNode", "GGUFLNode", "JevLoaderNode", "PoolMonitorNode",
-    "OnnxEmbedderLoaderNode", "OnnxRerankerLoaderNode", "RerankerLoaderNode",
+    "OnnxLoaderNode", "RerankerLoaderNode",
     "SilkAgentNode", "SilkClassifierNode", "SilkConverterSettingsNode",
     "SilkDocumentConverterNode", "SilkEndpointNode", "SilkEnsembleNode", "SilkExcelConverterNode",
     "SilkJatsConverterNode",
