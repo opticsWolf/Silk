@@ -30,6 +30,10 @@ makes unchanged.
   releases yet. Weave's names none of the three; Silk's extras keep
   `okfgraph>=0.12` and `bobine>=0.8`. They rise with the first Silk commit
   that uses 0.13 / 0.15 (section 5, step 6).
+- **okfgraph 0.13.1 (setup and CLI fixes)**: skills ship in the wheel with
+  `okf setup skills`; several files per `okf ingest --kind pdf`; global
+  flags before the command; missing db folders created; help names the
+  default paths; README install table; `pdf` extra `bobine>=0.8.1`.
 - **Next:** okfgraph O3 (image lane) and O6 (after bobine 0.9), bobine 0.9, then Silk.
 
 ## 1. Goal
@@ -238,7 +242,7 @@ count, or the host pins threads to okf's setting.
   - Old graphs carry only model and precision. On first open they adopt `space` when model and precision agree, and they are never rewritten otherwise.
   - Result: a graph moves between in-process and a host with no re-embed when `space` matches, and is refused with a clear message when it doesn't, for example "pinned fp16, host landed fp32 on CPU".
 - **O5 Runtime**: `resolve_ort_dylib()` delegates to `embroider.locate_runtime()`, keeping the current function as a shim for one release.
-- **O6 Ingest vocabulary**: `converters.py` passes bobine `device`/`precision` (B3) instead of provider lists.
+- **O6 Ingest vocabulary**: `converters.py` passes bobine `device`/`precision` (B3) instead of provider lists, and `BobineConverter` reuses one bobine converter per settings key (B4's in-process API) so the layout/OCR models stop reopening per file, with a bounded lifetime: the CLI holds it only for the files of one `okf ingest --kind pdf --pdf-path A B …` (0.13.1) and frees it when the command ends; `okf serve` frees it after a set idle time (a setting; never held for the server's whole life).
 - **O7 Reporting**: `okf doctor` and the serve status show, per lane, `backend`, `endpoint`, the identity, and the pinned `space`. The Silk KG's Info line reads this.
 - **Docs**: settings reference, CHANGELOG, and the compat row.
 
@@ -253,8 +257,16 @@ count, or the host pins threads to okf's setting.
 - **B4 Persistent host, `python -m bobine.serve`.**
   - Routes: `POST /v1/convert` (`{path, output_dir, settings}`; NDJSON progress lines, then the result), `GET /v1/models` (`model_status()` plus the landed devices), and `GET /health`.
   - One `HybridConverter` per settings key stays warm, which removes Silk's per-call model reload.
+  - The same reuse in process: today `bobine.ingest_document` builds a new `HybridConverter` per call, and the reusable Python `HybridConverter` can't stage images, count pages or report progress. Add `HybridConverter.ingest_document(path, output_dir, on_page=, should_continue=)` with the full pipeline, so a caller (okfgraph O6) holds one converter across files, and a way to release it (dropping the object frees the ONNX sessions) so the caller sets its lifetime. B4's host evicts a warm converter after an idle timeout the same way.
   - Cancel is a per-job route, or killing the host stays the hard stop.
 - **B5 Tests**: the vocabulary mapping table, the locator without `onnxruntime` imported (assert `"onnxruntime" not in sys.modules`), and B4's HTTP with a text file (no models).
+- **B6 CLI and skill (deferred, after 0.9)**: bobine ships neither today; the
+  only entry points are the Python API and B4's host.
+  - A `bobine` console script: `convert FILE... [--output-dir] [--device]
+    [--precision] [--routing-mode]`, many files in one process on one warm
+    `HybridConverter`; `models` (status, offline) and `serve` (B4).
+  - A harness-neutral `skills/bobine-cli/SKILL.md`, shipped inside the
+    wheel (okfgraph's skills are not yet; fix both the same way).
 
 ### 4.4 Silk (Weave `dev_gui`, after the releases)
 
@@ -286,7 +298,7 @@ count, or the host pins threads to okf's setting.
 1. **bobine 0.8.1**: B1 only (runtime pin). Small, removes a real install conflict.
 2. **embroider 0.15**: E1 → E2 → E3 → E5 → E4 → E7 → E6 → E8. E7 can start once E1 lands; E6 is only needed for vision.
 3. **okfgraph 0.13**: O5 → O4 → O1 → O2 → O7, then O3 (vision) and O6 (after bobine 0.9).
-4. **bobine 0.9**: B2 → B3 → B4 → B5.
+4. **bobine 0.9**: B2 → B3 → B4 → B5. B6 (CLI, skill) follows in a later release.
 5. **Silk**: S1 (embed and rerank on `embroider.serve`) → S2 embedder and reranker → S5 → S3 → S2 images and S1 Vision → S1 Decider → S4.
 6. **Weave**: S6 floors and the `node_deprecated` flag, together with step 5's first commit.
 
