@@ -1,28 +1,35 @@
 # ONNX unification plan: embroider, bobine, okfgraph, Silk
 
-Status: plan, 2026-11-10. Branches `dev_silk` exist locally (not pushed)
-in embroider, bobine and OKFgraph, each cut from `origin/main`
-(embroider 0.14.1, bobine 0.8.0, okfgraph 0.12.1, the versions installed in
-`developenv`).
+Status: plan, 2026-11-10. Branches `dev_silk` in embroider, bobine and
+OKFgraph were cut from `origin/main` (embroider 0.14.1, bobine 0.8.0,
+okfgraph 0.12.1) and have since merged back for the releases below.
 
-Progress (uncommitted, on `dev_silk`):
+Progress (2026-11-11): steps 1–3 of section 5 are released, each tagged
+on `main` (bobine `v0.8.1`, embroider `v0.15.0`, okfgraph `v0.13.0`) and
+published to PyPI (embroider and bobine also to crates.io). bobine 0.8.1
+still builds against the embroider 0.14 crate; 0.15 leaves every call it
+makes unchanged.
 
-- **bobine 0.8.1 (B1) done**: the extras, CI, README, quickref, site and
+- **bobine 0.8.1 (B1) released**: the extras, CI, README, quickref, site and
   CHANGELOG all moved to ORT 1.31.1.
-- **embroider 0.15 (E1–E8) done**, with these deviations from the plan:
+- **embroider 0.15 (E1–E8) released**, with these deviations from the plan:
   - `describe()` lives on the Python `Model` that `embroider.open` returns, not on each native class.
   - `space` ends in `VECTOR_CONTRACT` (`v1`), not the release, so a release that leaves vectors alone keeps every graph valid.
   - E6 stays on Pillow (okf's exact pixels) instead of the Rust `image` crate.
   - `locate_runtime` lives in Rust (`embroider::diag::locate_runtime`), runs on every open (CPU included) and works on all three platforms; the Python function wraps it. bobine's B2 can call the Rust function directly.
   - Every model class reports the precision of the weights that loaded, Laya and 2B included; a request for an unshipped tier reads `fp32`.
 - **Measured:** host and in-process vectors are equal at `abs=0` across processes on CPU (open question 1, CPU half).
-- **okfgraph 0.13 (O5, O4, O1, O2, O7) done**, with these deviations from the plan:
+- **okfgraph 0.13 (O5, O4, O1, O2, O7) released**, with these deviations from the plan:
   - The space pin ignores `max_length`: stored texts are chunked below it, so a host with another ceiling serves the same vectors.
   - A session that can't name its space (a cold or older engine) warns on a space-pinned graph instead of refusing.
   - Pre-space graphs adopt a space only when their precision pin matched before the open; a graph a declared engine filled is never adopted.
   - The rerank probe also makes `rerank_max_tokens` come from the host.
   - O7 adds a `lanes()` op beside `pin_info`; `/health` carries it and `okf doctor` prints `embed_lane` / `rerank_lane` info rows.
-  - `uv.lock` still names embroider 0.14.1 until 0.15.0 is on PyPI.
+  - `uv.lock` pins the published embroider 0.15.0 and bobine 0.8.1.
+- **Floors (S6)**: neither Weave's nor Silk's pyproject requires the new
+  releases yet. Weave's names none of the three; Silk's extras keep
+  `okfgraph>=0.12` and `bobine>=0.8`. They rise with the first Silk commit
+  that uses 0.13 / 0.15 (section 5, step 6).
 - **Next:** okfgraph O3 (image lane) and O6 (after bobine 0.9), bobine 0.9, then Silk.
 
 ## 1. Goal
