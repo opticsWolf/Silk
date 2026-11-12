@@ -42,7 +42,7 @@ One way to load, serve, identify and wire an ONNX model, whichever package
 runs it:
 
 - **One vocabulary**: `model_id`, `device` (`auto|cpu|cuda`), `precision`
-  (`auto|fp32|fp16|int8|q8`), `cache_dir` (a Hugging Face hub cache),
+  (`auto|fp32|fp16|int8`; no `q8` artifact exists), `cache_dir` (a Hugging Face hub cache),
   `revision`. The same words in embroider, bobine, okfgraph and every Silk
   node row.
 - **One runtime**: one `onnxruntime` binary per environment, found by one
@@ -251,7 +251,7 @@ count, or the host pins threads to okf's setting.
 - **B1 Fix the runtime pin now** (worth its own 0.8.1): the extras become `onnxruntime==1.31.1` / `onnxruntime-gpu[cuda,cudnn]==1.31.1`, and the README text follows. Also check that bobine's lock already resolves embroider 0.14.1 at 1.31.1.
 - **B2 Runtime locator**: `_ensure_ort_dylib` and `_warm_gpu_dlls` are replaced by a native call to embroider's Rust locator and `prepare_cuda_dirs()`, so `import bobine` no longer imports `onnxruntime`. `bobine.ORT_DYLIB_PATH` stays.
 - **B3 Shared vocabulary.**
-  - `ConverterConfig(device="auto|cpu|cuda", precision="auto|fp32|fp16|q8|int8")`. Device maps to `ort_providers` through `embroider::DeviceReq`; precision maps onto `ModelPrecision` / `ModelQuantization`.
+  - `ConverterConfig(device="auto|cpu|cuda", precision="auto|fp32|fp16|int8")`. Device maps to `ort_providers` through `embroider::DeviceReq`; precision maps onto `ModelPrecision` / `ModelQuantization`. **No `q8`**: bobine's enums are `ModelPrecision{Fp32,Fp16}` + `ModelQuantization{Fp32,Int8}` and no artifact in the stack ships q8, so bobine refuses the word by name rather than pretending. B3 also exposes `bobine.DEVICES` / `bobine.PRECISIONS` so okfgraph's settings validate against the source instead of a duplicate tuple (okfgraph 0.14.1 §E).
   - Per-pass provider lists stay as the expert override and win when set.
   - `describe()` on `HybridConverter` returns the landed provider and precision per pass.
 - **B4 Persistent host, `python -m bobine.serve`.**
@@ -266,7 +266,7 @@ count, or the host pins threads to okf's setting.
     [--precision] [--routing-mode]`, many files in one process on one warm
     `HybridConverter`; `models` (status, offline) and `serve` (B4).
   - A harness-neutral `skills/bobine-cli/SKILL.md`, shipped inside the
-    wheel (okfgraph's skills are not yet; fix both the same way).
+    wheel, following the pattern okfgraph already ships: its `pyproject.toml` force-includes `skills/*/SKILL.md` (since 0.13.1) and `okf setup skills` copies them into an agent's skill directory.
 
 ### 4.4 Silk (Weave `dev_gui`, after the releases)
 
