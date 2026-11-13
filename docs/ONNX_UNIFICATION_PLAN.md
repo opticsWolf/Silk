@@ -314,10 +314,17 @@ count, or the host pins threads to okf's setting.
   - Remove the spec nodes in the release after.
   - Optional: a canvas action "Replace with ONNX Loader" that copies model, device, precision, cache and width.
 - **S4 Converter Settings on the shared vocabulary**: its Device and Precision rows match the ONNX Loader's, `bobine_convert.clean_settings` passes them through (B3), and the worker can move to a warm `bobine.serve` pool (B4) behind the same `ChildServerPool`.
+  - Follow-up (wording): the Device/Precision tooltips and the status line
+    must call `max_tokens = n_ctx` the model's **context window**, never its
+    own per-pair limit — okf's `rerank_max_tokens` is an advisory ceiling,
+    and the Reranker Loader reads `n_ctx` into it today.
 - **S5 Runtime status in one place**: a small `functions/onnx_runtime.py` asks `embroider.runtime_info()` in a child process (never in Weave's process) and caches the answer. Every ONNX node's tooltip and error text uses it, for example "no onnxruntime: pip install okfgraph[cpu]".
 - **S6 Pins and floors** (done 2026-11-13): Weave's pyproject raises the floors (`embroider>=0.15`, `okfgraph>=0.14.2`, `bobine>=0.9.1`). Weave owns the floors; Silk and Veil don't.
 - **S7 Tests**:
   - The KG maps each of the 3.3 rows onto okf env.
+  - The KG's declared rerank rows (family, ceiling, count mode) match what
+    the reranker's own `/v1/models` and `/tokenize` report — a seam test, so
+    a loader rename or a ceiling change cannot drift silently.
   - The ONNX Loader runs each role against a fake host.
   - The spec nodes still load an old scene and warn.
   - A live end-to-end test, skipped unless the model is cached: an unwired KG builds a graph in-process, then the same graph is reopened through an ONNX Loader with the same model, and search works with no re-embed.
