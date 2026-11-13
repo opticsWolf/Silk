@@ -20,7 +20,7 @@ The decision models' kinds are a pinned copy of embroider's registry
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, List, Sequence
+from typing import Any, Dict, List, Optional, Sequence
 
 from .okf_graph import (
     DEVICES, EMBED_PRECISIONS, IMAGE_PRECISIONS, KNOWN_MODELS,
@@ -101,19 +101,27 @@ def shipped(role: str, model_id: str) -> Sequence[str]:
     return ROLE_PRECISIONS.get(role, ("auto",))
 
 
-def handle_for(role: str, model_id: str, pool: Any) -> Dict[str, Any]:
+def handle_for(role: str, model_id: str, pool: Any,
+               settings: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """The wire handle for a running (or lazy) embroider pool.
 
     Embedding and reranker keep their old shapes: the embedder's handle is
     what ``functions.embeddings.embedder_for`` reads, the reranker's what
-    the Knowledge Graph hands okf's external rerank lane. Vision names the
-    model and its text partner (the graph's own text model must be that
-    partner for image vectors to compare). Decision models use the
-    ``classifier_model`` shape the Classifier and Ensemble nodes read.
+    the Knowledge Graph hands okf's external rerank lane. Embedding and
+    vision also carry the **opened** device, precision and width, so the
+    Knowledge Graph can predict a mismatch before the host starts (okf
+    still asks the host itself at boot). Vision names its text partner
+    (the graph's own text model must be that partner for image vectors to
+    compare). Decision models use the ``classifier_model`` shape the
+    Classifier and Ensemble nodes read.
     """
+    settings = settings or {}
     if role == "embedding":
         return {"backend": "onnx", "role": "embedding", "pool": pool,
-                "model_id": model_id}
+                "model_id": model_id,
+                "device": str(settings.get("device") or "cpu"),
+                "precision": str(settings.get("precision") or "auto"),
+                "dim": int(settings.get("dim") or 0)}
     if role == "reranker":
         return {"role": "rerank", "runtime": "onnx", "pool": pool,
                 "model_id": f"onnx/{model_id}", "family": onnx_family(model_id),
@@ -123,7 +131,9 @@ def handle_for(role: str, model_id: str, pool: Any) -> Dict[str, Any]:
         # it shares (embroider's registry ``text_partner``).
         return {"role": "vision", "runtime": "onnx", "pool": pool,
                 "model_id": model_id,
-                "text_partner": VISION_MODELS.get(model_id, "")}
+                "text_partner": VISION_MODELS.get(model_id, ""),
+                "precision": str(settings.get("precision") or "auto"),
+                "dim": int(settings.get("dim") or 0)}
     return {"backend": "systemone", "role": "decision", "pool": pool,
             "model": model_id}
 

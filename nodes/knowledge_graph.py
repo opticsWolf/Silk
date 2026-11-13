@@ -45,23 +45,33 @@ dropdown. Bundles default to ``.okfgraph/bundle`` beside the database.
 **Models on wires.** The node has no model fields: the models come from
 loader nodes, and the Embedder row picks which wire embeds.
 
-* ``embedder`` -- the Embedder Loader's ``model_obj`` (a GGUF model on
-  Silk's llama.cpp server). okf embeds through that server on its
-  external lane. Everything okf must be told about the model is read
-  from the GGUF file, never typed: the family (``nomic-v1.5`` when it is
-  one, which brings okf's prefixes; otherwise the model's own name), the
-  pooling the server applies (``<arch>.pooling_type``) and the width
-  (``<arch>.embedding_length``). The query/document prefixes come from
-  the model's name (``functions/embed_prefixes.py``) unless the loader
-  overrides them, and are declared to okf. The pin is
-  ``gguf/<file stem>``, plus ``+p<6 hex>`` naming a declared table, so a
-  graph is never searched with prefixes its vectors were made without;
-  one embedded before Silk declared them is served without them until
-  Re-embed. Tokens are counted by the server's ``/tokenize``.
+* ``embedder`` -- an embedding model on the Embedder row's ``gguf`` lane.
+  Two wires fit it, told apart by the handle:
+  * the Embedder Loader's ``model_obj`` (a GGUF model on Silk's llama.cpp
+    server). okf embeds through that server on its external lane, and
+    everything it must know is read from the GGUF file, never typed: the
+    family (``nomic-v1.5`` when it is one, which brings okf's prefixes;
+    otherwise the model's own name), the pooling the server applies
+    (``<arch>.pooling_type``) and the width (``<arch>.embedding_length``).
+    Tokens come from the server's ``/tokenize``. The pin is
+    ``gguf/<file stem>``, plus ``+p<6 hex>`` naming a declared table, so a
+    graph is never searched with prefixes its vectors were made without.
+  * the ONNX Loader's ``model_obj`` (embroider's own host, out of
+    process). okf asks the host who it is and pins the space it names
+    (``embed_identity=auto``): family, width, precision and vector space
+    come from the host, which also applies its own prompts. The loader's
+    Width must be the graph's Vector dim; okf refuses a host opened at
+    another width with the fix. Nothing here is a re-embed unless the
+    lane or the model really changed.
 * ``onnx_embedder`` -- Silk KG Embedder (ONNX)'s ``embedder_spec``, which
   okf loads with embroider in its own process (device, precision, cache
-  folder). The ONNX Loader's embedder is refused here: a graph's
-  vectors are okf's own.
+  folder).
+* ``image_model`` -- the ONNX Loader's Vision handle (an image embedder
+  on embroider's host). okf embeds images through it on its external
+  image lane, so no vision ONNX loads beside the chat model. The host
+  names the text model whose vectors it shares; the graph's text lane
+  must be that model, and okf refuses anything else at boot (the node
+  says it first, in red).
 * ``reranker`` -- Silk KG Reranker (ONNX)'s cross-encoder, or the Reranker
   Loader's GGUF reranker or the ONNX Loader's embroider one
   (Silk's own ``/v1/rerank`` servers, which okf reaches on its external
@@ -76,11 +86,8 @@ lives in Silk's server, so a graph embedded with one waits for it to be
 wired again rather than being served without it.
 """
 
-import os
 import re
 import time
-from functools import lru_cache
-from pathlib import Path
 
 from typing import Any, ClassVar, Dict, List, Optional, Tuple
 from dataclasses import replace
@@ -102,24 +109,17 @@ from .silk_ports import (  # noqa: F401
     MODEL_HANDLE_TYPE, OKF_GRAPH_TYPE, ONNX_EMBEDDER_TYPE, RERANKER_MODEL_TYPE,
 )
 from ..functions.port_text import text_input
-from ..functions import embed_prefixes
-from ..functions.gguf_meta import EmbeddingMeta, read_embedding_meta
 from ..functions.okf_graph import (
-    DEFAULT_EMBED_MODEL, DEVICES, DIM_RANGE, EMBED_PRECISIONS, FAMILY_LADDERS,
-    FAMILY_PREFIXES,
-    IMAGE_PRECISIONS, LADDER_DIMS, RERANK_PRECISIONS, VISION_MAX_DIM, OkfError,
-    OkfGraph, OkfSpec, default_bundle_root, default_db_path, default_executable,
-    find_databases, mismatch_text, model_cache, vision_partner,
+    DEFAULT_EMBED_MODEL, LADDER_DIMS, OkfError, OkfGraph, OkfSpec,
+    default_bundle_root, default_db_path, default_executable, find_databases,
+    mismatch_text, model_cache,
+)
+from ..functions.okf_wiring import (  # noqa: F401 - the tests read _image_line
+    EMBED_KEYS as _EMBED_KEYS, EMBED_SOURCES, _image_line, _model_lines,
+    _wired_embedder, embed_source, spec_from, wiring_problem,
 )
 
 log = get_logger("SilkKnowledgeGraphNode")
-
-#: The Embedder row: which wire supplies the embedding model.
-EMBED_SOURCES = ("onnx", "gguf")
-
-#: The settings that decide what the vectors are made with.
-_EMBED_KEYS = ("device", "model_id", "embedding_dim", "precision", "backend",
-               "embed_family", "endpoint_url")
 
 #: An OkfSpec with every default, for settings saved before a key existed.
 _DEFAULT_SPEC = OkfSpec(db_path="")
@@ -174,6 +174,7 @@ class SilkKnowledgeGraphNode(ThreadedNode):
         self.add_input("embedder", datatype="model_handle")
         self.add_input("onnx_embedder", datatype="onnx_embedder")
         self.add_input("reranker", datatype="reranker_model")
+        self.add_input("image_model", datatype="image_model")
         self.add_output("knowledge", datatype="okf_graph")
 
         # ── Layout & WidgetCore ──
@@ -221,9 +222,10 @@ class SilkKnowledgeGraphNode(ThreadedNode):
             "onnx: Silk KG Embedder (ONNX) on onnx_embedder, which okf runs itself "
             "(embroider). Unwired: the ONNX model the graph was last "
             "embedded with, else okf's default.\n"
-            "gguf: the Embedder Loader's model_obj on embedder, served by "
-            "Silk's llama.cpp server and started when the graph needs it. "
-            "Its family, pooling and width are read from the GGUF file.\n"
+            "gguf: the model wired on embedder, started when the graph "
+            "needs it. An Embedder Loader's GGUF model (family, pooling "
+            "and width from the file), or the ONNX Loader's (embroider's "
+            "own host: okf asks who it is and pins the space it names).\n"
             "Switching lanes re-embeds the graph.")
         embed_row.addWidget(self._embed_source, stretch=1)
         self._btn_reembed = SyncToolButton(
@@ -423,96 +425,23 @@ class SilkKnowledgeGraphNode(ThreadedNode):
     @staticmethod
     def embed_source(inputs: Dict[str, Any]) -> str:
         """``gguf`` or ``onnx``: the lane the Embedder row picks."""
-        chosen = text_input(inputs, "embed_source", "onnx")
-        return chosen if chosen in EMBED_SOURCES else "onnx"
+        return embed_source(inputs)
 
     @staticmethod
     def spec_from(inputs: Dict[str, Any],
                   applied: Optional[Dict[str, str]] = None) -> OkfSpec:
         """The server spec: paths from *inputs*, the model from the wires.
 
-        With no embedder wired on the ONNX lane, the model the graph was
-        last embedded with (*applied*), else okf's default.
+        The mapping lives in :mod:`functions.okf_wiring` (Qt-free), so the
+        seam tests read exactly what okf is told.
         """
-        raw_dim = text_input(inputs, "embedding_dim", "512").strip()
-        try:
-            dim = int(raw_dim)
-        except ValueError:
-            dim = 512
-        if dim not in LADDER_DIMS:
-            dim = 512
-        applied = applied or {}
-        spec = OkfSpec(
-            db_path=text_input(inputs, "db_path"),
-            executable=text_input(inputs, "executable"),
-            bundle_root=text_input(inputs, "bundle_root"),
-            embedding_dim=dim,
-        )
-        if SilkKnowledgeGraphNode.embed_source(inputs) == "gguf":
-            gguf = _gguf_embedder(inputs.get("embedder"))
-            if gguf.get("endpoint_url"):
-                # Silk's llama.cpp server, on okf's external lane. The
-                # server answers any model name with the one it has loaded,
-                # so the wire's name can be the pin: stable across ports
-                # and restarts.
-                spec = replace(
-                    spec, backend="external", endpoint_url=gguf["endpoint_url"],
-                    model_id=gguf["model_id"], embed_family=gguf["family"],
-                    embed_pooling=gguf["pooling"],
-                    embedding_dim=_gguf_dim(gguf, dim),
-                    embed_counter=gguf["counter"], embed_counter_gguf=gguf["path"],
-                    embed_prefixes=gguf["prefixes"],
-                )
-        else:
-            onnx = _onnx_description(inputs.get("onnx_embedder"))
-            if onnx is None and applied.get("backend", "embroider") == "embroider":
-                onnx = applied
-            if onnx:
-                # An empty model id in a saved record is okf's own default:
-                # what graphs made before Silk had one were embedded with.
-                spec = replace(
-                    spec, model_id=str(onnx.get("model_id") or ""),
-                    device=_choice(onnx.get("device"), DEVICES),
-                    precision=_choice(onnx.get("precision"), EMBED_PRECISIONS),
-                    cache_dir=str(onnx.get("cache_dir") or ""),
-                    image_model_id=str(onnx.get("image_model_id") or ""),
-                    image_precision=_choice(onnx.get("image_precision"),
-                                            IMAGE_PRECISIONS),
-                )
-            else:
-                spec = replace(spec, model_id=DEFAULT_EMBED_MODEL)
-        return _with_reranker(spec, inputs.get("reranker"))
+        return spec_from(inputs, applied)
 
     @staticmethod
-    def wiring_problem(inputs: Dict[str, Any]) -> str:
+    def wiring_problem(inputs: Dict[str, Any],
+                       applied: Optional[Dict[str, str]] = None) -> str:
         """Why the wired models cannot be used as they are, or ``""``."""
-        failed = _gguf_reranker(inputs.get("reranker")).get("error")
-        if failed:
-            return f"The reranker's server did not start: {failed}"
-        handle = inputs.get("embedder")
-        if SilkKnowledgeGraphNode.embed_source(inputs) == "onnx" or not handle:
-            return ""
-        gguf = _gguf_embedder(handle)
-        if gguf.get("prefix_error"):
-            return f"The Embedder Loader's prefixes: {gguf['prefix_error']}"
-        if gguf.get("error"):
-            return f"The embedder's server did not start: {gguf['error']}"
-        if not gguf and isinstance(handle, dict) and handle.get("backend") == "onnx":
-            return ("The embedder input takes a GGUF embedding model. An ONNX "
-                    "model for the graph is chosen with Silk KG Embedder "
-                    "(ONNX) on onnx_embedder (Embedder row onnx): okf runs it "
-                    "itself, so the graph's vectors and pin stay okf's.")
-        if not gguf:
-            return ("The embedder input takes the Embedder Loader's model_obj "
-                    "(a GGUF embedding model on Silk's llama.cpp server); "
-                    "this model handle is not one.")
-        width = gguf["width"]
-        if (gguf["family"] not in FAMILY_LADDERS and width
-                and not DIM_RANGE[0] <= width <= DIM_RANGE[1]):
-            return (f"{gguf['model_id']} makes {width}-dim vectors; okf stores "
-                    f"{DIM_RANGE[0]} to {DIM_RANGE[1]}. Load a smaller "
-                    "embedding model.")
-        return ""
+        return wiring_problem(inputs, applied)
 
     @staticmethod
     def _embed_key(spec: OkfSpec) -> Tuple[str, ...]:
@@ -534,7 +463,7 @@ class SilkKnowledgeGraphNode(ThreadedNode):
         self._sync_paths = (db_path, bundle)
         # Red unless this evaluation serves a graph that can search.
         self._failed = True
-        problem = self.wiring_problem(inputs)
+        problem = self.wiring_problem(inputs, self._applied)
         if problem:
             # Not served on a guess: a graph embedded with the wrong model
             # is pinned to it, and undoing that is a re-embed.
@@ -558,10 +487,10 @@ class SilkKnowledgeGraphNode(ThreadedNode):
                     and self._applied.get("db_path") == spec.db_path):
                 self._sync_status = (
                     f"Waiting for the embedder: this graph was embedded with "
-                    f"{self._applied.get('model_id') or 'a GGUF model'}, which "
-                    "is not wired (or its loader unloaded it). Wire the "
-                    "Embedder Loader's model_obj again, or set the Embedder "
-                    "row to onnx to re-embed with an ONNX model.")
+                    f"{self._applied.get('model_id') or 'a wired model'}, which "
+                    "is not wired (or its loader unloaded it). Wire that "
+                    "loader's model_obj again, or set the Embedder row to "
+                    "onnx to re-embed with an ONNX model.")
             else:
                 self._sync_status = (
                     "The Embedder row is gguf: wire the Embedder Loader's "
@@ -692,6 +621,8 @@ class SilkKnowledgeGraphNode(ThreadedNode):
                 "backend": spec.backend,
                 "source": "wire" if wired else "fields", "embed_family": spec.embed_family,
                 "endpoint_url": spec.endpoint_url,
+                "image_backend": spec.image_backend,
+                "image_endpoint_url": spec.image_endpoint_url,
             }
         self._sync_status = "\n".join(lines)
         return {"knowledge": graph}
@@ -812,216 +743,6 @@ class SilkKnowledgeGraphNode(ThreadedNode):
         self._discard_graph()
         super().cleanup()
 
-
-def _choice(value: Any, choices: Tuple[str, ...]) -> str:
-    text = str(value or "").strip().lower()
-    return text if text in choices else "auto"
-
-
-def _onnx_description(value: Any) -> Optional[Dict[str, Any]]:
-    """A Silk KG Embedder (ONNX) node's wire value, or ``None``."""
-    if isinstance(value, dict) and value.get("runtime") == "embroider":
-        return value
-    return None
-
-
-@lru_cache(maxsize=32)
-def _embedding_meta_cached(path: str, _mtime: float) -> EmbeddingMeta:
-    try:
-        return read_embedding_meta(path)
-    except (OSError, ValueError):
-        return EmbeddingMeta()
-
-
-def _embedding_meta(path: str) -> EmbeddingMeta:
-    """The GGUF's embedding identity, read once per file version."""
-    try:
-        mtime = os.path.getmtime(path)
-    except OSError:
-        return EmbeddingMeta()
-    return _embedding_meta_cached(path, mtime)
-
-
-def _family_for(name: Optional[str], path: str) -> str:
-    """okf's family label for a GGUF: ``nomic-v1.5`` when it is one (okf
-    has its prefixes and ladder), else the model's own name, made a legal
-    label (no ``/``)."""
-    text = (name or Path(path).stem).lower().replace("_", "-")
-    if "nomic-embed-text-v1.5" in text or "nomic-embed-text-v1-5" in text:
-        return "nomic-v1.5"
-    return re.sub(r"[^a-z0-9.-]+", "-", text).strip("-.")[:64] or "gguf"
-
-
-def _gguf_dim(gguf: Dict[str, Any], dim: int) -> int:
-    """The width to store: the row's step where the family has a ladder,
-    else the model's own width (okf cannot shorten it)."""
-    ladder = FAMILY_LADDERS.get(gguf["family"])
-    if ladder:
-        return dim if dim in ladder else ladder[-1]
-    return int(gguf["width"] or dim)
-
-
-def _gguf_embedder(handle: Any) -> Dict[str, Any]:
-    """``{endpoint_url, model_id, path, family, pooling, width}`` for an
-    Embedder Loader handle.
-
-    Empty for anything else: a chat model's pool, a remote endpoint, or
-    nothing wired. okf appends ``/v1/embeddings`` to the endpoint itself,
-    so the pool's ``.../v1`` base loses its suffix here. The family,
-    pooling and width come from the GGUF file (``width`` 0 when it does
-    not say); llama.cpp pools by the file's own key, so that is what the
-    vectors are.
-    """
-    if not (isinstance(handle, dict) and handle.get("backend") == "gguf"
-            and handle.get("role") == "embedding"):
-        return {}
-    pool = handle.get("pool")
-    if pool is None:
-        return {}
-    try:
-        # Asking for the address starts a lazy pool's server: this is the
-        # demand the Embedder Loader waits for.
-        base = pool.base_url
-        base = str(base() if callable(base) else base).rstrip("/")
-        path = str(pool.model_path)
-    except Exception as exc:  # noqa: BLE001 - reported, never raised
-        return {"error": str(exc) or type(exc).__name__}
-    if base.endswith("/v1"):
-        base = base[: -len("/v1")]
-    if not base or not path:
-        return {}
-    meta = _embedding_meta(path)
-    family = _family_for(meta.name, path)
-    name = f"{meta.name or ''} {Path(path).stem}"
-    try:
-        table = embed_prefixes.resolve(str(handle.get("prefixes") or ""), name)
-    except ValueError as exc:
-        return {"prefix_error": str(exc)}
-    # okf brings its own table for the families it knows: declared as the
-    # family, under the pin graphs made before Silk had tables carry.
-    builtin = (family in FAMILY_PREFIXES
-               and table == embed_prefixes.prefixes_for(name))
-    tag = "" if builtin else embed_prefixes.pin_tag(table)
-    return {"endpoint_url": base,
-            "model_id": f"gguf/{Path(path).stem}" + (f"+p{tag}" if tag else ""),
-            "plain_model_id": f"gguf/{Path(path).stem}",
-            "prefixes": "" if builtin else embed_prefixes.declaration(table),
-            "counter": ("server-tokenize" if getattr(pool, "serves_tokenize", False)
-                        else "gguf-meta"),
-            "path": path, "family": family,
-            "pooling": meta.pooling or "mean", "width": meta.width or 0}
-
-
-def _wired_embedder(inputs: Dict[str, Any], source: str) -> str:
-    """The wire that supplies the model on *source*'s lane, or ``""``."""
-    if source == "gguf":
-        return "gguf" if _gguf_embedder(inputs.get("embedder")).get("endpoint_url") else ""
-    return "onnx" if _onnx_description(inputs.get("onnx_embedder")) else ""
-
-
-def _model_lines(spec: OkfSpec, wired: str) -> List[str]:
-    """What embeds and what reranks."""
-    lines: List[str] = []
-    if wired == "gguf":
-        lines.append(
-            f"Embedding through the wired GGUF embedder {spec.model_id} "
-            f"(from its file: family {spec.embed_family}, "
-            f"{spec.embed_pooling} pooling, {spec.embedding_dim} dims); it "
-            "must stay loaded for search and ingest to work.")
-    elif wired == "onnx":
-        lines.append(
-            f"Embedding with the wired ONNX model {spec.model_id or 'default'} "
-            f"on {spec.device} ({spec.precision}).")
-    else:
-        lines.append(
-            f"No embedder wired: okf loads "
-            f"{spec.model_id or 'its default model (jina v5 small)'} itself, on "
-            f"{spec.device}. Wire Silk KG Embedder (ONNX) or an Embedder Loader to "
-            "change it.")
-    if wired != "gguf":
-        lines.append(_image_line(spec))
-    if spec.rerank_model_id:
-        where = (f"at {spec.rerank_endpoint_url}" if spec.rerank_backend == "external"
-                 else f"on {spec.rerank_device} ({spec.rerank_precision})")
-        lines.append(f"Reranking every search with {spec.rerank_model_id} {where}.")
-    else:
-        lines.append("No reranker wired: searches are not reranked.")
-    return lines
-
-
-def _image_line(spec: OkfSpec) -> str:
-    """How images are embedded for image-content search."""
-    image = spec.image_model_id or vision_partner(spec.model_id)
-    if not image:
-        return (f"No image model pairs with {spec.model_id or 'the default model'}: "
-                "images are searched by their captions.")
-    if spec.embedding_dim > VISION_MAX_DIM:
-        return (f"Image search needs a vector width of at most {VISION_MAX_DIM} "
-                f"({spec.embedding_dim} here): images are searched by their captions.")
-    return f"Embedding images with {image} ({spec.image_precision})."
-
-
-def _gguf_reranker(handle: Any) -> Dict[str, Any]:
-    """``{endpoint_url}`` for a Reranker Loader (or ONNX Loader as a reranker)
-    handle, ``{error}`` when its server would not start, empty for
-    anything else.
-
-    Asking the lazy pool for its address starts the server: this is the
-    demand the loader waits for.
-    """
-    if not (isinstance(handle, dict) and handle.get("runtime") in _POOL_RUNTIMES
-            and handle.get("role") == "rerank"):
-        return {}
-    pool = handle.get("pool")
-    if pool is None:
-        return {}
-    try:
-        base = pool.base_url
-        base = str(base() if callable(base) else base).rstrip("/")
-    except Exception as exc:  # noqa: BLE001 - reported, never raised
-        return {"error": str(exc) or type(exc).__name__}
-    return {"endpoint_url": base} if base else {}
-
-
-def _with_reranker(spec: OkfSpec, reranker: Any) -> OkfSpec:
-    """*spec* with the wired reranker's rows; unchanged when none is."""
-    if not (isinstance(reranker, dict) and reranker.get("role") == "rerank"):
-        return spec
-    model_id = str(reranker.get("model_id") or "")
-    if reranker.get("runtime") in _POOL_RUNTIMES:
-        gguf = _gguf_reranker(reranker)
-        if not gguf.get("endpoint_url"):
-            return spec
-        # A Silk rerank server on okf's external lane: okf cuts pairs to
-        # the server's context and counts them with its /tokenize.
-        return replace(
-            spec, rerank_backend="external", rerank_model_id=model_id,
-            rerank_endpoint_url=gguf["endpoint_url"],
-            rerank_family=str(reranker.get("family") or "gguf-reranker"),
-            rerank_max_tokens=int(reranker.get("max_tokens") or 0),
-            rerank_count="server-tokenize",
-        )
-    if reranker.get("runtime") == "external" and reranker.get("endpoint_url"):
-        return replace(
-            spec, rerank_backend="external", rerank_model_id=model_id,
-            rerank_endpoint_url=str(reranker.get("endpoint_url") or ""),
-            rerank_family=str(reranker.get("family") or ""),
-            rerank_api_key_env=str(reranker.get("api_key_env") or ""),
-        )
-    if reranker.get("runtime") != "embroider":
-        return spec
-    return replace(
-        spec, rerank_backend="embroider", rerank_model_id=model_id,
-        rerank_device=_choice(reranker.get("device"), DEVICES),
-        rerank_precision=_choice(reranker.get("precision"), RERANK_PRECISIONS),
-        # One cache per server: the embedder's folder, if it named one.
-        cache_dir=spec.cache_dir or str(reranker.get("cache_dir") or ""),
-    )
-
-
-#: Reranker runtimes that are a Silk server behind a lazy pool: the
-#: Reranker Loader's GGUF one and the ONNX Loader's embroider one.
-_POOL_RUNTIMES = ("gguf", "onnx")
 
 #: The pin suffix naming a GGUF model's prefix table (``+p`` and six hex).
 _PREFIX_PIN = re.compile(r"\+p[0-9a-f]{6}$")

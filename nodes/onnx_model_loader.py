@@ -157,7 +157,7 @@ class OnnxLoaderNode(ThreadedNode):
         self._combo_device.setCurrentText("cpu")
 
         self._combo_precision = QComboBox()
-        self._combo_precision.addItems(list(EMBED_PRECISIONS))
+        self._combo_precision.addItems(list(ROLE_PRECISIONS["embedding"]))
         self._combo_precision.setToolTip(
             "auto: FP32 on the CPU, FP16 on a GPU. Only the precisions the "
             "model ships work.")
@@ -367,7 +367,7 @@ class OnnxLoaderNode(ThreadedNode):
         output = {"embedding": "model_obj", "reranker": "reranker",
                   "vision": "image_model", DECISION: "classifier"}[role]
         return {**empty,
-                output: handle_for(role, model_id, self.model_pool)}
+                output: handle_for(role, model_id, self.model_pool, settings)}
 
     def get_state(self) -> Dict[str, Any]:
         state = super().get_state()

@@ -196,8 +196,9 @@ read, traverse and, by access level, ingest and curation.
 | Direction | Port | Type |
 |---|---|---|
 | in | `roots` | `dirpath_list` (where to find or create `.okfgraph/okfgraph.db`) |
-| in | `embedder` | `model_handle` (the Embedder Loader's `model_obj`) |
+| in | `embedder` | `model_handle` (the Embedder Loader's `model_obj`, or the ONNX Loader as Embedding) |
 | in | `onnx_embedder` | `onnx_embedder` (Silk KG Embedder (ONNX)'s `embedder_spec`) |
+| in | `image_model` | `image_model` (the ONNX Loader as Vision) |
 | in | `reranker` | `reranker_model` (Silk KG Reranker (ONNX), Reranker Loader, or ONNX Loader as Reranker) |
 | out | `knowledge` | `okf_graph` |
 
@@ -207,7 +208,8 @@ picks which wire embeds; the other is ignored.
 
 | Embedder | Lane in okf | What the node passes |
 |---|---|---|
-| gguf | external (`/v1/embeddings` on Silk's llama.cpp server) | the server URL, pin `gguf/<file stem>` (`+p<6 hex>` with declared prefixes), the query/document prefixes, and from the GGUF header: family, pooling, width; exact token counts from the server's `/tokenize` |
+| gguf, Embedder Loader wired | external (`/v1/embeddings` on Silk's llama.cpp server) | the server URL, pin `gguf/<file stem>` (`+p<6 hex>` with declared prefixes), the query/document prefixes, and from the GGUF header: family, pooling, width; exact token counts from the server's `/tokenize` |
+| gguf, ONNX Loader wired | external (`/v1/embeddings` on embroider's host) | the host URL and the model id; nothing is declared, because okf asks the host who it is (`embed_identity=auto`) and pins the space it names. The loader's Width must equal the graph's Vector dim |
 | onnx, `onnx_embedder` wired | embroider, in okf's process | model id, device, precision, cache folder, image model and its precision |
 | onnx, nothing wired | embroider | the ONNX model the graph was last embedded with; `google/embeddinggemma-2` (Silk's default, `DEFAULT_EMBED_MODEL`) for a new graph |
 
@@ -258,9 +260,18 @@ and okf counts chunk lengths with it (`server-tokenize`) instead of
 estimating from the file.
 
 Unplugging a loader never re-embeds. On the ONNX lane the graph keeps its
-model; a graph embedded with a GGUF model stops serving and waits for it
+model; a graph embedded with a wired model stops serving and waits for it
 to be wired again (or for the Embedder row to be set to onnx, which
 re-embeds with the ONNX model).
+
+**Images** come from the ONNX Loader in the Vision role, on
+`image_model` (okfgraph 0.14): okf embeds them on its external image lane,
+so no vision ONNX loads beside the chat model. The host names the text
+model whose vectors it shares, and that must be the graph's own text
+model; the node refuses a mismatched pair (red, with both names) before
+okf does. The image host must be open at the graph's width. Images are
+pinned by okf on the first one it embeds; with no image wire, okf uses
+its own vision slot when the text model has a partner, else captions.
 
 **Reranking is on exactly when a reranker is wired.** Then every agent
 search is reranked (`rank='cross'` on concepts, `rerank` on chunks; the

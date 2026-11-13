@@ -72,8 +72,17 @@ deferred, and Silk needs nothing from it.
   pinned decision/vision models against embroider's registry, and the real
   host end to end); the Qt loader tests could not run here (this checkout
   has no PySide6/lace) and are updated, not verified.
-- **Next: S2** (the Knowledge Graph takes the loader's embedder and the
-  Vision role's `image_model`), then S5 → S3 (with Weave's
+- **S2 done** (Silk, uncommitted at this writing): `embedder` takes
+  either loader, the ONNX one on okf's external lane with identity
+  `auto`; `image_model` takes the Vision role, on okf's external image
+  lane, with the partner and width checks before boot. The mapping lives
+  in `functions/okf_wiring.py` (Qt-free). Verified by
+  `tests/test_silk_okf_wiring.py` (12 tests: every 3.3 row, the env each
+  produces, the image lane, the partner and width refusals, a dead
+  loader, and the chat-handle case), plus the seam and ONNX-host suites;
+  the Qt node tests are updated but still cannot run in this checkout
+  (no PySide6/lace).
+- **Next: S5** (runtime status in one place), then S3 (with Weave's
   `node_deprecated` flag) → S4. Open questions 2, 3 and 5 are decided
   (section 6).
 
@@ -321,11 +330,32 @@ count, or the host pins threads to okf's setting.
     `functions/onnx_roles.py` (Qt-free): the node and the tests read one
     definition. The decision models' kinds are a pinned copy of
     embroider's registry, with a drift test.
-- **S2 Knowledge Graph wiring (3.3).**
+- **S2 Knowledge Graph wiring (3.3).** *(Landed. The 3.3 mapping moved
+  to `functions/okf_wiring.py`, Qt-free, so S7's first bullet reads
+  exactly what okf is told.)*
   - `embedder` accepts the ONNX Loader. The `wiring_problem` refusal goes, and an embroider handle maps to `backend=external` with `embed_identity=auto`.
+    - The Embedder row's `gguf` entry means "the model wired on
+      `embedder`": a GGUF embedder (declared family, prefixes,
+      `/tokenize`) or the ONNX Loader's host (identity `auto`; nothing
+      declared, because the host names its family, width, precision and
+      space and applies its own prompts). One row, two wires, no new
+      saved value.
   - A new `image_model` input takes the ONNX Loader in the Vision role.
+    - `OkfSpec` gained `image_backend` / `image_endpoint_url`
+      (`OKFGRAPH_IMAGE_BACKEND`, `OKFGRAPH_IMAGE_ENDPOINT_URL`); the
+      existing `image_model_id` / `image_precision` rows carry the rest.
+    - The node refuses a host whose `text_partner` is not the graph's
+      text model, a host opened at another width, and a graph wider than
+      the vision slot — before okf makes the same checks at boot.
   - When unwired, the KG sets no backend env and okf uses its in-process embroider. The KG's Info names the lane and `space`, and warns on a pin it can't meet, for example "graph pinned fp16; the loader landed fp32 on CPU, pick CUDA".
+    - The host lane's Info says "Embedding through the wired ONNX host …
+      (N dims): it names its own precision and vector space". The
+      precision warning waits for okf's boot error (the loader's
+      precision is a request; the host's `describe()` is the truth).
   - okf serve restarts when a lane's wiring changes, as it already does for the GGUF lane.
+    - The image rows joined `EMBED_KEYS`, so wiring or unplugging a
+      vision model restarts the server (the image lane is a boot
+      setting) and never re-embeds on its own.
 - **S3 Deprecate the spec nodes.**
   - Silk KG Embedder (ONNX) and Silk KG Reranker (ONNX) keep loading and working for one release. The KG still reads their wires as okf in-process settings. Their description and title say "deprecated: use ONNX Loader, or leave the input unwired".
   - Weave has no flag to hide a node from the palette, so add one (`node_deprecated: ClassVar[bool]`): the palette skips the node, scenes still load it, and the linter warns on new uses. That is a small change in Weave.

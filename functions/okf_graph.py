@@ -240,7 +240,9 @@ class OkfSpec:
     ``image_model_id`` / ``image_precision`` choose how images are embedded
     for image-content search. Empty is okf's own pairing (the vision model
     sharing the text model's vectors); okf pins the image model on the
-    first image it embeds.
+    first image it embeds. ``image_backend='external'`` (0.14) embeds them
+    on an ``embroider.serve --kind vision`` host at
+    ``image_endpoint_url``, so no vision ONNX loads beside the chat model.
     """
 
     db_path: str
@@ -261,6 +263,8 @@ class OkfSpec:
     embed_prefixes: str = ""
     image_model_id: str = ""
     image_precision: str = "auto"
+    image_backend: str = ""
+    image_endpoint_url: str = ""
     rerank_backend: str = "embroider"
     rerank_model_id: str = ""
     rerank_device: str = "auto"
@@ -304,6 +308,10 @@ class OkfSpec:
             env["OKFGRAPH_IMAGE_MODEL_ID"] = self.image_model_id.strip()
         if self.image_precision in IMAGE_PRECISIONS and self.image_precision != "auto":
             env["OKFGRAPH_IMAGE_PRECISION"] = self.image_precision
+        if self.image_backend == "external":
+            env["OKFGRAPH_IMAGE_BACKEND"] = "external"
+            if self.image_endpoint_url.strip():
+                env["OKFGRAPH_IMAGE_ENDPOINT_URL"] = self.image_endpoint_url.strip()
         if self.backend == "external":
             env["OKFGRAPH_BACKEND"] = "external"
             if self.endpoint_url.strip():

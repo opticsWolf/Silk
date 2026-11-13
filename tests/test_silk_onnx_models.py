@@ -103,11 +103,19 @@ def test_an_onnx_reranker_loader_reranks_on_okfs_external_lane():
     assert env["OKFGRAPH_RERANK_COUNT"] == "server-tokenize"
 
 
-def test_the_graph_refuses_an_onnx_loader_as_its_embedder():
-    handle = {"backend": "onnx", "role": "embedding", "pool": FakePool()}
-    problem = SilkKnowledgeGraphNode.wiring_problem(
-        {"db_path": "kb.db", "embed_source": "gguf", "embedder": handle})
-    assert "Silk KG Embedder (ONNX)" in problem
+def test_the_graph_takes_the_onnx_loader_as_its_embedder():
+    """S2: the handle on `embedder` is okf's external lane, identity auto."""
+    handle = {"backend": "onnx", "role": "embedding", "pool": FakePool(),
+              "model_id": "google/embeddinggemma-2", "dim": 512,
+              "precision": "fp32", "device": "cpu"}
+    inputs = {"db_path": "kb.db", "embed_source": "gguf", "embedder": handle}
+    assert SilkKnowledgeGraphNode.wiring_problem(inputs) == ""
+    spec = SilkKnowledgeGraphNode.spec_from(inputs)
+    assert (spec.backend, spec.model_id) == (
+        "external", "google/embeddinggemma-2")
+    env = spec.launch_env()
+    assert env["OKFGRAPH_BACKEND"] == "external"
+    assert "OKFGRAPH_EMBED_FAMILY" not in env, "the host names itself"
 
 
 def test_embedder_for_embeds_through_the_onnx_host():
