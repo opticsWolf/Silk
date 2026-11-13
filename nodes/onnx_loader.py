@@ -232,7 +232,11 @@ class _OnnxModelNode(ActiveNode):
     def on_evaluate_finished(self) -> None:
         super().on_evaluate_finished()
         if hasattr(self, "_sync_status"):
-            self._widget_core.push_display("status", self._sync_status)
+            text = self._sync_status
+            note = getattr(self, "_DEPRECATION", "")
+            if note:
+                text = note + chr(10) + text
+            self._widget_core.push_display("status", text)
 
     @classmethod
     def _rename_output(cls, state: Dict[str, Any]) -> Dict[str, Any]:
@@ -247,13 +251,16 @@ class _OnnxModelNode(ActiveNode):
 class SilkOnnxEmbedderNode(_OnnxModelNode):
     """An embroider embedding model for the Knowledge Graph node."""
 
-    node_name: ClassVar[Optional[str]] = "Silk KG Embedder (ONNX)"
+    node_name: ClassVar[Optional[str]] = "Silk KG Embedder (ONNX, deprecated)"
     node_description: ClassVar[Optional[str]] = (
-        "Chooses the ONNX embedding model (embroider) a Knowledge Graph "
-        "embeds with. A specification, not a model: okf serve loads it in "
-        "its own process. For a model other nodes can use, take the ONNX "
-        "Embedder Loader."
+        "Deprecated: wire the ONNX Loader (Embedding role) to the Knowledge "
+        "Graph's embedder instead, or leave embedder unwired and okf embeds "
+        "in-process with the graph's pin. Kept so saved scenes keep loading; "
+        "it still works for one release."
     )
+    node_deprecated: ClassVar[bool] = True
+    _DEPRECATION = ("Deprecated: wire the ONNX Loader (Embedding role) "
+                    "instead, or leave embedder unwired.")
     node_tags: ClassVar[Optional[List[str]]] = [
         "silk", "onnx", "embedding", "embroider", "okfgraph", "knowledge",
     ]
@@ -357,13 +364,15 @@ class SilkOnnxEmbedderNode(_OnnxModelNode):
 class SilkOnnxRerankerNode(_OnnxModelNode):
     """An embroider cross-encoder for the Knowledge Graph node's search."""
 
-    node_name: ClassVar[Optional[str]] = "Silk KG Reranker (ONNX)"
+    node_name: ClassVar[Optional[str]] = "Silk KG Reranker (ONNX, deprecated)"
     node_description: ClassVar[Optional[str]] = (
-        "Chooses the ONNX reranker (embroider cross-encoder) a Knowledge "
-        "Graph's search reranks with. A specification, not a model: okf "
-        "serve loads it. For a model other nodes can use, take the ONNX "
-        "Reranker Loader."
+        "Deprecated: wire the ONNX Loader (Reranker role) to the Knowledge "
+        "Graph's reranker instead; with none wired no search is reranked. "
+        "Kept so saved scenes keep loading; it still works for one release."
     )
+    node_deprecated: ClassVar[bool] = True
+    _DEPRECATION = ("Deprecated: wire the ONNX Loader (Reranker role) "
+                    "instead.")
     node_tags: ClassVar[Optional[List[str]]] = [
         "silk", "onnx", "rerank", "embroider", "okfgraph", "knowledge",
     ]

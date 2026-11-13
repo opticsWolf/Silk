@@ -309,7 +309,14 @@ on demand**: the handle goes out at once and the server starts when the
 Knowledge Graph serves a graph with it; Unload stops it. A server that
 will not start turns the Knowledge Graph red with the reason.
 
-### Silk KG Embedder (ONNX) / Silk KG Reranker (ONNX) — `nodes/onnx_loader.py` (`SilkOnnxEmbedderNode`, `SilkOnnxRerankerNode`) *(Silk AI / Knowledge)*
+### Silk KG Embedder (ONNX) / Silk KG Reranker (ONNX) — `node_deprecated`, kept for saved scenes — `nodes/onnx_loader.py` (`SilkOnnxEmbedderNode`, `SilkOnnxRerankerNode`) *(Silk AI / Knowledge)*
+**Deprecated (Silk 2026-11):** hidden from the add-node palette, still
+loaded by saved scenes, removed one release later. Use the ONNX Loader
+instead — its **Embedding** handle on the Knowledge Graph's `embedder`,
+its **Reranker** handle on `reranker` — or leave the input unwired (okf
+then embeds in-process with the graph's own pin, and with no reranker
+wired no search is reranked). Both nodes keep working for this release.
+
 Choose the embroider model (id, device, precision, cache folder) a
 Knowledge Graph embeds or reranks with, and put the choice on a wire.
 These are **specifications, not models**: nothing loads in Weave. A second

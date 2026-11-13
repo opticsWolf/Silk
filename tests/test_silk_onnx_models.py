@@ -9,7 +9,9 @@ ONNX models two ways: a specification okf loads, or a model Silk hosts.
 **A specification says what it is.** Silk KG Embedder (ONNX) and Silk KG
 Reranker (ONNX) sit with the Knowledge Graph and put ``embedder_spec`` /
 ``reranker_spec`` on the wire; scenes saved under the old port names
-keep their wires.
+keep their wires. Both are **deprecated** (S3): the palette hides them,
+the Knowledge Graph still accepts their wires for one release, and the
+ONNX Loader is the way forward.
 
 **A loader hands out a real model, outside Weave's process.** The ONNX
 Embedder / Reranker Loader's handle is a lazy pool over an embroider
@@ -283,3 +285,35 @@ def test_the_loader_without_embroider_says_so(qt_app, monkeypatch):
 
 
 # -- L1: the pool's command and bases live in test_silk_onnx_host.py -
+
+
+# -- S3: the spec nodes are deprecated ----------------------------------
+
+def test_the_spec_nodes_are_hidden_from_the_palette(qt_app):
+    """node_deprecated hides a node from the add menus; the class stays
+    registered so a saved scene still loads and still works."""
+    from silk.nodes.onnx_loader import SilkOnnxEmbedderNode, SilkOnnxRerankerNode
+    from weave.registry.core import active_registry
+
+    for cls in (SilkOnnxEmbedderNode, SilkOnnxRerankerNode):
+        assert cls.node_deprecated is True
+        assert cls.node_description.startswith("Deprecated:")
+    tree = active_registry().get_tree()
+    names = {c.__name__ for sub in tree.get("Silk AI", {}).values() for c in sub}
+    assert "SilkOnnxEmbedderNode" not in names
+    assert "SilkOnnxRerankerNode" not in names
+    everything = active_registry().get_tree(include_deprecated=True)
+    names = {c.__name__ for sub in everything.get("Silk AI", {}).values() for c in sub}
+    assert {"SilkOnnxEmbedderNode", "SilkOnnxRerankerNode"} <= names
+
+
+def test_a_deprecated_spec_node_says_so_and_still_computes(qt_app):
+    from silk.nodes.onnx_loader import SilkOnnxEmbedderNode
+    node = SilkOnnxEmbedderNode()
+    out = node.compute({"model_id": "google/embeddinggemma-2",
+                        "device": "cpu", "precision": "auto"})
+    assert out["embedder_spec"]["backend"] == "embroider"
+    assert node._DEPRECATION.startswith("Deprecated:")
+    node.on_evaluate_finished()
+    assert node._sync_status, "the spec line is still built"
+    node.cleanup()

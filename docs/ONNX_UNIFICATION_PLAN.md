@@ -89,8 +89,15 @@ deferred, and Silk needs nothing from it.
   (8, one skipped without embroider) covers the cache, every refusal, the
   quiet line, and that the real probe leaves `onnxruntime` out of Weave's
   process.
-- **Next: S3** (deprecate the spec nodes, with Weave's `node_deprecated`
-  flag) → S4. Open questions 2, 3 and 5 are decided (section 6).
+- **S3 done** (Silk `nodes/onnx_loader.py` + Weave `node_deprecated`):
+  the two spec nodes keep working for one release, hidden from both add
+  menus, with a deprecation line in their Info; Weave's flag and WV523
+  are tested Qt-free (`tests/test_node_deprecated.py`, 5). The Qt tests
+  that read the nodes (`tests/test_silk_onnx_models.py`) are written but
+  cannot run in this checkout (no PySide6/lace).
+- **Next: S4** (converter settings on the shared vocabulary, and the warm
+  `bobine.serve` pool behind `ChildServerPool`). Open questions 2, 3 and
+  5 are decided (section 6).
 
 ## 1. Goal
 
@@ -362,11 +369,26 @@ count, or the host pins threads to okf's setting.
     - The image rows joined `EMBED_KEYS`, so wiring or unplugging a
       vision model restarts the server (the image lane is a boot
       setting) and never re-embeds on its own.
-- **S3 Deprecate the spec nodes.**
+- **S3 Deprecate the spec nodes.** *(Landed.)*
   - Silk KG Embedder (ONNX) and Silk KG Reranker (ONNX) keep loading and working for one release. The KG still reads their wires as okf in-process settings. Their description and title say "deprecated: use ONNX Loader, or leave the input unwired".
+    - Both carry `node_deprecated = True`, `node_name` ends in
+      "(ONNX, deprecated)", the description starts with "Deprecated:", and
+      the Info line opens with the same sentence plus the way out (their
+      `compute` is unchanged).
   - Weave has no flag to hide a node from the palette, so add one (`node_deprecated: ClassVar[bool]`): the palette skips the node, scenes still load it, and the linter warns on new uses. That is a small change in Weave.
+    - `BaseControlNode.node_deprecated = False`; `NodeRegistry.get_tree()`
+      (the add-node menus) leaves deprecated classes out unless asked;
+      the drag-to-connect search (`_find_compatible_classes`) skips them
+      too; `Canvas.spawn_node` logs when one is still added by hand; the
+      registry keeps resolving the class name, so saved scenes load and
+      work. `weave_lint` gains **WV523** (strict warning): a deprecated
+      class still registered is one release from removal.
   - Remove the spec nodes in the release after.
+    - Note: after that, the ONNX Loader's Reranker role is the only way
+      to rerank on embroider.
   - Optional: a canvas action "Replace with ONNX Loader" that copies model, device, precision, cache and width.
+    - Not done; the two wires are a drag each, and the nodes hide
+      themselves from the palette.
 - **S4 Converter Settings on the shared vocabulary**: its Device and Precision rows match the ONNX Loader's, `bobine_convert.clean_settings` passes them through (B3), and the worker can move to a warm `bobine.serve` pool (B4) behind the same `ChildServerPool`.
   - Follow-up (wording): the Device/Precision tooltips and the status line
     must call `max_tokens = n_ctx` the model's **context window**, never its

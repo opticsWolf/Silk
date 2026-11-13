@@ -63,9 +63,10 @@ loader nodes, and the Embedder row picks which wire embeds.
     Width must be the graph's Vector dim; okf refuses a host opened at
     another width with the fix. Nothing here is a re-embed unless the
     lane or the model really changed.
-* ``onnx_embedder`` -- Silk KG Embedder (ONNX)'s ``embedder_spec``, which
-  okf loads with embroider in its own process (device, precision, cache
-  folder).
+* ``onnx_embedder`` -- the deprecated Silk KG Embedder (ONNX)'s
+  ``embedder_spec``, a pin okf loads with embroider in its own process
+  (device, precision, cache folder). The ONNX Loader's ``model_obj`` on
+  ``embedder`` does the same today, with the host in its own process.
 * ``image_model`` -- the ONNX Loader's Vision handle (an image embedder
   on embroider's host). okf embeds images through it on its external
   image lane, so no vision ONNX loads beside the chat model. The host
@@ -147,7 +148,7 @@ class SilkKnowledgeGraphNode(ThreadedNode):
     ]
     node_icon: ClassVar[Optional[str]] = "binary-tree-2"
     vertical_size_policy: ClassVar[VerticalSizePolicy] = VerticalSizePolicy.FIT
-    node_state_api = 6   # owns a hand-written state dict
+    node_state_api = 7   # owns a hand-written state dict
     # 1 = string line edit. 2 makes `db_path` a filepath picker
     # (BIDIRECTIONAL, save mode): values persist as before, wires now
     # carry the filepath type HF/model ports plug straight into. 3: the
@@ -157,7 +158,9 @@ class SilkKnowledgeGraphNode(ThreadedNode):
     # 5: the model comes from the wires alone. The Device, Model, Backend,
     # endpoint and Lane rows (and their inputs) are gone; `embed_source`
     # (auto / onnx / gguf) picks the wire. 6: no auto; a wired reranker
-    # reranks every search, none wired reranks none.
+    # reranks every search, none wired reranks none. 7: the applied record
+    # remembers the image lane (image_backend, image_endpoint_url), so wiring
+    # one restarts okf and never re-embeds.
     node_version = 6     # 3: roots discovery, history pickers, threaded
 
     #: Live re-embed progress, from the worker to the status label.
@@ -219,9 +222,10 @@ class SilkKnowledgeGraphNode(ThreadedNode):
         self._embed_source.addItems(list(EMBED_SOURCES))
         self._embed_source.setToolTip(
             "Which embedding model makes the graph's vectors.\n"
-            "onnx: Silk KG Embedder (ONNX) on onnx_embedder, which okf runs itself "
-            "(embroider). Unwired: the ONNX model the graph was last "
-            "embedded with, else okf's default.\n"
+            "onnx: the ONNX model wired on embedder (the ONNX Loader's host "
+            "is asked who it is), or the deprecated Silk KG Embedder (ONNX) on "
+            "onnx_embedder, which okf runs itself. Unwired: the model the "
+            "graph was last embedded with, else okf's default.\n"
             "gguf: the model wired on embedder, started when the graph "
             "needs it. An Embedder Loader's GGUF model (family, pooling "
             "and width from the file), or the ONNX Loader's (embroider's "
