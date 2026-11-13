@@ -425,3 +425,43 @@ Steps, in order (each ends usable on its own):
 
 A graph built on a text-only GGUF cannot gain images: its text vectors
 come from another model. Images need a graph built on the multimodal GGUF.
+
+### Deferred: multimodal rerank (images in rerank documents)
+
+Step 4's native route can also score **text + image** documents — llama.cpp's
+Jina shape takes `{"text", "image"}` per document, and a VL reranker
+(Qwen3-VL-Reranker) uses it. That would let a caption-only graph reorder
+*image search* by what the picture shows. **Deferred, as the cheapest case of
+the wrong problem.** Findings, so nobody has to redo them:
+
+- **okfgraph cannot send it today.** `SearchEngine.rerank_with_cross_encoder`
+  builds `docs: List[str]` and `_cross_scores` posts `{"query", "documents":
+  [str]}`; `search(target="images")` returns the vector-index rows straight
+  from `ImageAssetManager.search_images_with_text` and never reaches the
+  reranker. That is two changes, not one: a document payload that may carry
+  an image, and a rerank path for image hits.
+- **Ordering only, no recall.** Candidates still come from the caption
+  vectors, so an image whose caption does not match the query never enters
+  the pool. On a GGUF graph the caption is the document's alt text or
+  `fallback_caption()` (`"fig-3.png (image 2 in bio-03)"`) — close to no
+  signal, which is exactly where the pool is already wrong. The gain is a
+  narrow band: captions mediocre but present.
+- **Effort.** With step 4's pool: okfgraph `rerank_modality =
+  text|multimodal`, `{text, image}` documents and the TEI-shape refusal
+  (~0.5 d); rerank for `target="images"` plus `asset_id → data-URI`
+  resolution with `rerank_image_limit` / `rerank_image_max_bytes` caps
+  (~0.5 d); tests, docs, gate (~0.5 d); the Silk loader row, KG pass-through
+  and the S7 declared-rows seam test (~0.5 d) — **~2 days**. Without the
+  pool, **~4–5.5**, because the binary and pool work is most of it.
+- **Shape if it is picked up.** `cross_score` stays the host's logit; only
+  the Jina/llama.cpp shape carries images, and a host that answered in the
+  TEI text shape is refused at open rather than silently dropping pixels; a
+  failed request trips the existing down-latch instead of falling back to
+  text scores; a boot probe (two different images → different scores) covers
+  the #13666 class of bug. Image-search `rerank_top_n` should default lower
+  (10, not 30): the payload scales with candidates.
+- **Revisit when** step 4 (or step 3's user-run server) exists *and* image
+  search has real use — measure that first, because no quality gain matters
+  at zero callers. If thin captions are the actual complaint, generated
+  captions (a VLM at import, embedded by the text lane) fix recall rather
+  than ordering, and compete for the same days.
