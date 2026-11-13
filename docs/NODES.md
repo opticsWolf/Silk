@@ -393,15 +393,24 @@ model's Matryoshka steps, `native` for its own), Cache.
   noul) on `/systemone`, for the Classifier and Ensemble nodes. The
   bands table is keyed per model, so a decision model the Classifier has
   not been calibrated for shows up as such.
-- **Not the Knowledge Graph's embedder.** A graph's vectors are okf's own,
-  so its ONNX model is chosen with Silk KG Embedder (ONNX); the Knowledge
-  Graph refuses this loader on `embedder` and says so.
+- **The Knowledge Graph's model too.** On `embedder` the Knowledge Graph
+  takes this handle onto okf's external lane (`embed_identity=auto`), so
+  the graph's vectors are still okf's to make, with the model this node
+  runs; on `image_model` likewise for images. Knot a graph to a loader,
+  not to Silk KG Embedder (ONNX), when the model should be one process.
 
 **Loaded on demand**, like the GGUF loaders: the handle goes out at once,
 the process starts the first time something uses the model, and Unload
-stops it. Without embroider (`okfgraph[cpu]` or `okfgraph[gpu]`) the node
-says so. If the same model is also chosen with Silk KG Embedder (ONNX), it
-is in memory twice: once in okf's process, once in this one.
+stops it. **The runtime is asked once, in a child.** Weave must not import
+`onnxruntime` (a second one takes the interpreter down), so
+`functions/onnx_runtime.py` runs `embroider.runtime_info()` in a `python
+-c` child the first time a node evaluates and caches the answer: the Info
+line ends with "ONNX Runtime 1.31.1, CUDA ready" (or "CPU only"), the
+Device tooltip gains it, and a missing runtime, or a Device row asking for
+CUDA on a CPU-only install, stops the evaluation with one sentence
+(`okfgraph[gpu]`, or pick CPU) instead of failing later inside okf. If the
+same model is also chosen with Silk KG Embedder (ONNX), it is in memory
+twice: once in okf's process, once in this one.
 
 ## Documents
 

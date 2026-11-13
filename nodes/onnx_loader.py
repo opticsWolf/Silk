@@ -42,6 +42,7 @@ from weave.engine.migration import rename_saved_ports
 from weave.widgets.path_history_picker import PathHistoryPicker
 
 from .silk_ports import ONNX_EMBEDDER_TYPE, RERANKER_MODEL_TYPE  # noqa: F401
+from ..functions import onnx_runtime
 from ..functions.port_text import text_input
 from ..functions.okf_graph import (
     DEVICES, EMBED_PRECISIONS, IMAGE_PRECISIONS, KNOWN_MODELS,
@@ -51,6 +52,16 @@ from ..functions.okf_graph import (
 
 #: The Image model row's first entry: okf's own pairing.
 IMAGE_AUTO = "auto"
+
+
+def _runtime_line() -> str:
+    """The session's runtime line, once the ONNX Loader has asked.
+
+    These nodes only write a specification (okf loads the model), so they
+    never spawn the probe themselves; they report what the session knows.
+    """
+    note = onnx_runtime.cached_text()
+    return chr(10) + note if note else ""
 
 
 def onnx_description(inputs: Dict[str, Any], role: str,
@@ -204,7 +215,8 @@ class _OnnxModelNode(ActiveNode):
         self._sync_status = (
             f"{described['model_id']} on {described['device']} "
             f"({described['precision']}). Loaded by okf serve, in its own "
-            "process; the first use downloads it if it is not cached.")
+            "process; the first use downloads it if it is not cached."
+            + _runtime_line())
         return {self._OUTPUT: described}
 
     def get_state(self) -> Dict[str, Any]:
@@ -337,7 +349,7 @@ class SilkOnnxEmbedderNode(_OnnxModelNode):
             f"{described['model_id']} on {described['device']} "
             f"({described['precision']}). {image_text(described)} Loaded by "
             "okf serve, in its own process; the first use downloads it if it "
-            "is not cached.")
+            "is not cached." + _runtime_line())
         return {self._OUTPUT: described}
 
 

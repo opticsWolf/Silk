@@ -31,10 +31,10 @@ handles speak to llama.cpp. The Role row picks what the model is:
 All four outputs stay on the node, each typed for where it may go; the
 ones the role does not fill carry nothing.
 
-**Not the Knowledge Graph's embedder.** A graph's vectors are made by
-okf itself, so its ONNX embedding model is chosen with Silk KG Embedder
-(ONNX) (``nodes/onnx_loader.py``), a specification okf loads; the KG
-refuses this loader's handle on its ``embedder`` port and says so.
+**The Knowledge Graph's model too.** On ``embedder`` and
+``image_model`` the KG takes this loader's handle and points okf at this
+host (okf's external lane, identity ``auto``), so the graph's vectors
+still come from okf, made by the model this node runs.
 
 **Loaded on demand,** like the GGUF loaders: the handle goes out at once
 (a :class:`~functions.model_pool.LazyGGUFPool`), the process starts the
@@ -57,7 +57,10 @@ from weave.widgets.path_history_picker import PathHistoryPicker
 from weave.widgets.separator_line import SeparatorLine
 
 from .silk_ports import RERANKER_MODEL_TYPE  # noqa: F401
-from ..functions.embroider_pool import EmbroiderPool, embroider_available
+from ..functions import onnx_runtime
+from ..functions.embroider_pool import (
+    EmbroiderPool, embroider_available,
+)
 from ..functions.model_pool import LazyGGUFPool
 from ..functions.okf_graph import DEVICES, MODEL_LADDERS, KNOWN_MODELS
 from ..functions.onnx_roles import (
@@ -150,6 +153,7 @@ class OnnxLoaderNode(ThreadedNode):
         self._combo_device.setToolTip(
             "Where the model runs. 'cuda' needs the GPU ONNX Runtime "
             "(okfgraph[gpu]); 'auto' takes the GPU when one answers.")
+        self._device_tip = self._combo_device.toolTip()
         form.addRow("Device:", self._combo_device)
         self._widget_core.register_widget(
             "device", self._combo_device, role=PortRole.INTERNAL,
@@ -343,8 +347,18 @@ class OnnxLoaderNode(ThreadedNode):
                  "classifier": None}
         if not embroider_available():
             self.compute_error.emit(
+                onnx_runtime.problem() or
                 "embroider is not installed: install Silk's knowledge extra "
                 "(okfgraph[cpu] or okfgraph[gpu]).")
+            return empty
+        runtime_problem = onnx_runtime.problem(
+            device=text_input(inputs, "device", "cpu"))
+        if runtime_problem.startswith("embroider is not installed"):
+            # find_spec found it: the probe's interpreter is not the one
+            # this host runs in, so its answer is not about this model.
+            runtime_problem = ""
+        if runtime_problem:
+            self.compute_error.emit(runtime_problem)
             return empty
         role = text_input(inputs, "role", "embedding")
         if role not in ROLE_MODELS:
@@ -363,7 +377,8 @@ class OnnxLoaderNode(ThreadedNode):
         self._sync_status = (
             _loaded_text(self.model_pool) if self.model_pool.started else
             f"{ROLE_NOUNS[role].capitalize()} {model_id} on "
-            f"{settings['device']}: loads when a node uses it.")
+            f"{settings['device']}: loads when a node uses it."
+            + chr(10) + onnx_runtime.describe())
         output = {"embedding": "model_obj", "reranker": "reranker",
                   "vision": "image_model", DECISION: "classifier"}[role]
         return {**empty,
@@ -383,6 +398,11 @@ class OnnxLoaderNode(ThreadedNode):
     def on_evaluate_finished(self) -> None:
         super().on_evaluate_finished()
         self._update_button_idle()
+        note = onnx_runtime.cached_text()
+        if note and self._device_tip:
+            self._combo_device.setToolTip(
+                self._device_tip + chr(10) + chr(10)
+                + f"This session: {note}")
         if self._sync_status:
             self._widget_core.push_display("status", self._sync_status)
 

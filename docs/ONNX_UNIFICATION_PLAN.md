@@ -82,9 +82,15 @@ deferred, and Silk needs nothing from it.
   loader, and the chat-handle case), plus the seam and ONNX-host suites;
   the Qt node tests are updated but still cannot run in this checkout
   (no PySide6/lace).
-- **Next: S5** (runtime status in one place), then S3 (with Weave's
-  `node_deprecated` flag) → S4. Open questions 2, 3 and 5 are decided
-  (section 6).
+- **S5 done** (`functions/onnx_runtime.py`): one child probe per session,
+  cached; the ONNX Loader stops a doomed evaluation with the sentence and
+  shows the runtime in its Info line and Device tooltip, and the spec
+  nodes repeat what the session already knows. `tests/test_silk_onnx_runtime.py`
+  (8, one skipped without embroider) covers the cache, every refusal, the
+  quiet line, and that the real probe leaves `onnxruntime` out of Weave's
+  process.
+- **Next: S3** (deprecate the spec nodes, with Weave's `node_deprecated`
+  flag) → S4. Open questions 2, 3 and 5 are decided (section 6).
 
 ## 1. Goal
 
@@ -366,7 +372,16 @@ count, or the host pins threads to okf's setting.
     must call `max_tokens = n_ctx` the model's **context window**, never its
     own per-pair limit — okf's `rerank_max_tokens` is an advisory ceiling,
     and the Reranker Loader reads `n_ctx` into it today.
-- **S5 Runtime status in one place**: a small `functions/onnx_runtime.py` asks `embroider.runtime_info()` in a child process (never in Weave's process) and caches the answer. Every ONNX node's tooltip and error text uses it, for example "no onnxruntime: pip install okfgraph[cpu]".
+- **S5 Runtime status in one place** *(landed)*: `functions/onnx_runtime.py`
+  asks `embroider.runtime_info()` in a child process (never in Weave's process,
+  and nothing here imports `onnxruntime`; the tests assert `sys.modules`), caches
+  the answer for the session, and answers with one sentence and one quiet line:
+  a missing embroider, no `onnxruntime.dll`, a CUDA Device row on a CPU-only
+  runtime, or "ONNX Runtime 1.31.1, CUDA ready". The ONNX Loader asks it in its
+  worker on evaluation (the GUI never waits), puts the sentence in its Info line
+  instead of a later okf failure, and appends the quiet line to the Device
+  tooltip; the spec nodes report what the session already knows (they never
+  spawn a child of their own). `forget()` re-asks.
 - **S6 Pins and floors** (done 2026-11-13): Weave's pyproject raises the floors (`embroider>=0.15`, `okfgraph>=0.14.2`, `bobine>=0.9.1`). Weave owns the floors; Silk and Veil don't.
 - **S7 Tests**:
   - The KG maps each of the 3.3 rows onto okf env.
