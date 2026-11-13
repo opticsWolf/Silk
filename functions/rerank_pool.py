@@ -44,6 +44,17 @@ log = get_logger("SilkRerankPool")
 #: need Silk's package identity, only llama-cpp-python.
 SERVER_SCRIPT = str(Path(__file__).with_name("rerank_server.py"))
 
+
+def child_command(args: List[str], host: str, port: int, *,
+                  script: str = "", module: str = "") -> List[str]:
+    """The argv that runs a model host: ``-m module`` or a script file.
+
+    One builder, so the two entry styles cannot drift and the tests can
+    pin the command without starting a process.
+    """
+    entry = ["-m", module] if module else [script]
+    return [sys.executable, *entry, *args, "--host", host, "--port", str(port)]
+
 _READY_TIMEOUT_S = 120.0
 _SHUTDOWN_TIMEOUT_S = 10.0
 
@@ -51,13 +62,15 @@ _SHUTDOWN_TIMEOUT_S = 10.0
 class ChildServerPool:
     """One model server in a child process, on a free loopback port.
 
-    *script* is run as a plain file with *args* plus ``--host`` and
-    ``--port``; it must answer ``GET /health`` once it serves. *label*
-    names the server in the log and the shutdown registry.
+    *script* is run as a plain file (or *module* with ``python -m``) with
+    *args* plus ``--host`` and ``--port``; it must answer
+    ``GET /health`` once it serves. *label* names the server in the log
+    and the shutdown registry.
     """
 
     def __init__(self, model_path: str, script: str, args: List[str],
-                 label: str, log_prefix: str = "silk-server-") -> None:
+                 label: str, log_prefix: str = "silk-server-",
+                 module: str = "") -> None:
         self._model_path = model_path
         self._label = label
         self._lock = threading.Lock()
@@ -68,8 +81,8 @@ class ChildServerPool:
         fd, self._log_path = tempfile.mkstemp(prefix=log_prefix, suffix=".log")
         os.close(fd)
         self._log_handle: Any = open(self._log_path, "w", encoding="utf-8")
-        cmd = [sys.executable, script, *args,
-               "--host", self._host, "--port", str(self._port)]
+        cmd = child_command(args, self._host, self._port,
+                            script=script, module=module)
         log.info(f"{label} starting on {self._url} "
                  f"(model {Path(model_path).name})")
         self._process: Optional[subprocess.Popen] = subprocess.Popen(

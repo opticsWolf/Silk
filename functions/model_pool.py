@@ -770,7 +770,14 @@ class LazyGGUFPool:
 
     @property
     def serves_tokenize(self) -> bool:
-        """Asked of the class, so the question starts no server."""
+        """Asked without starting the server, so it must be answerable
+        from what was handed in."""
+        pool = self._pool
+        if pool is not None:
+            return bool(getattr(pool, "serves_tokenize", False))
+        kinds = getattr(self._pool_class, "serves_tokenize_kinds", None)
+        if kinds is not None:
+            return str(self._pool_kwargs.get("kind", "")) in kinds
         return bool(getattr(self._pool_class, "serves_tokenize", False))
 
     def ensure(self) -> GGUFModelPool:

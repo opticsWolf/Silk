@@ -60,10 +60,22 @@ deferred, and Silk needs nothing from it.
   not the 0.13 that S6 first named: S2's image input needs 0.14.0, S4's
   converter device needs 0.14.1. Silk's own extras still read
   `okfgraph>=0.12` / `bobine>=0.8`; they are names, not Weave's floors.
-- **Next: Silk**, in section 5's order: S1 (embed and rerank on
-  `embroider.serve`) → S2 embedder and reranker → S5 → S3 (with Weave's
-  `node_deprecated` flag) → S2 images + S1 Vision → S1 Decider → S4.
-  Open questions 2, 3 and 5 are decided (section 6).
+- **S1 done** (Silk, uncommitted at this writing): `EmbroiderPool` runs
+  `python -m embroider.serve` (child command in
+  `functions/rerank_pool.py`), `functions/embroider_server.py` is deleted,
+  and the ONNX Loader has four roles -- Embedding, Reranker, Vision
+  (`image_model` port, `runtime: onnx`) and Decision (`classifier_model`
+  port, `backend: systemone`) -- with the role/model/precision/handle
+  tables in the Qt-free `functions/onnx_roles.py`. The status line reads
+  `describe()`. Verified by `tests/test_silk_onnx_host.py` (command, bases,
+  tokenize claim, handles and their port validators, a drift test of the
+  pinned decision/vision models against embroider's registry, and the real
+  host end to end); the Qt loader tests could not run here (this checkout
+  has no PySide6/lace) and are updated, not verified.
+- **Next: S2** (the Knowledge Graph takes the loader's embedder and the
+  Vision role's `image_model`), then S5 → S3 (with Weave's
+  `node_deprecated` flag) → S4. Open questions 2, 3 and 5 are decided
+  (section 6).
 
 ## 1. Goal
 
@@ -299,10 +311,16 @@ count, or the host pins threads to okf's setting.
 
 ### 4.4 Silk (Weave `dev_gui`, after the releases)
 
-- **S1 ONNX Loader on embroider's server.**
+- **S1 ONNX Loader on embroider's server.** *(Landed; the Decider's
+  output is its own `classifier` port, not `model_obj`: a port's type is
+  fixed when the node is built, so one port cannot carry two datatypes.)*
   - `EmbroiderPool` runs `[python, -m, embroider.serve, ...]`, and `functions/embroider_server.py` is deleted.
-  - Roles: **Embedding**, **Reranker**, **Vision** (new, output `image_model`), and **Decider** (new: embroider's Laya / GLiClass / 2B on `/v1/systemone`, output `model_obj` with role `classifier`, for the Classifier node).
+  - Roles: **Embedding**, **Reranker**, **Vision** (new, output `image_model`), and **Decider** (new: embroider's Laya / GLiClass / 2B on `/v1/systemone`, output role `classifier`, for the Classifier node).
   - Status shows `describe()`: landed device and precision, dim, and `space`.
+  - The role, model, precision and handle tables live in
+    `functions/onnx_roles.py` (Qt-free): the node and the tests read one
+    definition. The decision models' kinds are a pinned copy of
+    embroider's registry, with a drift test.
 - **S2 Knowledge Graph wiring (3.3).**
   - `embedder` accepts the ONNX Loader. The `wiring_problem` refusal goes, and an embroider handle maps to `backend=external` with `embed_identity=auto`.
   - A new `image_model` input takes the ONNX Loader in the Vision role.

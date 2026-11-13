@@ -46,6 +46,9 @@ Types:
                       in its own process; never loaded in Weave's
     reranker_model    a reranker described: an embroider cross-encoder,
                       or an external /v1/rerank host by URL and family
+    image_model       an image embedder described: an embroider vision
+                      model's host, or an external /v1/images/embeddings
+                      endpoint, with the text model whose vectors it shares
     endpoint          provider info (provider key, base URL, credential
                       *name*) from an Endpoint node -- what a Model node
                       connects through. A handle to a configuration, not
@@ -398,6 +401,29 @@ if "bobine_settings" not in PortRegistry._by_name:
         casts_to={},
     )
 
+# An image embedder on a wire: the ONNX Loader's Vision role, and later a
+# GGUF vision host. Typed by what it does -- images, not rerank -- and it
+# names its text partner, because image vectors compare only against that
+# model. Absence passes, as on every optional port.
+if "image_model" not in PortRegistry._by_name:
+    PortRegistry.register(
+        name="image_model",
+        python_type=dict,
+        color_index=241,
+        type_id=None,
+        default=lambda: None,
+        validator=lambda v: v is None or (isinstance(v, dict)
+                            and (not v or (v.get("role") == "vision"
+                                 and (v.get("pool") is not None
+                                      or bool(v.get("endpoint_url")))))),
+        formatter=lambda v: (
+            f"<Image model: {v.get('model_id') or 'default'} "
+            f"(partner {v.get('text_partner') or 'none'})>"
+            if isinstance(v, dict) and v else "<no image model>"
+        ),
+        casts_to={},
+    )
+
 ONNX_EMBEDDER_TYPE = PortRegistry._by_name["onnx_embedder"]
 BOBINE_SETTINGS_TYPE = PortRegistry._by_name["bobine_settings"]
 RERANKER_MODEL_TYPE = PortRegistry._by_name["reranker_model"]
@@ -462,3 +488,4 @@ SILK_CLASSIFIER_TYPE = PortRegistry._by_name["silk_classifier"]
 OKF_GRAPH_TYPE = PortRegistry._by_name["okf_graph"]
 ENDPOINT_HANDLE_TYPE = PortRegistry._by_name["endpoint"]
 CLASSIFIER_MODEL_TYPE = PortRegistry._by_name["classifier_model"]
+IMAGE_MODEL_TYPE = PortRegistry._by_name["image_model"]

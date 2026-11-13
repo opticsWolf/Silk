@@ -17,27 +17,20 @@ host process: ``embedder_for`` embeds through it, the Knowledge Graph
 reranks through it on okf's external lane, and nothing starts until it
 is used.
 
-**The host speaks the GGUF servers' shapes.** ``/v1/embeddings``,
-``/v1/rerank``, ``/tokenize``, ``/health``, ``/v1/models``.
+**The host is embroider's.** ``python -m embroider.serve`` answers the
+GGUF servers' shapes (``/v1/embeddings``, ``/v1/rerank``, ``/tokenize``,
+``/health``, ``/v1/models``); its own suite pins those routes, and
+``tests/test_silk_onnx_host.py`` pins the command Silk starts it with.
 
-Offline except the last test, which runs the real host when the small
-English cross-encoder is in the Hugging Face cache.
+Offline: the real host is exercised in ``test_silk_onnx_host.py``, where
+a missing model skips instead of failing.
 """
-import json
-import threading
-import urllib.error
-import urllib.request
-from http.server import ThreadingHTTPServer
-from pathlib import Path
-
 import pytest
 
-from silk.functions import embroider_server
 from silk.functions.embeddings import ServerEmbedder, embedder_for
 from silk.functions.embroider_pool import EmbroiderPool
-from silk.functions.model_pool import LazyGGUFPool
 from silk.nodes.knowledge_graph import SilkKnowledgeGraphNode
-from silk.nodes.silk_ports import RERANKER_MODEL_TYPE
+from silk.nodes.silk_ports import IMAGE_MODEL_TYPE, RERANKER_MODEL_TYPE
 
 
 @pytest.fixture()
@@ -130,10 +123,11 @@ def test_the_pool_gives_each_consumer_the_base_it_expects():
         pool.kind, pool._url, pool._model_path = kind, "http://127.0.0.1:9", "m/x"
         return pool
     assert made("embed").base_url == "http://127.0.0.1:9/v1", "embedder_for adds /embeddings"
+    assert made("vision").base_url == "http://127.0.0.1:9/v1", "okf adds /images/embeddings"
     assert made("rerank").base_url == "http://127.0.0.1:9", "okf adds /v1/rerank"
-    assert EmbroiderPool.serves_tokenize
+    assert made("decide-laya").base_url == "http://127.0.0.1:9", "systemone adds /systemone"
     with pytest.raises(ValueError):
-        EmbroiderPool("m/x", kind="decide")
+        EmbroiderPool("m/x", kind="chat")
 
 
 # -- L1: the loader node --------------------------------------------------
@@ -232,6 +226,33 @@ def test_the_loader_as_reranker_feeds_the_graph_and_unloads(qt_app, fake_host):
     assert not node._is_loaded() and fake_host[-1] == "stopped"
 
 
+def test_the_loader_as_vision_hands_out_an_image_model(qt_app, fake_host):
+    from silk.functions.onnx_roles import ROLE_MODELS
+    from silk.nodes.onnx_model_loader import OnnxLoaderNode
+    node = OnnxLoaderNode()
+    model = ROLE_MODELS["vision"][0]
+    out = node.compute({"role": "vision", "model_id": model, "dim": "768"})
+    image = out["image_model"]
+    assert out["model_obj"] is None and out["reranker"] is None
+    assert IMAGE_MODEL_TYPE.validator(image), "the port accepts it"
+    assert image["text_partner"], "an image model names its text partner"
+    assert fake_host[0][1]["kind"] == "vision"
+    assert fake_host[0][1]["dim"] == 768
+
+
+def test_the_loader_as_decider_hands_out_a_classifier_model(qt_app, fake_host):
+    from silk.functions.onnx_roles import DECIDE_MODELS
+    from silk.nodes.onnx_model_loader import OnnxLoaderNode
+    node = OnnxLoaderNode()
+    model = next(iter(DECIDE_MODELS))
+    out = node.compute({"role": "decider", "model_id": model})
+    handle = out["classifier"]
+    assert out["model_obj"] is None and out["reranker"] is None
+    assert (handle["backend"], handle["role"]) == ("systemone", "decision")
+    assert fake_host[0][1]["kind"] == DECIDE_MODELS[model],         "the kind is the model's, not the role's"
+    assert "dim" not in fake_host[0][1], "a decision model has no width"
+
+
 def test_the_loader_survives_the_canvas(qt_app, fake_host):
     """A widget named ``_width`` once shadowed the node's own width and
     took the app down on the first resize."""
@@ -248,88 +269,9 @@ def test_the_loader_without_embroider_says_so(qt_app, monkeypatch):
     node = loader.OnnxLoaderNode()
     errors = []
     node.compute_error.connect(errors.append)
-    assert node.compute({}) == {"model_obj": None, "reranker": None}
+    assert node.compute({}) == {"model_obj": None, "reranker": None,
+                                "image_model": None, "classifier": None}
     assert errors and "embroider is not installed" in errors[0]
 
 
-# -- L1: the host's HTTP --------------------------------------------------
-
-class FakeModel:
-    """Two words, two tokens; vectors say which task made them."""
-
-    max_length, precision, used_cuda, dim = 512, "fp32", False, 3
-
-    def count_tokens(self, text):
-        return len(text.split())
-
-    def encode_batch(self, texts, task="Document"):
-        return [[float(len(t)), 1.0 if task == "Query" else 0.0, 0.0] for t in texts]
-
-    def score_batch(self, pairs):
-        return [float(len(set(q.split()) & set(d.split()))) for q, d in pairs]
-
-
-def serve(kind):
-    host = object.__new__(embroider_server.Host)
-    host.kind, host.model_id, host.model = kind, "m/x", FakeModel()
-    host._lock = threading.Lock()
-    server = ThreadingHTTPServer(("127.0.0.1", 0), embroider_server.make_handler(host))
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    return server, f"http://127.0.0.1:{server.server_address[1]}"
-
-
-def call(url, body=None):
-    data = None if body is None else json.dumps(body).encode()
-    with urllib.request.urlopen(urllib.request.Request(url, data=data), timeout=5) as r:
-        return json.loads(r.read())
-
-
-def test_the_host_embeds_in_the_openai_shape_with_tasks():
-    server, root = serve("embed")
-    try:
-        assert call(root + "/health") == {"status": "ok"}
-        assert call(root + "/v1/models")["data"][0]["dim"] == 3
-        out = call(root + "/v1/embeddings", {"input": ["a b", "c"]})
-        assert [row["index"] for row in out["data"]] == [0, 1]
-        assert out["data"][0]["embedding"][1] == 0.0, "Document by default"
-        assert out["usage"]["prompt_tokens"] == 3
-        query = call(root + "/v1/embeddings", {"input": "a", "input_type": "query"})
-        assert query["data"][0]["embedding"][1] == 1.0
-        assert len(call(root + "/tokenize", {"content": "one two three"})["tokens"]) == 3
-        with pytest.raises(urllib.error.HTTPError) as no_route:
-            call(root + "/v1/rerank", {"query": "q", "documents": []})
-        assert no_route.value.code == 404, "an embedder does not rerank"
-        with pytest.raises(urllib.error.HTTPError) as bad:
-            call(root + "/v1/embeddings", {"input": 5})
-        assert bad.value.code == 400
-    finally:
-        server.shutdown()
-
-
-def test_the_host_reranks_best_first():
-    server, root = serve("rerank")
-    try:
-        out = call(root + "/v1/rerank", {"query": "a cat", "top_n": 1,
-                                         "documents": ["a dog", {"text": "a cat sat"}]})
-        assert out["results"] == [{"index": 1, "relevance_score": 2.0}]
-    finally:
-        server.shutdown()
-
-
-_SMALL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
-
-
-@pytest.mark.skipif(
-    not (Path.home() / ".cache/huggingface/hub/models--cross-encoder--ms-marco-MiniLM-L-6-v2").is_dir(),
-    reason="the small cross-encoder is not cached")
-def test_the_real_host_reranks_in_its_own_process():
-    pool = LazyGGUFPool(_SMALL, pool_class=EmbroiderPool, kind="rerank", device="cpu")
-    try:
-        out = call(pool.base_url + "/v1/rerank", {
-            "query": "what is a cat",
-            "documents": ["Paris is in France", "A cat is a small feline"]})
-        assert out["results"][0]["index"] == 1
-        assert pool.snapshot()["max_length"] == 512
-    finally:
-        pool.cleanup()
-    assert not pool.started
+# -- L1: the pool's command and bases live in test_silk_onnx_host.py -

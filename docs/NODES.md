@@ -345,22 +345,24 @@ Knowledge Graph's Info says which one embeds images.
 
 ### ONNX Loader — `nodes/onnx_model_loader.py` (`OnnxLoaderNode`) *(Silk AI / Loaders)*
 An embroider model as a real model: it runs in its own process
-(`functions/embroider_server.py`, run by `functions/embroider_pool.py`),
-and the handle on the wire speaks HTTP to it, in the shapes the GGUF
-servers answer. A consumer cannot tell it from its GGUF twin. **Role**
-picks what the model is, and fills one of two outputs (the other carries
-nothing):
+(`python -m embroider.serve`, run by `functions/embroider_pool.py`), and
+the handle on the wire speaks HTTP to it, in the shapes the GGUF servers
+answer. A consumer cannot tell it from its GGUF twin. **Role** picks what
+the model is, and fills one of four outputs (the others carry nothing):
 
 | Role | Output | Type | Serves |
 |---|---|---|---|
 | Embedding | `model_obj` | `model_handle` (`backend: onnx`) | `POST /v1/embeddings` |
 | Reranker | `reranker` | `reranker_model` (`runtime: onnx`) | `POST /v1/rerank` |
+| Vision | `image_model` | `image_model` (`runtime: onnx`) | `POST /v1/images/embeddings` |
+| Decision | `classifier` | `classifier_model` (`backend: systemone`) | `POST /systemone` |
 
-Both also answer `GET /health`, `GET /v1/models` (the width, max length,
-precision, and whether CUDA runs it) and `POST /tokenize` (an exact
-count). Fields: Role, Model (the role's models from embroider's registry,
-editable; a typed id survives a role change), Device (CPU by default,
-leaving VRAM to the chat model), Precision, Width (embedders only: the
+Every host answers `GET /health` and `GET /v1/models` (embroider's
+`describe()`: landed device and precision, width, vector space, contract);
+the text kinds also answer `POST /tokenize` (an exact count). Fields:
+Role, Model (the role's models from embroider's registry, editable; a
+typed id survives a role change), Device (CPU by default, leaving VRAM to
+the chat model), Precision, Width (embedders and image models: the
 model's Matryoshka steps, `native` for its own), Cache.
 
 - **As an embedder** it works wherever `functions.embeddings.embedder_for`
@@ -373,6 +375,13 @@ model's Matryoshka steps, `native` for its own), Cache.
   hands it to okf's external rerank lane like the Reranker Loader's
   (pair ceiling and family from the registry, exact counts from
   `/tokenize`), and on any `/v1/rerank` client.
+- **As a vision model** it names the text model whose vectors it shares
+  (`text_partner`): image vectors compare only against that model, so a
+  graph's text lane must be it.
+- **As a decision model** it answers typed questions (choice, score,
+  noul) on `/systemone`, for the Classifier and Ensemble nodes. The
+  bands table is keyed per model, so a decision model the Classifier has
+  not been calibrated for shows up as such.
 - **Not the Knowledge Graph's embedder.** A graph's vectors are okf's own,
   so its ONNX model is chosen with Silk KG Embedder (ONNX); the Knowledge
   Graph refuses this loader on `embedder` and says so.

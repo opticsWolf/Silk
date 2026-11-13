@@ -9,7 +9,7 @@ ONNX Loader -- an embroider model as a real, callable model.
 The ONNX twin of the GGUF Loader and the Reranker Loader. An ONNX model
 never runs in Weave's process (a second ONNX Runtime takes the
 interpreter down), so the model is hosted by its own process
-(``functions/embroider_server.py``, run by
+(``python -m embroider.serve``, run by
 :class:`functions.embroider_pool.EmbroiderPool`) and the handle the node
 puts on the wire speaks to it over HTTP, the way the GGUF loaders'
 handles speak to llama.cpp. The Role row picks what the model is:
@@ -21,9 +21,15 @@ handles speak to llama.cpp. The Role row picks what the model is:
 * **Reranker** -- ``reranker`` (``reranker_model``, ``runtime: onnx``):
   ``/v1/rerank`` at the host root, which the Knowledge Graph hands to
   okf's external rerank lane, as it does the Reranker Loader's.
+* **Vision** -- ``image_model`` (``image_model``, ``runtime: onnx``): an
+  image embedder on ``/v1/images/embeddings``, for a graph whose text
+  lane is its paired text model.
+* **Decision** -- ``classifier`` (``classifier_model``): a typed decision
+  model on ``/systemone`` (Laya, GLiClass, the 2B decider), for the
+  Classifier and Ensemble nodes.
 
-Both outputs stay on the node, each typed for where it may go; the one
-the role does not fill carries nothing.
+All four outputs stay on the node, each typed for where it may go; the
+ones the role does not fill carry nothing.
 
 **Not the Knowledge Graph's embedder.** A graph's vectors are made by
 okf itself, so its ONNX embedding model is chosen with Silk KG Embedder
@@ -35,8 +41,7 @@ refuses this loader's handle on its ``embedder`` port and says so.
 first time something uses the model, and Unload stops it.
 """
 
-import re
-from typing import Any, ClassVar, Dict, List, Optional, Sequence
+from typing import Any, ClassVar, Dict, List, Optional
 
 from PySide6.QtCore import Signal, Slot
 from PySide6.QtWidgets import QComboBox, QFormLayout, QHBoxLayout, QLabel
@@ -54,40 +59,14 @@ from weave.widgets.separator_line import SeparatorLine
 from .silk_ports import RERANKER_MODEL_TYPE  # noqa: F401
 from ..functions.embroider_pool import EmbroiderPool, embroider_available
 from ..functions.model_pool import LazyGGUFPool
-from ..functions.okf_graph import (
-    DEVICES, EMBED_PRECISIONS, KNOWN_MODELS, KNOWN_RERANK_MODELS,
-    MODEL_LADDERS, RERANK_MODEL_MAX_TOKENS, RERANK_PRECISIONS, precisions_for,
+from ..functions.okf_graph import DEVICES, MODEL_LADDERS, KNOWN_MODELS
+from ..functions.onnx_roles import (
+    DECISION, NATIVE, ROLE_MODELS, ROLE_NOUNS, ROLE_PRECISIONS,
+    handle_for, kind_for, shipped,
 )
 from ..functions.port_text import text_input
 
 log = get_logger("OnnxModelLoader")
-
-#: The Width row's first entry: the model's own width.
-NATIVE = "native"
-
-#: Role row value -> embroider host kind.
-ROLE_KINDS = {"embedding": "embed", "reranker": "rerank"}
-#: Role -> the models the Model row offers.
-ROLE_MODELS: Dict[str, Sequence[str]] = {
-    "embedding": KNOWN_MODELS, "reranker": KNOWN_RERANK_MODELS}
-#: Role -> the precisions the Precision row offers.
-ROLE_PRECISIONS: Dict[str, Sequence[str]] = {
-    "embedding": EMBED_PRECISIONS, "reranker": RERANK_PRECISIONS}
-#: Role -> what the status line calls the model.
-ROLE_NOUNS = {"embedding": "embedder", "reranker": "reranker"}
-
-
-def onnx_family(model_id: str) -> str:
-    """okf's family label for an embroider model: its name, made legal."""
-    text = model_id.rsplit("/", 1)[-1].lower()
-    return re.sub(r"[^a-z0-9.-]+", "-", text).strip("-.")[:64] or "onnx-reranker"
-
-
-def _shipped(role: str, model_id: str) -> Sequence[str]:
-    """The precisions *model_id* can be asked for in *role*."""
-    if role == "embedding":
-        return precisions_for(model_id)
-    return RERANK_PRECISIONS
 
 
 @register_node
@@ -101,13 +80,14 @@ class OnnxLoaderNode(ThreadedNode):
     node_name: ClassVar[Optional[str]] = "ONNX Loader"
     node_description: ClassVar[Optional[str]] = (
         "An ONNX model (embroider) in its own process: an embedder on "
-        "/v1/embeddings for ToolSets, memory and your own nodes, or a "
-        "cross-encoder on /v1/rerank for the Knowledge Graph. Loaded on "
-        "first use. A Knowledge Graph's embedder is Silk KG Embedder (ONNX)."
+        "/v1/embeddings for ToolSets, memory and your own nodes, a "
+        "cross-encoder on /v1/rerank for the Knowledge Graph, an image "
+        "model on /v1/images/embeddings, or a typed decision model on "
+        "/systemone. Loaded on first use."
     )
     node_tags: ClassVar[Optional[List[str]]] = [
-        "silk", "onnx", "embedding", "rerank", "embroider", "loader",
-        "knowledge",
+        "silk", "onnx", "embedding", "rerank", "vision", "classifier",
+        "embroider", "loader", "knowledge",
     ]
     node_icon: ClassVar[Optional[str]] = "vector"
     vertical_size_policy: ClassVar[VerticalSizePolicy] = VerticalSizePolicy.FIT
@@ -122,6 +102,8 @@ class OnnxLoaderNode(ThreadedNode):
         self.add_input("model_id", datatype="string")
         self.add_output("model_obj", datatype="model_handle")
         self.add_output("reranker", datatype="reranker_model")
+        self.add_output("image_model", datatype="image_model")
+        self.add_output("classifier", datatype="classifier_model")
 
         self.model_pool: Optional[LazyGGUFPool] = None
         self._pool_key: Optional[tuple] = None
@@ -138,9 +120,13 @@ class OnnxLoaderNode(ThreadedNode):
         self._combo_role = QComboBox()
         self._combo_role.addItem("Embedding", userData="embedding")
         self._combo_role.addItem("Reranker", userData="reranker")
+        self._combo_role.addItem("Vision", userData="vision")
+        self._combo_role.addItem("Decision", userData=DECISION)
         self._combo_role.setToolTip(
             "Embedding: a vector model on model_obj. Reranker: a "
-            "cross-encoder on reranker, for the Knowledge Graph.")
+            "cross-encoder on reranker, for the Knowledge Graph. Vision: "
+            "an image model on image_model. Decision: a typed decision "
+            "model (Laya, GLiClass, 2B) on classifier.")
         form.addRow("Role:", self._combo_role)
         self._widget_core.register_widget(
             "role", self._combo_role, role=PortRole.INTERNAL,
@@ -278,14 +264,14 @@ class OnnxLoaderNode(ThreadedNode):
         self._combo_dim.addItems(widths)
         self._combo_dim.setCurrentText(current if current in widths else NATIVE)
         self._combo_dim.blockSignals(False)
-        self._combo_dim.setEnabled(role == "embedding")
-        shipped = _shipped(role, model_id)
+        self._combo_dim.setEnabled(role in ("embedding", "vision"))
+        allowed = shipped(role, model_id)
         items = self._combo_precision.model()
         for row in range(self._combo_precision.count()):
             item = items.item(row) if hasattr(items, "item") else None
             if item is not None:
-                item.setEnabled(self._combo_precision.itemText(row) in shipped)
-        if self._combo_precision.currentText() not in shipped:
+                item.setEnabled(self._combo_precision.itemText(row) in allowed)
+        if self._combo_precision.currentText() not in allowed:
             self._combo_precision.setCurrentText("auto")
 
     @Slot(str)
@@ -338,37 +324,30 @@ class OnnxLoaderNode(ThreadedNode):
         precision = text_input(inputs, "precision", "auto")
         if precision not in ROLE_PRECISIONS[role]:
             precision = "auto"
-        if precision not in _shipped(role, model_id):
+        if precision not in shipped(role, model_id):
             raise ValueError(
                 f"{model_id} ships no {precision} weights; pick one of "
-                f"{', '.join(_shipped(role, model_id))}.")
+                f"{', '.join(shipped(role, model_id))}.")
         settings: Dict[str, Any] = {
-            "kind": ROLE_KINDS[role],
+            "kind": kind_for(role, model_id),
             "device": device if device in DEVICES else "cpu",
             "precision": precision,
             "cache_dir": text_input(inputs, "cache_dir").strip()}
-        if role == "embedding":
+        if role in ("embedding", "vision"):
             width = text_input(inputs, "dim", NATIVE).strip()
             settings["dim"] = int(width) if width.isdigit() else 0
         return settings
 
-    def _handle(self, role: str, model_id: str) -> Dict[str, Any]:
-        if role == "embedding":
-            return {"backend": "onnx", "role": "embedding",
-                    "pool": self.model_pool, "model_id": model_id}
-        return {"role": "rerank", "runtime": "onnx", "pool": self.model_pool,
-                "model_id": f"onnx/{model_id}", "family": onnx_family(model_id),
-                "max_tokens": RERANK_MODEL_MAX_TOKENS.get(model_id, 512)}
-
     def compute(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
-        empty = {"model_obj": None, "reranker": None}
+        empty = {"model_obj": None, "reranker": None, "image_model": None,
+                 "classifier": None}
         if not embroider_available():
             self.compute_error.emit(
                 "embroider is not installed: install Silk's knowledge extra "
                 "(okfgraph[cpu] or okfgraph[gpu]).")
             return empty
         role = text_input(inputs, "role", "embedding")
-        if role not in ROLE_KINDS:
+        if role not in ROLE_MODELS:
             role = "embedding"
         model_id = text_input(inputs, "model_id").strip() or ROLE_MODELS[role][0]
         settings = self._settings(inputs, role, model_id)
@@ -385,8 +364,10 @@ class OnnxLoaderNode(ThreadedNode):
             _loaded_text(self.model_pool) if self.model_pool.started else
             f"{ROLE_NOUNS[role].capitalize()} {model_id} on "
             f"{settings['device']}: loads when a node uses it.")
-        output = "model_obj" if role == "embedding" else "reranker"
-        return {**empty, output: self._handle(role, model_id)}
+        output = {"embedding": "model_obj", "reranker": "reranker",
+                  "vision": "image_model", DECISION: "classifier"}[role]
+        return {**empty,
+                output: handle_for(role, model_id, self.model_pool)}
 
     def get_state(self) -> Dict[str, Any]:
         state = super().get_state()
@@ -420,12 +401,17 @@ class OnnxLoaderNode(ThreadedNode):
 
 
 def _loaded_text(pool: Any) -> str:
-    """One line on a running pool: model, width, precision, where."""
+    """One line on a running pool, from the host's ``describe()``: model,
+    width, the landed precision and device, and the vector space."""
     info = pool.snapshot()
     parts = [str(info.get("model_path") or "")]
     if info.get("dim"):
         parts.append(f"{info['dim']}-dim")
     if info.get("precision"):
         parts.append(str(info["precision"]))
-    parts.append("CUDA" if info.get("cuda") else "CPU")
-    return f"Loaded {', '.join(p for p in parts if p)} at {info.get('url', '')}."
+    device = str(info.get("device") or ("cuda" if info.get("cuda") else "cpu"))
+    parts.append(device.upper())
+    line = f"Loaded {', '.join(p for p in parts if p)} at {info.get('url', '')}."
+    if info.get("space"):
+        line += f" Space {info['space']}."
+    return line
