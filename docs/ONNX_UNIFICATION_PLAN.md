@@ -26,15 +26,44 @@ makes unchanged.
   - The rerank probe also makes `rerank_max_tokens` come from the host.
   - O7 adds a `lanes()` op beside `pin_info`; `/health` carries it and `okf doctor` prints `embed_lane` / `rerank_lane` info rows.
   - `uv.lock` pins the published embroider 0.15.0 and bobine 0.8.1.
-- **Floors (S6)**: neither Weave's nor Silk's pyproject requires the new
-  releases yet. Weave's names none of the three; Silk's extras keep
-  `okfgraph>=0.12` and `bobine>=0.8`. They rise with the first Silk commit
-  that uses 0.13 / 0.15 (section 5, step 6).
 - **okfgraph 0.13.1 (setup and CLI fixes)**: skills ship in the wheel with
   `okf setup skills`; several files per `okf ingest --kind pdf`; global
   flags before the command; missing db folders created; help names the
   default paths; README install table; `pdf` extra `bobine>=0.8.1`.
-- **Next:** okfgraph O3 (image lane) and O6 (after bobine 0.9), bobine 0.9, then Silk.
+
+Progress (2026-11-13): steps 1–4 of section 5 are released. Every library
+change Silk's steps depend on is on PyPI; only bobine B6 (CLI, skill) is
+deferred, and Silk needs nothing from it.
+
+- **okfgraph 0.14.0 (O3, image lane)**: `image_backend=embroider|external`
+  with `image_endpoint_url`; an external image host must be
+  `embroider.serve --kind vision` (identity from `/v1/models`: kind, dim,
+  precision, space, text partner), which resizes with
+  `embroider.prepare_image`; the image space is pinned
+  (`embedding_image_space`). New error codes `EXTERNAL_UNAVAILABLE` and
+  `CONVERSION_FAILED`. A declared (non-embroider) image lane falls back to
+  captions with one warning.
+- **bobine 0.9.0 / 0.9.1 (B2–B5)**: `ConverterConfig(device, precision)` on
+  the shared vocabulary, exported as `bobine.DEVICES` / `bobine.PRECISIONS`;
+  a reusable `HybridConverter`; `bobine.serve`. B6 deferred.
+- **okfgraph 0.14.1 (O6)**: `pdf_device` / `pdf_precision` pass through to
+  bobine; one warm converter per settings key, released after
+  `pdf_idle_seconds` (default 300) and on close; doctor's `pdf_converter`
+  row.
+- **okfgraph 0.14.2**: a graph `okf-mcp` / `okf serve` created on this boot
+  warns on every MCP result while it is empty (`/health` `created`, doctor
+  `db_created`); `--pdf-path` takes folders and `*`/`?` patterns. Design
+  note for GGUF images: see section 7.
+- **Floors (S6) set in Weave's pyproject** (Weave owns them): extras
+  `knowledge-cpu` / `knowledge-gpu` = `okfgraph[cpu|gpu]>=0.14.2` +
+  `embroider>=0.15`, and `documents` = `bobine>=0.9.1`. The floor is 0.14.2,
+  not the 0.13 that S6 first named: S2's image input needs 0.14.0, S4's
+  converter device needs 0.14.1. Silk's own extras still read
+  `okfgraph>=0.12` / `bobine>=0.8`; they are names, not Weave's floors.
+- **Next: Silk**, in section 5's order: S1 (embed and rerank on
+  `embroider.serve`) → S2 embedder and reranker → S5 → S3 (with Weave's
+  `node_deprecated` flag) → S2 images + S1 Vision → S1 Decider → S4.
+  Decide open questions 2, 3 and 5 before S1.
 
 ## 1. Goal
 
@@ -286,7 +315,7 @@ count, or the host pins threads to okf's setting.
   - Optional: a canvas action "Replace with ONNX Loader" that copies model, device, precision, cache and width.
 - **S4 Converter Settings on the shared vocabulary**: its Device and Precision rows match the ONNX Loader's, `bobine_convert.clean_settings` passes them through (B3), and the worker can move to a warm `bobine.serve` pool (B4) behind the same `ChildServerPool`.
 - **S5 Runtime status in one place**: a small `functions/onnx_runtime.py` asks `embroider.runtime_info()` in a child process (never in Weave's process) and caches the answer. Every ONNX node's tooltip and error text uses it, for example "no onnxruntime: pip install okfgraph[cpu]".
-- **S6 Pins and floors**: Weave's pyproject raises the floors (`embroider>=0.15`, `okfgraph>=0.13`, `bobine>=0.9`). Weave owns the floors; Silk and Veil don't.
+- **S6 Pins and floors** (done 2026-11-13): Weave's pyproject raises the floors (`embroider>=0.15`, `okfgraph>=0.14.2`, `bobine>=0.9.1`). Weave owns the floors; Silk and Veil don't.
 - **S7 Tests**:
   - The KG maps each of the 3.3 rows onto okf env.
   - The ONNX Loader runs each role against a fake host.
@@ -300,7 +329,7 @@ count, or the host pins threads to okf's setting.
 3. **okfgraph 0.13**: O5 → O4 → O1 → O2 → O7, then O3 (vision) and O6 (after bobine 0.9).
 4. **bobine 0.9**: B2 → B3 → B4 → B5. B6 (CLI, skill) follows in a later release.
 5. **Silk**: S1 (embed and rerank on `embroider.serve`) → S2 embedder and reranker → S5 → S3 → S2 images and S1 Vision → S1 Decider → S4.
-6. **Weave**: S6 floors and the `node_deprecated` flag, together with step 5's first commit.
+6. **Weave**: S6 floors (done 2026-11-13, ahead of step 5) and the `node_deprecated` flag, together with S3.
 
 Each step ends green on its own: embroider `cargo test` + pytest, okf's suite, bobine's suite, and Silk's suite plus Weave's seam tests.
 
@@ -311,3 +340,36 @@ Each step ends green on its own: embroider `cargo test` + pytest, okf's suite, b
 3. **Rerank when unwired**: should okf's in-process reranker stay available as the unwired fallback (today it needs okf config), or should Silk say "no reranker" plainly?
 4. **E1 is a packaging change** to a published wheel. It needs one release candidate built on all three platforms before okfgraph depends on it.
 5. **GPU memory**: the host defaults to CPU (leaving VRAM to chat models), but a graph pinned fp16 needs CUDA. Should the KG suggest the device from the pin, or should the ONNX Loader read the pin?
+
+## 7. Images on a GGUF graph (after this plan)
+
+A graph whose text lane is a GGUF Embedder Loader (llama.cpp) has no image
+lane today: okfgraph refuses a declared image identity and falls back to
+captions. The earlier idea of pairing it with an embroider vision model is
+dropped. llama-server embeds images itself on `/v1/embeddings` when loaded
+with `--mmproj`, so text and images can come from **one** multimodal GGUF
+model, in one space by construction. okfgraph's design note:
+`OKFgraph/docs/plan-declared-image-identity.md`.
+
+Gates, in order:
+
+1. **Spike on a current llama.cpp build** (no code): a multimodal
+   embedding GGUF + mmproj under `--embedding --mmproj --pooling mean
+   --alias <model_id>`. Confirm the image request shape on
+   `/v1/embeddings`, the `multimodal` capability and the alias on
+   `/v1/models`, distinct vectors for distinct images (llama.cpp #13666),
+   text→image retrieval that makes sense, and how a text+image element
+   composes. Pick the model and check its license.
+2. **okfgraph** (likely 0.15.0): `image_identity = "declared"`, valid only
+   when the image model is the graph's text model; checks at open (name,
+   capability, two-image probe, same truncation and L2 normalization);
+   model/precision pins keyed on the declared id, no space pin.
+3. **Silk**: the GGUF Embedder Loader starts llama-server with `--mmproj`,
+   `--embedding`, `--pooling` and `--alias`, and fetches the mmproj with
+   the model. The KG's `image_model` input accepts a GGUF loader only when
+   it is the same loader that feeds `embedder`, mapping to
+   `image_backend=external`, `image_identity=declared` and the same host
+   URL. Anything else keeps captions.
+
+A graph built on a text-only GGUF cannot gain images: its text vectors
+come from another model. Images need a graph built on the multimodal GGUF.
