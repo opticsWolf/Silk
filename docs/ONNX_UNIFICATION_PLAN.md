@@ -60,7 +60,7 @@ deferred, and Silk needs nothing from it.
   not the 0.13 that S6 first named: S2's image input needs 0.14.0, S4's
   converter device needs 0.14.1. Silk's own extras still read
   `okfgraph>=0.12` / `bobine>=0.8`; they are names, not Weave's floors.
-- **S1 done** (Silk, uncommitted at this writing): `EmbroiderPool` runs
+- **S1 done** (`7e970ff`): `EmbroiderPool` runs
   `python -m embroider.serve` (child command in
   `functions/rerank_pool.py`), `functions/embroider_server.py` is deleted,
   and the ONNX Loader has four roles -- Embedding, Reranker, Vision
@@ -72,7 +72,7 @@ deferred, and Silk needs nothing from it.
   pinned decision/vision models against embroider's registry, and the real
   host end to end); the Qt loader tests could not run here (this checkout
   has no PySide6/lace) and are updated, not verified.
-- **S2 done** (Silk, uncommitted at this writing): `embedder` takes
+- **S2 done** (`bbec437`): `embedder` takes
   either loader, the ONNX one on okf's external lane with identity
   `auto`; `image_model` takes the Vision role, on okf's external image
   lane, with the partner and width checks before boot. The mapping lives
