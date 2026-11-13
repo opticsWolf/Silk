@@ -63,7 +63,7 @@ deferred, and Silk needs nothing from it.
 - **Next: Silk**, in section 5's order: S1 (embed and rerank on
   `embroider.serve`) → S2 embedder and reranker → S5 → S3 (with Weave's
   `node_deprecated` flag) → S2 images + S1 Vision → S1 Decider → S4.
-  Decide open questions 2, 3 and 5 before S1.
+  Open questions 2, 3 and 5 are decided (section 6).
 
 ## 1. Goal
 
@@ -333,13 +333,18 @@ count, or the host pins threads to okf's setting.
 
 Each step ends green on its own: embroider `cargo test` + pytest, okf's suite, bobine's suite, and Silk's suite plus Weave's seam tests.
 
-## 6. Open questions
+## 6. Open questions (all closed, 2026-11-13)
 
 1. **Bit-exactness across processes** (see the 4.1 risk): if ORT threads change vectors, either `space` includes threads or the host matches okf's thread setting. Measure before O4 ships.
+   **Closed:** host and in-process vectors measured equal at `abs=0` on CPU; okfgraph 0.13 shipped the space pin on that basis.
 2. **Which `ChildServerPool` owns a model used by two nodes?** Today each loader starts its own host. A process-wide Silk registry keyed by `space` would share one host per model; worth it once the KG and a ToolSet use the same embedder.
+   **Decided: no registry; sharing is wiring.** One loader node owns one lazy host, and its output already feeds the KG and a ToolSet at once. A registry that merges two loader nodes would need answers to who stops the shared host and what happens when one node changes its device. Instead, a loader's status warns when another loader already holds the same model, device, precision and width ("already loaded by <node>; wire that one instead"). Revisit only if duplicate loaders prove common.
 3. **Rerank when unwired**: should okf's in-process reranker stay available as the unwired fallback (today it needs okf config), or should Silk say "no reranker" plainly?
+   **Decided: no reranker wired, no reranking**, as `knowledge_graph.py` already does ("No reranker wired: searches are not reranked."). A hidden in-process reranker would spend memory and time the user never chose. After S3 removes the spec nodes, the ONNX Loader in the Reranker role is the only way to rerank on embroider; the deprecated Silk KG Reranker's note says so.
 4. **E1 is a packaging change** to a published wheel. It needs one release candidate built on all three platforms before okfgraph depends on it.
+   **Closed:** embroider 0.15.0 released on all three platforms; okfgraph 0.13+ depends on it.
 5. **GPU memory**: the host defaults to CPU (leaving VRAM to chat models), but a graph pinned fp16 needs CUDA. Should the KG suggest the device from the pin, or should the ONNX Loader read the pin?
+   **Decided: the KG checks and suggests; the loader keeps the user's device.** The loader can't know which graph it serves (it may feed several), and VRAM is the user's call, so it stays on its `cpu` default. The KG already reads the graph's pins (`pin_info`) and the loader's settings, and the loader starts lazily, so before anything starts the KG predicts the precision the loader would land on. On a mismatch it refuses with the fix instead of starting a host okf would reject: "graph pinned fp16; this loader would land fp32 on CPU — set its Device to cuda, or rebuild the graph." Part of S2; an unwired KG is unaffected (okf adopts the graph's pins in-process).
 
 ## 7. Images on a GGUF graph (after this plan)
 
