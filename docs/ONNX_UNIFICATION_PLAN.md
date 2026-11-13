@@ -321,6 +321,8 @@ count, or the host pins threads to okf's setting.
   - The ONNX Loader runs each role against a fake host.
   - The spec nodes still load an old scene and warn.
   - A live end-to-end test, skipped unless the model is cached: an unwired KG builds a graph in-process, then the same graph is reopened through an ONNX Loader with the same model, and search works with no re-embed.
+  - GGUF rerank seam: the KG's declared rows (`rerank_family`, `rerank_max_tokens`, `rerank_count=server-tokenize`) match what the Reranker Loader's server reports.
+- **S8 Reranker Loader wording** (small, any time): its tooltip and status call `max_tokens = n_ctx` the context window, a safe advisory cap, not the model's trained pair limit.
 
 ## 5. Sequence
 
@@ -351,30 +353,68 @@ Each step ends green on its own: embroider `cargo test` + pytest, okf's suite, b
 A graph whose text lane is a GGUF Embedder Loader (llama.cpp) has no image
 lane today: okfgraph refuses a declared image identity and falls back to
 captions. The earlier idea of pairing it with an embroider vision model is
-dropped. llama-server embeds images itself on `/v1/embeddings` when loaded
-with `--mmproj`, so text and images can come from **one** multimodal GGUF
-model, in one space by construction. okfgraph's design note:
-`OKFgraph/docs/plan-declared-image-identity.md`.
+dropped. The C++ `llama-server` embeds images itself on `/v1/embeddings`
+when loaded with `--mmproj`, so text and images can come from **one**
+multimodal GGUF model, in one space by construction. okfgraph's design
+note: `OKFgraph/docs/plan-declared-image-identity.md`.
 
-Gates, in order:
+**Silk's own GGUF host cannot do this.** The GGUF pool runs
+`functions/llama_server.py`, a wrapper around the Python binding's
+`llama_cpp.server`, whose `CreateEmbeddingRequest.input` is
+`Union[str, List[str]]`: text only. Image embedding needs the C++
+`llama-server` binary. Extending the binding's embeddings route is ruled
+out: it patches another project's server types and breaks on its updates.
 
-1. **Spike on a current llama.cpp build** (no code): a multimodal
-   embedding GGUF + mmproj under `--embedding --mmproj --pooling mean
-   --alias <model_id>`. Confirm the image request shape on
-   `/v1/embeddings`, the `multimodal` capability and the alias on
-   `/v1/models`, distinct vectors for distinct images (llama.cpp #13666),
-   text→image retrieval that makes sense, and how a text+image element
-   composes. Pick the model and check its license.
+Steps, in order (each ends usable on its own):
+
+1. **Spike** (no code), against a `llama-server` started by hand (a local
+   build, b12110, already has `--embedding`, `--mmproj`, `--pooling`,
+   `--media-path`): a multimodal embedding GGUF + mmproj under
+   `--embedding --mmproj <proj> --pooling mean --alias <model_id>`.
+   Confirm the image request shape on `/v1/embeddings`, the `multimodal`
+   capability and the alias on `/v1/models`, distinct vectors for distinct
+   images (llama.cpp #13666), text→image retrieval that makes sense, and
+   how a text+image element composes. Pick the model (vdr-2b-multi-v1, or
+   EmbeddingGemma-2 if its multimodal GGUF works on a release build) and
+   check its license.
 2. **okfgraph** (likely 0.15.0): `image_identity = "declared"`, valid only
-   when the image model is the graph's text model; checks at open (name,
-   capability, two-image probe, same truncation and L2 normalization);
-   model/precision pins keyed on the declared id, no space pin.
-3. **Silk**: the GGUF Embedder Loader starts llama-server with `--mmproj`,
-   `--embedding`, `--pooling` and `--alias`, and fetches the mmproj with
-   the model. The KG's `image_model` input accepts a GGUF loader only when
-   it is the same loader that feeds `embedder`, mapping to
-   `image_backend=external`, `image_identity=declared` and the same host
-   URL. Anything else keeps captions.
+   when the image model is the graph's text model; checks at open (name
+   against `/v1/models`, the capability, the two-image probe, the same
+   truncation and L2 normalization as the text lane); model/precision pins
+   keyed on the declared id, no space pin. Without it every GGUF graph
+   keeps captions, whatever Silk wires.
+3. **Silk, on a user-run `llama-server`** (no new process manager). Two
+   KG changes:
+   - `embedder` accepts a model endpoint (the existing "llama.cpp server"
+     preset) as an external text lane. Today `_gguf_embedder` takes only an
+     Embedder Loader and reads family, pooling, prefixes and width from the
+     local GGUF file; for an endpoint those are declared on the wire or
+     asked of the server (`/v1/models`, `/tokenize` for counts).
+   - `image_model` accepts that same endpoint only when it is the one
+     feeding `embedder`, mapping to `image_backend=external`,
+     `image_identity=declared` and the same URL. Anything else keeps
+     captions.
+   This ships GGUF images.
+4. **Silk-managed `llama-server`** (later, convenience only): a new
+   `ChildServerPool` kind that runs the C++ binary beside the Python
+   binding, which stays for chat and text-only embedding. It needs the
+   binary located (setting or PATH) with a minimum build checked, readiness
+   on `/health`, and the mmproj downloaded with the model. The Embedder
+   Loader's "Embedding Model" switch picks it: `--embedding` limits that
+   server to embeddings, which an embedding model is anyway. The KG's
+   same-source rule from step 3 then applies to the loader too.
+   - **Rerank rides along.** The same pool kind started with `--reranking`
+     serves `/v1/rerank` natively for the Reranker Loader, so
+     `functions/rerank_server.py` and its hand-written scorer can be
+     deleted, as S1 deletes `embroider_server.py` (one server process per
+     model, one binary). The Python binding has no rerank route, which is
+     why Silk wrote its own. Gate: on a few Qwen3-style rerankers, the
+     native route orders documents as Silk's P("yes") scorer does. GGUF
+     rerank already works end to end without this: rerank writes no
+     vectors, so okfgraph's declared rerank contract needs no identity
+     proof, unlike images.
+   - `functions/llama_server.py` stays: it also serves Silk's GGUF chat
+     models, which keep the Python binding.
 
 A graph built on a text-only GGUF cannot gain images: its text vectors
 come from another model. Images need a graph built on the multimodal GGUF.
