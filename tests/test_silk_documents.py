@@ -81,11 +81,13 @@ def qt_app():
 def test_settings_are_checked_against_the_defaults():
     s = bc.clean_settings({"routing": "SURGICAL", "device": "tpu", "formula_dpi": 9000,
                            "extract_images": 0, "junk": 1})
-    assert s["routing"] == "surgical" and s["device"] == "cpu"
+    assert s["routing"] == "surgical" and s["device"] == "auto"
     assert s["formula_dpi"] == 600 and s["extract_images"] is False
     assert "junk" not in s
     assert bc.clean_settings(None) == bc.DEFAULT_SETTINGS
     assert bc.describe({"routing": "never"}) == "route never, tables slanet"
+    assert bc.describe({}) == ("route auto, device auto, precision auto, "
+                              "tables slanet")
 
 
 def test_nothing_here_imports_bobine():
@@ -254,3 +256,18 @@ def test_the_excel_and_jats_nodes(qt_app, tmp_path):
     finally:
         excel.cleanup()
         jats.cleanup()
+
+
+def test_a_saved_settings_scene_migrates_to_the_stack_words(qt_app):
+    from silk.nodes.document_nodes import SilkConverterSettingsNode
+    state = SilkConverterSettingsNode.migrate_state(
+        {"widget_data": {"device": "gpu", "precision": "fp32",
+                         "quantization": "int8"}}, 1)
+    widgets = state["widget_data"]
+    assert widgets["device"] == "cuda"
+    assert widgets["precision"] == "int8"
+    assert "quantization" not in widgets, "the row folded into precision"
+    kept = SilkConverterSettingsNode.migrate_state(
+        {"widget_data": {"device": "cpu", "precision": "fp16",
+                         "quantization": "int8"}}, 1)
+    assert kept["widget_data"]["precision"] == "fp16", "an explicit pick wins"

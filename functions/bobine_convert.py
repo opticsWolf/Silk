@@ -58,17 +58,19 @@ WORKER_SCRIPT = str(Path(__file__).with_name("bobine_worker.py"))
 #: adds formula OCR; ``auto`` sends flagged pages through layout + OCR;
 #: ``always`` sends every page.
 ROUTES = ("never", "surgical", "auto", "always")
-DEVICES = ("cpu", "gpu")
-PRECISIONS = ("fp32", "fp16")
-QUANTIZATIONS = ("fp32", "int8")
+#: The stack vocabulary (bobine 0.9, embroider, okfgraph): the same words
+#: in the Converter Settings node, the ONNX Loader and bobine's own
+#: ``devices``/``precisions`` tuples.
+DEVICES = ("auto", "cpu", "cuda")
+PRECISIONS = ("auto", "fp32", "fp16", "int8")
 TABLE_BACKENDS = ("slanet", "potatr", "auto")
 IMAGE_MODES = ("link", "embed")
 
 #: What a fresh Converter Settings node puts on its wire (bobine's own
 #: defaults, spelled out so the node and the tool agree).
 DEFAULT_SETTINGS: Dict[str, Any] = {
-    "routing": "auto", "device": "cpu", "precision": "fp32",
-    "quantization": "fp32", "table_backend": "slanet",
+    "routing": "auto", "device": "auto", "precision": "auto",
+    "table_backend": "slanet",
     "extract_images": True, "image_mode": "link", "detect_headings": True,
     "ocr_lang": "en", "formula_dpi": 200, "render_dpi": 300, "cache_dir": "",
 }
@@ -99,7 +101,7 @@ def clean_settings(settings: Any) -> Dict[str, Any]:
     if not isinstance(settings, dict):
         return out
     for key, choices in (("routing", ROUTES), ("device", DEVICES),
-                         ("precision", PRECISIONS), ("quantization", QUANTIZATIONS),
+                         ("precision", PRECISIONS),
                          ("table_backend", TABLE_BACKENDS), ("image_mode", IMAGE_MODES)):
         value = str(settings.get(key) or "").strip().lower()
         if value in choices:
@@ -115,17 +117,25 @@ def clean_settings(settings: Any) -> Dict[str, Any]:
     lang = str(settings.get("ocr_lang") or "").strip()
     if lang:
         out["ocr_lang"] = lang
+    # A settings dict saved before 0.9 (or a tool call that still speaks
+    # its words): gpu became cuda, and the separate formula-quantization
+    # row became precision=int8 (only when precision was left at fp32).
+    if str(settings.get("device") or "").strip().lower() == "gpu":
+        out["device"] = "cuda"
+    if (str(settings.get("precision") or "").strip().lower() in ("", "fp32")
+            and str(settings.get("quantization") or "").strip().lower() == "int8"):
+        out["precision"] = "int8"
     out["cache_dir"] = str(settings.get("cache_dir") or "").strip()
     return out
 
 
 def describe(settings: Any) -> str:
-    """One line for a tooltip or a status label."""
+    """One line for a tooltip or a status label, in the shared words."""
     s = clean_settings(settings)
-    models = "" if s["routing"] == "never" else (
-        f", {s['device'].upper()} {s['precision']}"
-        + (" int8 formulas" if s["quantization"] == "int8" and s["device"] == "cpu" else ""))
-    return f"route {s['routing']}{models}, tables {s['table_backend']}"
+    if s["routing"] == "never":
+        return f"route never, tables {s['table_backend']}"
+    return (f"route {s['routing']}, device {s['device']}, precision "
+            f"{s['precision']}, tables {s['table_backend']}")
 
 
 def run_worker(request: Dict[str, Any], *,
@@ -203,13 +213,32 @@ def model_report(settings: Any = None) -> Dict[str, Any]:
                        "cache_dir": clean_settings(settings)["cache_dir"]})
 
 
+def warm_pool(settings: Any = None, *, idle_seconds: float = 300.0) -> Any:
+    """A warm bobine host (``functions/bobine_pool.py``) for these settings.
+
+    One host keeps its models loaded between conversions; the caller owns
+    it and stops it with ``cleanup()``. ``idle_seconds`` releases a warm
+    converter after that long without use (bobine's own default: 300).
+    """
+    if not BOBINE_AVAILABLE:
+        raise RuntimeError(f"{BOBINE_ERROR}: {INSTALL_HINT}")
+    from .bobine_pool import BobinePool
+    return BobinePool(clean_settings(settings)["cache_dir"], idle_seconds)
+
+
 def convert_file(path: str, output_dir: str, settings: Any = None, *,
                  should_continue: Optional[Callable[[], bool]] = None,
-                 on_page: Optional[Callable[[int, int], None]] = None) -> Dict[str, Any]:
+                 on_page: Optional[Callable[[int, int], None]] = None,
+                 pool: Optional[Any] = None) -> Dict[str, Any]:
     """Convert one file into *output_dir*; what came out, as plain data.
 
     ``{source, md_path, markdown, pages, images, image_dir, data_files}``.
+    With *pool* (a :func:`warm_pool` host) the models stay warm between
+    calls; without one a child per conversion, which is exact for cancel.
     """
+    if pool is not None:
+        return pool.convert(str(path), str(output_dir), settings,
+                            should_continue=should_continue, on_page=on_page)
     return run_worker({"op": "convert", "path": str(path),
                        "output_dir": str(output_dir),
                        "settings": clean_settings(settings)},

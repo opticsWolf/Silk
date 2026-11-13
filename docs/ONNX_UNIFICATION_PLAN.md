@@ -95,9 +95,14 @@ deferred, and Silk needs nothing from it.
   are tested Qt-free (`tests/test_node_deprecated.py`, 5). The Qt tests
   that read the nodes (`tests/test_silk_onnx_models.py`) are written but
   cannot run in this checkout (no PySide6/lace).
-- **Next: S4** (converter settings on the shared vocabulary, and the warm
-  `bobine.serve` pool behind `ChildServerPool`). Open questions 2, 3 and
-  5 are decided (section 6).
+- **S4 done**: the Converter Settings rows speak `auto|cpu|cuda` and
+  `auto|fp32|fp16|int8` (old scenes migrate: `gpu`→`cuda`, formula
+  weights→precision int8), the worker passes both through to bobine 0.9,
+  and the warm host exists (`functions/bobine_server.py` +
+  `bobine_pool.py`, `bobine_convert.warm_pool`), live-tested in an env
+  with bobine 0.9: two conversions, one converter, `documents=2`. The
+  nodes stay on the per-call child for now (see S4's note). Open
+  questions 2, 3 and 5 are decided (section 6).
 
 ## 1. Goal
 
@@ -389,11 +394,29 @@ count, or the host pins threads to okf's setting.
   - Optional: a canvas action "Replace with ONNX Loader" that copies model, device, precision, cache and width.
     - Not done; the two wires are a drag each, and the nodes hide
       themselves from the palette.
-- **S4 Converter Settings on the shared vocabulary**: its Device and Precision rows match the ONNX Loader's, `bobine_convert.clean_settings` passes them through (B3), and the worker can move to a warm `bobine.serve` pool (B4) behind the same `ChildServerPool`.
-  - Follow-up (wording): the Device/Precision tooltips and the status line
-    must call `max_tokens = n_ctx` the model's **context window**, never its
-    own per-pair limit — okf's `rerank_max_tokens` is an advisory ceiling,
-    and the Reranker Loader reads `n_ctx` into it today.
+- **S4 Converter Settings on the shared vocabulary** *(landed)*: its Device
+  and Precision rows match the ONNX Loader's, `bobine_convert.clean_settings`
+  passes them through (B3), and the worker can move to a warm `bobine.serve`
+  pool (B4) behind the same `ChildServerPool`.
+  - Rows: `auto|cpu|cuda` and `auto|fp32|fp16|int8` (bobine 0.9's own
+    tuples). The separate formula-weights row is gone; `migrate_state`
+    folds it (`gpu` → `cuda`; int8 weights → `precision` int8 unless an
+    explicit precision was picked), so a saved scene keeps its meaning.
+  - The worker stops translating: `config_kwargs` passes `device` and
+    `precision` straight to `ConverterConfig`, which picks the providers
+    itself (`ort_providers` is gone with the old pair).
+  - The warm host had to be Silk's launcher, not `python -m bobine.serve`:
+    bobine's host builds `ConverterConfig(**settings)`, and `routing_mode`
+    / `table_backend` / `image_mode` must be enum objects, which JSON
+    cannot carry. `functions/bobine_server.py` reuses bobine's handler,
+    server and pool and supplies one translation (`config_kwargs` again);
+    `functions/bobine_pool.BobinePool` is a `ChildServerPool` over it
+    (`POST /v1/convert` NDJSON, `/v1/models`, `/health`).
+  - The nodes still use the per-call child (cancel is exact and files are
+    usually few); `bobine_convert.warm_pool()` + `convert_file(pool=...)`
+    is the warm path for batches. Cancel on a shared host stops it, as
+    the module says. Switching the nodes is a UI follow-up (a "keep
+    models warm" row with the pool's lifecycle), not a data change.
 - **S5 Runtime status in one place** *(landed)*: `functions/onnx_runtime.py`
   asks `embroider.runtime_info()` in a child process (never in Weave's process,
   and nothing here imports `onnxruntime`; the tests assert `sys.modules`), caches

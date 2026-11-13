@@ -426,7 +426,12 @@ Documents to Markdown with [bobine](https://pypi.org/project/bobine/)
 for scans), Office files including the legacy formats, JATS XML articles
 and text. **bobine runs in a child process per call**
 (`functions/bobine_worker.py`): `import bobine` loads ONNX Runtime, which
-must not run in Weave's process. That also makes Cancel exact. The PDF
+must not run in Weave's process. That also makes Cancel exact. A warm
+alternative exists for batches: `bobine_convert.warm_pool(settings)` (and
+`convert_file(..., pool=...)`) starts `functions/bobine_server.py`, which
+is bobine's own warm host — one converter per settings key, kept loaded,
+released when idle — with Silk's settings dict translated; cancelling a
+shared host stops it. The PDF
 model routes need an `onnxruntime` install in the environment; without
 one, PDFs keep to the text layer and the nodes say so. Without bobine the
 nodes say how to install it and output nothing.
@@ -434,12 +439,20 @@ nodes say how to install it and output nothing.
 ### Converter Settings — `nodes/document_nodes.py` (`SilkConverterSettingsNode`) *(Silk AI / Documents)*
 bobine's options on a `bobine_settings` wire, as plain data: PDF route
 (`never` text layer only · `surgical` + formula OCR · `auto` + layout
-and OCR where needed · `always` every page), device, precision, formula
-weights (int8, CPU only), table backend, images (link / embed), extract
-images, detect headings, formula and page DPI, OCR language, model cache.
+and OCR where needed · `always` every page), **Device** and
+**Precision**, table backend, images (link / embed), extract images,
+detect headings, formula and page DPI, OCR language, model cache.
 **Check models** reports which models are downloaded and whether an ONNX
 Runtime is there to run them; it downloads nothing. Unwired, the
 converters use bobine's defaults.
+
+Device and Precision are the **stack vocabulary** (bobine 0.9,
+embroider, okfgraph, the ONNX Loader): `auto` / `cpu` / `cuda`, and
+`auto` / `fp32` / `fp16` / `int8`. `auto` is bobine's measured choice
+per pass; `int8` is the formula decoder on the CPU (4x smaller, ~1.9x
+faster, some formulas decode differently). The old rows — `gpu`, and a
+separate formula-weights switch — survive in saved scenes through
+`migrate_state` (`gpu` → `cuda`, int8 weights → `precision` int8).
 
 ### Document Converter — `nodes/document_nodes.py` (`SilkDocumentConverterNode`) *(Silk AI / Documents)*
 A file, or every file bobine reads in a folder (optionally with

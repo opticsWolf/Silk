@@ -103,8 +103,8 @@ class SilkConverterSettingsNode(_PickerHistory, ActiveNode):
     node_tags: ClassVar[Optional[List[str]]] = ["silk", "bobine", "pdf", "markdown", "settings"]
     node_icon: ClassVar[Optional[str]] = "tool"
     vertical_size_policy: ClassVar[VerticalSizePolicy] = VerticalSizePolicy.FIT
-    node_state_api = 1
-    node_version = 1
+    node_state_api = 2   # 2: device/precision are the stack words
+    node_version = 2
 
     def __init__(self, title: str = "Converter Settings", **kwargs: Any) -> None:
         super().__init__(title=title, **kwargs)
@@ -152,14 +152,16 @@ class SilkConverterSettingsNode(_PickerHistory, ActiveNode):
               "that need it (scans, tables). always: every page through "
               "layout and OCR, slowest. Office, JATS and text files ignore it.")
         combo("device", "Device:", bc.DEVICES,
-              "Where the models run. gpu needs an onnxruntime-gpu install; "
-              "a missing provider falls back to the CPU.")
+              "Where the models run. auto: each pass keeps its measured "
+              "device (CUDA where it is faster). cpu: every pass on the CPU. "
+              "cuda: every pass on CUDA, with CPU fallback; needs an "
+              "onnxruntime-gpu install. The same words as the ONNX Loader.")
         combo("precision", "Precision:", bc.PRECISIONS,
-              "Formula model precision. fp16 is the GPU alternative: half the "
-              "weights, ~1.2x faster on long formulas.")
-        combo("quantization", "Formula weights:", bc.QUANTIZATIONS,
-              "int8: 4x smaller and ~1.9x faster on the CPU, but some "
-              "formulas decode differently. Ignored on the GPU.")
+              "The stack vocabulary: auto (bobine's measured choice per "
+              "pass), fp32 (full weights), fp16 (half weights on CUDA), "
+              "int8 (4x smaller, ~1.9x faster formula decode on the CPU; "
+              "some formulas decode differently). The same words as the "
+              "ONNX Loader.")
         combo("table_backend", "Tables:", bc.TABLE_BACKENDS,
               "slanet: per-table crops (default). potatr: whole-page table "
               "structure. auto: potatr where a page has words, else slanet.")
@@ -217,6 +219,28 @@ class SilkConverterSettingsNode(_PickerHistory, ActiveNode):
         self.set_content_widget(self._widget_core)
         if hasattr(self._widget_core, "patch_proxy"):
             self._widget_core.patch_proxy()
+
+    @classmethod
+    def migrate_state(cls, state: Dict[str, Any],
+                      from_version: int) -> Dict[str, Any]:
+        """api 1 → 2: the rows speak the stack words.
+
+        A scene saved before: ``gpu`` became ``cuda``, and the separate
+        formula-weights row folded into precision (``int8`` when it was
+        picked and precision was still fp32). The quantization key is
+        gone; the other dropped values were defaults.
+        """
+        if from_version < 2:
+            widgets = state.get("widget_data")
+            if isinstance(widgets, dict):
+                if str(widgets.get("device") or "").strip().lower() == "gpu":
+                    widgets["device"] = "cuda"
+                if (str(widgets.get("quantization") or "").strip().lower() == "int8"
+                        and str(widgets.get("precision") or "fp32").strip().lower()
+                        in ("", "fp32")):
+                    widgets["precision"] = "int8"
+                widgets.pop("quantization", None)
+        return state
 
     def compute(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
         settings = bc.clean_settings({k: inputs.get(k) for k in bc.DEFAULT_SETTINGS

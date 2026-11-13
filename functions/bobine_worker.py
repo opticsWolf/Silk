@@ -30,7 +30,6 @@ import sys
 from pathlib import Path
 from typing import Any, Dict
 
-_GPU_PROVIDERS = ["CUDAExecutionProvider", "CPUExecutionProvider"]
 
 
 def _emit(payload: Dict[str, Any]) -> None:
@@ -38,28 +37,35 @@ def _emit(payload: Dict[str, Any]) -> None:
     sys.stdout.flush()
 
 
+def config_kwargs(bob: Any, s: Dict[str, Any]) -> Dict[str, Any]:
+    """``ConverterConfig`` keyword arguments from cleaned settings.
+
+    ``device`` and ``precision`` travel as the stack vocabulary bobine 0.9
+    takes (``auto|cpu|cuda``, ``auto|fp32|fp16|int8``); the enum-valued
+    rows become the enum objects, because a string cannot be one. Kept
+    separate from :func:`make_config` so the warm host translates its
+    settings with the same code.
+    """
+    return {
+        "routing_mode": getattr(bob.RoutingMode,
+                                s.get("routing", "auto").capitalize()),
+        "device": s.get("device", "auto"),
+        "precision": s.get("precision", "auto"),
+        "table_backend": getattr(bob.TableBackend,
+                                 s.get("table_backend", "slanet").capitalize()),
+        "image_mode": (bob.ImageMode.EmbedBase64 if s.get("image_mode") == "embed"
+                       else bob.ImageMode.Link),
+        "extract_images": bool(s.get("extract_images", True)),
+        "detect_headings": bool(s.get("detect_headings", True)),
+        "ocr_lang": str(s.get("ocr_lang") or "en"),
+        "formula_dpi": int(s.get("formula_dpi", 200)),
+        "render_dpi": int(s.get("render_dpi", 300)),
+    }
+
+
 def make_config(bob: Any, s: Dict[str, Any]) -> Any:
     """A ``ConverterConfig`` from cleaned settings."""
-    gpu = s.get("device") == "gpu"
-    # Int8 formula weights decode differently on CUDA: bobine says never
-    # combine them, so the GPU keeps fp32 weights.
-    quant = "fp32" if gpu else s.get("quantization", "fp32")
-    # 0.8 does not export the quantization enum; its default value has it.
-    quantization = type(bob.ConverterConfig().model_quantization)
-    return bob.ConverterConfig(
-        routing_mode=getattr(bob.RoutingMode, s.get("routing", "auto").capitalize()),
-        model_precision=getattr(bob.ModelPrecision, s.get("precision", "fp32").capitalize()),
-        model_quantization=getattr(quantization, quant.capitalize()),
-        table_backend=getattr(bob.TableBackend, s.get("table_backend", "slanet").capitalize()),
-        image_mode=(bob.ImageMode.EmbedBase64 if s.get("image_mode") == "embed"
-                    else bob.ImageMode.Link),
-        extract_images=bool(s.get("extract_images", True)),
-        detect_headings=bool(s.get("detect_headings", True)),
-        ocr_lang=str(s.get("ocr_lang") or "en"),
-        formula_dpi=int(s.get("formula_dpi", 200)),
-        render_dpi=int(s.get("render_dpi", 300)),
-        ort_providers=list(_GPU_PROVIDERS) if gpu else None,
-    )
+    return bob.ConverterConfig(**config_kwargs(bob, s))
 
 
 def run(request: Dict[str, Any]) -> Dict[str, Any]:
