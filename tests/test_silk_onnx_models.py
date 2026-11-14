@@ -54,8 +54,9 @@ class FakePool:
 def test_the_spec_nodes_say_what_they_are(qt_app):
     from silk.nodes.knowledge_graph import SilkKnowledgeGraphNode as KG
     from silk.nodes.onnx_loader import SilkOnnxEmbedderNode, SilkOnnxRerankerNode
-    assert SilkOnnxEmbedderNode.node_name == "Silk KG Embedder (ONNX)"
-    assert SilkOnnxRerankerNode.node_name == "Silk KG Reranker (ONNX)"
+    # S3: deprecated for one release; saved scenes find them by class name.
+    assert SilkOnnxEmbedderNode.node_name == "Silk KG Embedder (ONNX, deprecated)"
+    assert SilkOnnxRerankerNode.node_name == "Silk KG Reranker (ONNX, deprecated)"
     for cls in (SilkOnnxEmbedderNode, SilkOnnxRerankerNode, KG):
         assert cls.node_subclass == "Knowledge"
     for cls in (SilkOnnxEmbedderNode, SilkOnnxRerankerNode):
@@ -246,8 +247,28 @@ def test_the_loader_as_vision_hands_out_an_image_model(qt_app, fake_host):
     assert out["model_obj"] is None and out["reranker"] is None
     assert IMAGE_MODEL_TYPE.validator(image), "the port accepts it"
     assert image["text_partner"], "an image model names its text partner"
+    assert fake_host == [], "nothing runs until it is used"
+    assert image["pool"].base_url   # first use starts the host
     assert fake_host[0][1]["kind"] == "vision"
     assert fake_host[0][1]["dim"] == 768
+
+
+def test_the_vision_width_row_offers_the_partners_ladder(qt_app, fake_host):
+    """A vision host must open at the graph's width (okf refuses another),
+    so its Width row offers the text partner's Matryoshka steps."""
+    from silk.functions.okf_graph import MODEL_LADDERS, VISION_MODELS
+    from silk.functions.onnx_roles import ROLE_MODELS
+    from silk.nodes.onnx_model_loader import OnnxLoaderNode
+    node = OnnxLoaderNode()
+    model = ROLE_MODELS["vision"][0]
+    node._combo_role.setCurrentIndex(2)
+    node._combo_model.setCurrentText(model)
+    widths = [node._combo_dim.itemText(i) for i in range(node._combo_dim.count())]
+    ladder = MODEL_LADDERS[VISION_MODELS[model]]
+    assert widths == ["native", *(str(w) for w in ladder)]
+    assert node._combo_dim.isEnabled()
+    out = node.compute({"role": "vision", "model_id": model})
+    assert out["image_model"]["dim"] == ladder[-1], "native names its width"
 
 
 def test_the_loader_as_decider_hands_out_a_classifier_model(qt_app, fake_host):
@@ -259,6 +280,8 @@ def test_the_loader_as_decider_hands_out_a_classifier_model(qt_app, fake_host):
     handle = out["classifier"]
     assert out["model_obj"] is None and out["reranker"] is None
     assert (handle["backend"], handle["role"]) == ("systemone", "decision")
+    assert fake_host == [], "nothing runs until it is used"
+    assert handle["pool"].base_url   # first use starts the host
     assert fake_host[0][1]["kind"] == DECIDE_MODELS[model],         "the kind is the model's, not the role's"
     assert "dim" not in fake_host[0][1], "a decision model has no width"
 
@@ -312,7 +335,8 @@ def test_a_deprecated_spec_node_says_so_and_still_computes(qt_app):
     node = SilkOnnxEmbedderNode()
     out = node.compute({"model_id": "google/embeddinggemma-2",
                         "device": "cpu", "precision": "auto"})
-    assert out["embedder_spec"]["backend"] == "embroider"
+    assert out["embedder_spec"]["runtime"] == "embroider", \
+        "the spec okf loads in-process, as before"
     assert node._DEPRECATION.startswith("Deprecated:")
     node.on_evaluate_finished()
     assert node._sync_status, "the spec line is still built"

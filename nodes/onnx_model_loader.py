@@ -62,10 +62,10 @@ from ..functions.embroider_pool import (
     EmbroiderPool, embroider_available,
 )
 from ..functions.model_pool import LazyGGUFPool
-from ..functions.okf_graph import DEVICES, MODEL_LADDERS, KNOWN_MODELS
+from ..functions.okf_graph import DEVICES, KNOWN_MODELS
 from ..functions.onnx_roles import (
     DECISION, NATIVE, ROLE_MODELS, ROLE_NOUNS, ROLE_PRECISIONS,
-    handle_for, kind_for, shipped,
+    handle_for, kind_for, shipped, width_ladder,
 )
 from ..functions.port_text import text_input
 
@@ -261,7 +261,9 @@ class OnnxLoaderNode(ThreadedNode):
         role = self._role()
         model_id = model_id.strip()
         current = self._combo_dim.currentText()
-        ladder = MODEL_LADDERS.get(model_id, ()) if role == "embedding" else ()
+        # A vision model is opened on its text partner's ladder, so it can
+        # match the graph's width.
+        ladder = width_ladder(role, model_id)
         widths = [NATIVE, *(str(w) for w in ladder)]
         self._combo_dim.blockSignals(True)
         self._combo_dim.clear()

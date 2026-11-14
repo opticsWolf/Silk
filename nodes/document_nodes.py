@@ -227,15 +227,18 @@ class SilkConverterSettingsNode(_PickerHistory, ActiveNode):
 
         A scene saved before: ``gpu`` became ``cuda``, and the separate
         formula-weights row folded into precision (``int8`` when it was
-        picked and precision was still fp32). The quantization key is
-        gone; the other dropped values were defaults.
+        picked and precision was still fp32). On the GPU the old worker
+        ignored int8 and ran fp32 weights (bobine: int8 formula weights
+        decode differently on CUDA), so a gpu scene keeps its precision.
+        The quantization key is gone; the other dropped values were
+        defaults.
         """
         if from_version < 2:
             widgets = state.get("widget_data")
             if isinstance(widgets, dict):
                 if str(widgets.get("device") or "").strip().lower() == "gpu":
                     widgets["device"] = "cuda"
-                if (str(widgets.get("quantization") or "").strip().lower() == "int8"
+                elif (str(widgets.get("quantization") or "").strip().lower() == "int8"
                         and str(widgets.get("precision") or "fp32").strip().lower()
                         in ("", "fp32")):
                     widgets["precision"] = "int8"

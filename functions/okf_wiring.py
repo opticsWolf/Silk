@@ -16,9 +16,11 @@ wire                        okf runs
 ==========================  ==============================================
 ``embedder`` <- ONNX Loader ``backend=external``, identity ``auto`` (the
                             host names its family, width, precision and
-                            space; no prefixes), counted by the host
+                            space; no prefixes), counted by the host. On
+                            either Embedder row: the wire is the choice
 ``embedder`` <- Embedder    ``backend=external``, declared family, pooling,
-Loader (GGUF)               prefixes and ``/tokenize`` counts
+Loader (GGUF)               prefixes and ``/tokenize`` counts (gguf row;
+                            the onnx row refuses it with the fix)
 ``embedder`` unwired        okf's own in-process embroider, on the graph's
                             pin (or okf's default for a new graph)
 ``reranker`` <- either      ``rerank_backend=external``
@@ -29,6 +31,11 @@ Loader (vision)             okf checks against the graph's text model
 
 With no embedder wired the graph keeps the model it was last embedded
 with -- unplugging a loader is not a request to re-embed.
+
+Every refusal that can be read off a handle (width, text partner, the
+precision the host would land on against the graph's pin) is checked
+before a lazy pool is asked for its address, because asking starts it:
+a wiring that will be refused never launches a model server.
 """
 from __future__ import annotations
 
@@ -46,6 +53,7 @@ from .okf_graph import (
     FAMILY_PREFIXES, IMAGE_PRECISIONS, LADDER_DIMS, RERANK_PRECISIONS,
     VISION_MAX_DIM, OkfSpec, vision_partner,
 )
+from .onnx_roles import landing_precision
 from .port_text import text_input
 
 #: The Embedder row: which wire supplies the embedding model.
@@ -73,6 +81,21 @@ def _graph_dim(inputs: Dict[str, Any]) -> int:
     except ValueError:
         dim = 512
     return dim if dim in LADDER_DIMS else 512
+
+
+def _is_onnx_embedder(handle: Any) -> bool:
+    """Whether *handle* is the ONNX Loader's embedding handle (read off the
+    dict alone: nothing starts)."""
+    return (isinstance(handle, dict) and handle.get("backend") == "onnx"
+            and handle.get("role") == "embedding"
+            and handle.get("pool") is not None)
+
+
+def _is_gguf_embedder(handle: Any) -> bool:
+    """Whether *handle* is the Embedder Loader's (nothing starts)."""
+    return (isinstance(handle, dict) and handle.get("backend") == "gguf"
+            and handle.get("role") == "embedding"
+            and handle.get("pool") is not None)
 
 
 def _onnx_host_embedder(handle: Any) -> Dict[str, Any]:
@@ -142,46 +165,86 @@ def _with_image(spec: OkfSpec, image: Any) -> OkfSpec:
     )
 
 
-def _image_problem(inputs: Dict[str, Any], spec: OkfSpec) -> str:
-    """Why the wired image model cannot serve *spec*, or ``""``.
+def _image_problem(image: Any, text: str, graph_dim: int) -> str:
+    """Why the wired image model cannot serve a graph whose text model is
+    *text* at *graph_dim*, or ``""``. Read off the handle: nothing starts.
 
     okf checks the same rules at boot on the host's own ``text_partner``;
     saying it here turns the node red instead of the server.
     """
-    image = inputs.get("image_model")
-    if not (isinstance(image, dict) and image.get("role") == "vision"):
+    if not (isinstance(image, dict) and image.get("role") == "vision"
+            and image.get("pool") is not None):
         return ""
-    host = _onnx_vision(image)
-    if host.get("error"):
-        return f"The image model's server did not start: {host['error']}"
-    if not host.get("endpoint_url"):
-        return ""
-    partner = host["text_partner"]
-    text = spec.model_id or DEFAULT_EMBED_MODEL
+    model = str(image.get("model_id") or "")
+    partner = str(image.get("text_partner") or "")
+    dim = int(image.get("dim") or 0)
     if not partner:
-        return (f"{host['model_id']} names no text partner: image vectors "
-                "would compare against nothing.")
+        return (f"{model} names no text partner: image vectors would "
+                "compare against nothing.")
     if partner != text:
-        return (f"{host['model_id']} shares vectors with {partner}, not "
-                f"{text}: wire {partner}'s embedder, or pick the vision "
-                f"model paired with {text}.")
-    if host["dim"] and host["dim"] != spec.embedding_dim:
-        return (f"The vision host is open at {host['dim']} dims but the graph "
-                f"is {spec.embedding_dim}: set the loader's Width to "
-                f"{spec.embedding_dim}.")
-    if spec.embedding_dim > VISION_MAX_DIM:
+        return (f"{model} shares vectors with {partner}, not {text}: wire "
+                f"{partner}'s embedder, or pick the vision model paired "
+                f"with {text}.")
+    if graph_dim > VISION_MAX_DIM:
         return (f"Image search needs a vector width of at most "
-                f"{VISION_MAX_DIM} ({spec.embedding_dim} here): images are "
-                "searched by their captions.")
+                f"{VISION_MAX_DIM} ({graph_dim} here): images are searched "
+                "by their captions. Unwire image_model, or rebuild the graph "
+                "narrower.")
+    if dim and dim != graph_dim:
+        return (f"The vision host would open at {dim} dims but the graph is "
+                f"{graph_dim}: set the loader's Width to {graph_dim}.")
     return ""
+
+
+def _precision_problem(handle: Dict[str, Any], db_path: str,
+                       applied: Dict[str, str]) -> str:
+    """Why the ONNX host would land on another precision than the graph's
+    pin, or ``""`` (plan section 6, Q5).
+
+    The pin is the one this node last served the graph with (``applied``):
+    a graph it has not served yet is okf's to check at boot. The loader's
+    Device is the user's call, so the fix names both ways out.
+    """
+    pinned = str(applied.get("pinned_precision") or "").strip().lower()
+    model = str(handle.get("model_id") or "")
+    if (not pinned or not db_path or applied.get("db_path") != db_path
+            or applied.get("model_id") != model):
+        return ""
+    device = str(handle.get("device") or "cpu")
+    lands = landing_precision(model, device, str(handle.get("precision") or "auto"))
+    if not lands or lands == pinned:
+        return ""
+    if pinned == "fp16" and device == "cpu":
+        fix = "set the loader's Device to cuda"
+    else:
+        fix = f"set the loader's Precision to {pinned}"
+    return (f"The graph is pinned to {model} at {pinned}; this loader would "
+            f"land {lands} on {device}: {fix}, or press Re-embed to rebuild "
+            f"the graph at {lands}.")
+
+
+def _text_model(inputs: Dict[str, Any], applied: Dict[str, str]) -> str:
+    """The text model the graph's vectors come from, asked of no server."""
+    handle = inputs.get("embedder")
+    if _is_onnx_embedder(handle):
+        return str(handle.get("model_id") or "")
+    if embed_source(inputs) == "gguf" and _is_gguf_embedder(handle):
+        try:
+            return f"gguf/{Path(str(handle['pool'].model_path)).stem}"
+        except Exception:  # noqa: BLE001 - only a label
+            return "a GGUF embedder"
+    plain = {k: v for k, v in inputs.items()
+             if k not in ("embedder", "image_model", "reranker")}
+    return spec_from(plain, applied).model_id or DEFAULT_EMBED_MODEL
 
 
 def spec_from(inputs: Dict[str, Any],
               applied: Optional[Dict[str, str]] = None) -> OkfSpec:
     """The server spec: paths from *inputs*, the model from the wires.
 
-    With no embedder wired on the ONNX lane, the model the graph was last
-    embedded with (*applied*), else okf's default.
+    The ONNX Loader on ``embedder`` is the host lane on either Embedder
+    row. With no embedder wired on the ONNX lane, the model the graph was
+    last embedded with (*applied*), else okf's default.
     """
     dim = _graph_dim(inputs)
     applied = applied or {}
@@ -191,10 +254,18 @@ def spec_from(inputs: Dict[str, Any],
         bundle_root=text_input(inputs, "bundle_root"),
         embedding_dim=dim,
     )
-    if embed_source(inputs) == "gguf":
-        handle = inputs.get("embedder")
+    handle = inputs.get("embedder")
+    host = _onnx_host_embedder(handle) if _is_onnx_embedder(handle) else {}
+    if host.get("endpoint_url"):
+        # embroider's own host on okf's external lane with identity
+        # 'auto': the host names its family, width, precision and space,
+        # and applies its own prompts, so silence is right.
+        spec = replace(
+            spec, backend="external", endpoint_url=host["endpoint_url"],
+            model_id=host["model_id"],
+        )
+    elif embed_source(inputs) == "gguf":
         gguf = _gguf_embedder(handle)
-        host = _onnx_host_embedder(handle)
         if gguf.get("endpoint_url"):
             # Silk's llama.cpp server, on okf's external lane. The server
             # answers any model name with the one it has loaded, so the
@@ -206,14 +277,6 @@ def spec_from(inputs: Dict[str, Any],
                 embedding_dim=_gguf_dim(gguf, dim),
                 embed_counter=gguf["counter"], embed_counter_gguf=gguf["path"],
                 embed_prefixes=gguf["prefixes"],
-            )
-        elif host.get("endpoint_url"):
-            # embroider's own host, on the same external lane but with
-            # identity 'auto': the host names its family, width, precision
-            # and space, and applies its own prompts, so silence is right.
-            spec = replace(
-                spec, backend="external", endpoint_url=host["endpoint_url"],
-                model_id=host["model_id"],
             )
     else:
         onnx = _onnx_description(inputs.get("onnx_embedder"))
@@ -238,40 +301,73 @@ def spec_from(inputs: Dict[str, Any],
 
 
 def wiring_problem(inputs: Dict[str, Any],
-                   applied: Optional[Dict[str, str]] = None) -> str:
-    """Why the wired models cannot be used as they are, or ``""``."""
+                   applied: Optional[Dict[str, str]] = None, *,
+                   reembedding: bool = False) -> str:
+    """Why the wired models cannot be used as they are, or ``""``.
+
+    The checks a handle can answer run first, so a refused wiring starts
+    no server. *reembedding* (the Re-embed button) lifts the precision
+    check: rebuilding at the new precision is the other way out.
+    """
+    applied = applied or {}
+    handle = inputs.get("embedder")
+    source = embed_source(inputs)
+    dim = _graph_dim(inputs)
+    image = inputs.get("image_model")
+
+    # -- read off the handles: nothing starts ---------------------------
+    if _is_onnx_embedder(handle):
+        width = int(handle.get("dim") or 0)
+        if width and width != dim:
+            return (f"The ONNX host would open at {width} dims "
+                    f"({handle.get('model_id')}) but the graph is {dim}: set "
+                    f"the loader's Width to {dim}, or the graph's Vector dim "
+                    f"to {width}.")
+        if not reembedding:
+            pinned = _precision_problem(
+                handle, text_input(inputs, "db_path"), applied)
+            if pinned:
+                return pinned
+    elif (source == "onnx" and _is_gguf_embedder(handle)
+          and _onnx_description(inputs.get("onnx_embedder")) is None):
+        # With a spec node on onnx_embedder too, the row is choosing
+        # between two wires; alone, the GGUF wire would be ignored silently.
+        return ("A GGUF embedder is wired on embedder, but the Embedder row "
+                "is onnx: set the row to gguf to embed with it, or unwire it.")
+    problem = _image_problem(image, _text_model(inputs, applied), dim)
+    if problem:
+        return problem
+
+    # -- ask the pools: these start their servers -------------------------
     failed = _gguf_reranker(inputs.get("reranker")).get("error")
     if failed:
         return f"The reranker's server did not start: {failed}"
-    handle = inputs.get("embedder")
-    if embed_source(inputs) != "onnx" and handle:
-        gguf = _gguf_embedder(handle)
+    if _is_onnx_embedder(handle):
         host = _onnx_host_embedder(handle)
+        if host.get("error"):
+            return f"The embedder's server did not start: {host['error']}"
+    elif source == "gguf" and handle:
+        gguf = _gguf_embedder(handle)
         if gguf.get("prefix_error"):
             return f"The Embedder Loader's prefixes: {gguf['prefix_error']}"
         if gguf.get("error"):
             return f"The embedder's server did not start: {gguf['error']}"
-        if host.get("error"):
-            return f"The embedder's server did not start: {host['error']}"
-        if not gguf and not host:
+        if not gguf:
             return ("The embedder input takes an embedding model: the "
                     "Embedder Loader's model_obj (a GGUF model on Silk's "
                     "llama.cpp server) or the ONNX Loader's (embroider's own "
                     "host); this model handle is not one.")
-        if gguf:
-            width = gguf["width"]
-            if (gguf["family"] not in FAMILY_LADDERS and width
-                    and not DIM_RANGE[0] <= width <= DIM_RANGE[1]):
-                return (f"{gguf['model_id']} makes {width}-dim vectors; okf "
-                        f"stores {DIM_RANGE[0]} to {DIM_RANGE[1]}. Load a "
-                        "smaller embedding model.")
-        if host:
-            dim = _graph_dim(inputs)
-            if host["dim"] and host["dim"] != dim:
-                return (f"The ONNX host is open at {host['dim']} dims but the "
-                        f"graph is {dim}: set the loader's Width to {dim}, or "
-                        f"the graph's Vector dim to {host['dim']}.")
-    return _image_problem(inputs, spec_from(inputs, applied))
+        width = gguf["width"]
+        if (gguf["family"] not in FAMILY_LADDERS and width
+                and not DIM_RANGE[0] <= width <= DIM_RANGE[1]):
+            return (f"{gguf['model_id']} makes {width}-dim vectors; okf "
+                    f"stores {DIM_RANGE[0]} to {DIM_RANGE[1]}. Load a "
+                    "smaller embedding model.")
+    if isinstance(image, dict) and image.get("role") == "vision":
+        started = _onnx_vision(image)
+        if started.get("error"):
+            return f"The image model's server did not start: {started['error']}"
+    return ""
 
 
 def _choice(value: Any, choices: Tuple[str, ...]) -> str:
@@ -376,17 +472,15 @@ def _gguf_embedder(handle: Any) -> Dict[str, Any]:
 def _wired_embedder(inputs: Dict[str, Any], source: str) -> str:
     """The wire that supplies the model on *source*'s lane, or ``""``.
 
-    The ``gguf`` row means "the model on ``embedder``": a GGUF embedder
-    (declared family) or the ONNX Loader's embroider host (identity
-    ``auto``).
+    The ONNX Loader's embroider host (identity ``auto``) on ``embedder``
+    is the wire on either row; a GGUF embedder (declared family) only on
+    the ``gguf`` row.
     """
+    handle = inputs.get("embedder")
+    if _is_onnx_embedder(handle):
+        return "onnx-host" if _onnx_host_embedder(handle).get("endpoint_url") else ""
     if source == "gguf":
-        handle = inputs.get("embedder")
-        if _gguf_embedder(handle).get("endpoint_url"):
-            return "gguf"
-        if _onnx_host_embedder(handle).get("endpoint_url"):
-            return "onnx-host"
-        return ""
+        return "gguf" if _gguf_embedder(handle).get("endpoint_url") else ""
     return "onnx" if _onnx_description(inputs.get("onnx_embedder")) else ""
 
 

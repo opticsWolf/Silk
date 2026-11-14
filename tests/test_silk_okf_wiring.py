@@ -20,8 +20,8 @@ it tells ``okf serve``, and every row of the table is checked here.
 from __future__ import annotations
 
 from silk.functions.okf_wiring import (
-    EMBED_KEYS, _image_line, _model_lines, embed_source, spec_from,
-    wiring_problem,
+    EMBED_KEYS, _image_line, _model_lines, _wired_embedder, embed_source,
+    spec_from, wiring_problem,
 )
 from silk.functions.onnx_roles import handle_for
 
@@ -173,6 +173,96 @@ def test_a_dead_loader_is_reported_not_raised():
                         {"device": "cpu", "precision": "fp32", "dim": 512})
     assert "port in use" in wiring_problem({**RRF, "embedder": handle})
     assert spec_from({**RRF, "embedder": handle}).backend == "embroider"
+
+
+class CountingPool(Pool):
+    """A pool that records every request for its address (which, on a
+    real lazy pool, starts the server)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.asked = 0
+
+    @property
+    def base_url(self) -> str:
+        self.asked += 1
+        return "http://127.0.0.1:8931/v1"
+
+    @base_url.setter
+    def base_url(self, value: str) -> None:
+        pass
+
+
+def test_the_onnx_loader_is_the_host_lane_on_the_default_row_too():
+    """The deprecation note sends users to wire the ONNX Loader on
+    embedder; the Embedder row defaults to onnx, so that wire must count
+    there -- it used to be ignored silently."""
+    inputs = {"db_path": "kb.db", "embedder": onnx_embedder()}
+    assert embed_source(inputs) == "onnx"
+    spec = spec_from(inputs)
+    assert (spec.backend, spec.endpoint_url) == (
+        "external", "http://127.0.0.1:8931/v1")
+    assert spec.model_id == TEXT
+    assert wiring_problem(inputs) == ""
+    assert _wired_embedder(inputs, "onnx") == "onnx-host"
+
+
+def test_a_gguf_embedder_on_the_onnx_row_is_refused_with_the_fix():
+    handle = {"backend": "gguf", "role": "embedding", "pool": Pool()}
+    problem = wiring_problem({"db_path": "kb.db", "embedder": handle})
+    assert "set the row to gguf" in problem
+
+
+def test_native_width_is_checked_as_the_models_own():
+    """The loader's default Width is native (768 for embeddinggemma-2);
+    the graph's default is 512. okf would refuse at boot -- the node says
+    it first."""
+    handle = onnx_embedder(dim=0)
+    assert handle["dim"] == 768, "native names its width"
+    problem = wiring_problem({**RRF, "embedder": handle, "embedding_dim": "512"})
+    assert "open at 768 dims" in problem
+    vision = vision_handle(dim=0)
+    assert vision["dim"] == 768
+    problem = wiring_problem({**RRF, "embedder": onnx_embedder(),
+                              "image_model": vision})
+    assert "vision host would open at 768 dims" in problem
+    assert "Width to 512" in problem
+
+
+def test_a_refused_wiring_starts_no_server():
+    embed_pool, image_pool = CountingPool(), CountingPool()
+    wide = handle_for("embedding", TEXT, embed_pool,
+                      {"device": "cpu", "precision": "auto", "dim": 768})
+    assert wiring_problem({**RRF, "embedder": wide})
+    assert embed_pool.asked == 0, "a width refusal asks no pool"
+    image = dict(handle_for("vision", VISION, image_pool, {"dim": 512}),
+                 text_partner="someone/else")
+    assert wiring_problem({**RRF, "embedder": onnx_embedder(), "image_model": image})
+    assert image_pool.asked == 0, "a partner refusal asks no pool"
+
+
+def test_the_pinned_precision_is_predicted_before_the_host_starts():
+    """Plan section 6, Q5: a loader that would land on another precision
+    than the graph's pin is refused with the fix, before it starts."""
+    pool = CountingPool()
+    applied = {"db_path": "kb.db", "model_id": TEXT, "pinned_precision": "fp16"}
+    cpu = handle_for("embedding", TEXT, pool,
+                     {"device": "cpu", "precision": "auto", "dim": 512})
+    problem = wiring_problem({**RRF, "embedder": cpu}, applied)
+    assert "pinned to" in problem and "fp16" in problem and "fp32" in problem
+    assert "Device to cuda" in problem
+    assert pool.asked == 0
+    cuda = dict(cpu, device="cuda")
+    assert wiring_problem({**RRF, "embedder": cuda}, applied) == "", \
+        "auto on CUDA lands fp16 for a model that ships it"
+    assert wiring_problem({**RRF, "embedder": cpu}, applied,
+                          reembedding=True) == "", "Re-embed is the other way out"
+    other = dict(applied, db_path="other.db")
+    assert wiring_problem({**RRF, "embedder": cpu}, other) == "", \
+        "a graph this node has not served is okf's to check"
+    unknown = dict(cpu, device="auto")
+    assert wiring_problem({**RRF, "embedder": unknown}, applied) == "", \
+        "auto on auto cannot be told before it opens"
 
 
 def test_a_chat_handle_is_not_an_embedder():

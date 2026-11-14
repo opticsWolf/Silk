@@ -74,7 +74,7 @@ def serve(host_ip: str = "127.0.0.1", port: int = 8757,
         httpd = host.Server((host_ip, port), handler)
     except OSError as exc:
         sys.stderr.write(f"silk bobine host: cannot bind {host_ip}:{port}: {exc}\n")
-        raise SystemExit(3)
+        raise SystemExit(3) from exc
 
     stop = threading.Event()
 

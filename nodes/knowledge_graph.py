@@ -443,9 +443,10 @@ class SilkKnowledgeGraphNode(ThreadedNode):
 
     @staticmethod
     def wiring_problem(inputs: Dict[str, Any],
-                       applied: Optional[Dict[str, str]] = None) -> str:
+                       applied: Optional[Dict[str, str]] = None, *,
+                       reembedding: bool = False) -> str:
         """Why the wired models cannot be used as they are, or ``""``."""
-        return wiring_problem(inputs, applied)
+        return wiring_problem(inputs, applied, reembedding=reembedding)
 
     @staticmethod
     def _embed_key(spec: OkfSpec) -> Tuple[str, ...]:
@@ -467,7 +468,9 @@ class SilkKnowledgeGraphNode(ThreadedNode):
         self._sync_paths = (db_path, bundle)
         # Red unless this evaluation serves a graph that can search.
         self._failed = True
-        problem = self.wiring_problem(inputs, self._applied)
+        problem = self.wiring_problem(
+            dict(inputs, db_path=db_path, bundle_root=bundle), self._applied,
+            reembedding=self._reembed_requested)
         if problem:
             # Not served on a guess: a graph embedded with the wrong model
             # is pinned to it, and undoing that is a re-embed.
@@ -627,6 +630,11 @@ class SilkKnowledgeGraphNode(ThreadedNode):
                 "endpoint_url": spec.endpoint_url,
                 "image_backend": spec.image_backend,
                 "image_endpoint_url": spec.image_endpoint_url,
+                # What the graph's vectors are pinned to, so the next
+                # evaluation can refuse a loader that would land on another
+                # precision before starting it (plan section 6, Q5).
+                "pinned_precision": str(
+                    (pins.get("pinned") or {}).get("precision") or ""),
             }
         self._sync_status = "\n".join(lines)
         return {"knowledge": graph}

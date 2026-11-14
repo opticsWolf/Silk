@@ -103,6 +103,35 @@ deferred, and Silk needs nothing from it.
   with bobine 0.9: two conversions, one converter, `documents=2`. The
   nodes stay on the per-call child for now (see S4's note). Open
   questions 2, 3 and 5 are decided (section 6).
+- **Review fixes after S1-S5**:
+  - The ONNX Loader on `embedder` is the host lane on either Embedder
+    row; before, the default `onnx` row ignored it silently. A GGUF
+    handle on the `onnx` row with no spec node wired is refused with the
+    fix ("set the row to gguf").
+  - A native Width (0) is checked as the model's own width (768 for
+    embeddinggemma-2), for both the text host and the vision host:
+    `onnx_roles.opened_width` puts it on the handle.
+  - The Vision role's Width row offers its partner's ladder
+    (`onnx_roles.width_ladder`), not native only.
+  - Q5 is enforced: `onnx_roles.landing_precision` predicts where the
+    host lands, and `wiring_problem` refuses a mismatch with the graph's
+    pin (`applied["pinned_precision"]`) with the fix, unless Re-embed is
+    pressed.
+  - Every handle-only refusal (width, precision, row, vision partner and
+    width) runs before any pool is asked for its address, so a refused
+    wiring starts no server.
+  - The S4 migration keeps an old `gpu` scene's fp32 weights
+    (`gpu`→`cuda`, precision kept; int8 folds in only off the GPU), and
+    `describe()` warns that int8 formula weights on CUDA are advised
+    against.
+  - The Qt tests (`test_silk_onnx_models.py`, `test_silk_documents.py`,
+    the node suites) now run in developenv, which has PySide6: the six
+    stale ones were fixed. Full Silk suite: 0 failures (1427 passed,
+    3 skipped, then the files after `test_silk_task_ledger.py` run on
+    their own). One full run hung inside
+    `test_silk_task_ledger.py::test_only_one_agent_wins_a_contested_claim`
+    (an 8-thread lock race, not ONNX code); that file passes on its own
+    every time, so the hang is intermittent and only shows in the full run.
 
 ## 1. Goal
 

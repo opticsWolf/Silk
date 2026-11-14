@@ -120,9 +120,13 @@ def clean_settings(settings: Any) -> Dict[str, Any]:
     # A settings dict saved before 0.9 (or a tool call that still speaks
     # its words): gpu became cuda, and the separate formula-quantization
     # row became precision=int8 (only when precision was left at fp32).
-    if str(settings.get("device") or "").strip().lower() == "gpu":
+    # On the GPU the old worker ignored int8 and kept fp32 weights, as
+    # bobine asks (int8 formula weights decode differently on CUDA), so a
+    # gpu dict keeps its precision.
+    old_gpu = str(settings.get("device") or "").strip().lower() == "gpu"
+    if old_gpu:
         out["device"] = "cuda"
-    if (str(settings.get("precision") or "").strip().lower() in ("", "fp32")
+    elif (str(settings.get("precision") or "").strip().lower() in ("", "fp32")
             and str(settings.get("quantization") or "").strip().lower() == "int8"):
         out["precision"] = "int8"
     out["cache_dir"] = str(settings.get("cache_dir") or "").strip()
@@ -134,8 +138,12 @@ def describe(settings: Any) -> str:
     s = clean_settings(settings)
     if s["routing"] == "never":
         return f"route never, tables {s['table_backend']}"
-    return (f"route {s['routing']}, device {s['device']}, precision "
+    line = (f"route {s['routing']}, device {s['device']}, precision "
             f"{s['precision']}, tables {s['table_backend']}")
+    if s["device"] == "cuda" and s["precision"] == "int8":
+        line += (" (int8 formula weights decode differently on CUDA: bobine "
+                 "advises fp32 or fp16 there)")
+    return line
 
 
 def run_worker(request: Dict[str, Any], *,

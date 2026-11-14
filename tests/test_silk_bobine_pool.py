@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+from pathlib import Path
 from types import SimpleNamespace as NS
 
 import pytest
@@ -32,8 +33,20 @@ from silk.functions.bobine_pool import (
 )
 from silk.functions.bobine_worker import config_kwargs
 
+def _has_serve() -> bool:
+    """Whether bobine ships ``serve.py`` (0.9), asked without importing it.
+
+    ``find_spec("bobine.serve")`` imports the parent package, and bobine
+    loads ONNX Runtime on import: the test process must stay clean
+    (test_silk_documents.test_nothing_here_imports_bobine).
+    """
+    spec = importlib.util.find_spec("bobine")
+    origin = getattr(spec, "origin", None) if spec else None
+    return bool(origin) and (Path(origin).parent / "serve.py").is_file()
+
+
 needs_host = pytest.mark.skipif(
-    not bc.BOBINE_AVAILABLE or importlib.util.find_spec("bobine.serve") is None,
+    not bc.BOBINE_AVAILABLE or not _has_serve(),
     reason="bobine 0.9 (with bobine.serve) is not installed")
 
 
@@ -63,6 +76,16 @@ def test_clean_settings_maps_the_words_scenes_already_saved():
     assert old["precision"] == "int8", "the old formula-weights row folded in"
     assert bc.clean_settings({"precision": "fp16", "quantization": "int8"})["precision"] == "fp16"
     assert "quantization" not in bc.clean_settings({"quantization": "int8", "precision": "fp16"})
+    gpu = bc.clean_settings({"device": "gpu", "precision": "fp32", "quantization": "int8"})
+    assert (gpu["device"], gpu["precision"]) == ("cuda", "fp32"), \
+        "the old worker kept fp32 weights on the GPU: int8 on CUDA is advised against"
+
+
+def test_describe_warns_on_int8_formulas_on_cuda():
+    assert "advises" in bc.describe({"routing": "auto", "device": "cuda",
+                                     "precision": "int8"})
+    assert "advises" not in bc.describe({"routing": "auto", "device": "cpu",
+                                         "precision": "int8"})
 
 
 def test_the_worker_passes_device_and_precision_through():

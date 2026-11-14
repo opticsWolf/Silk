@@ -194,7 +194,7 @@ def test_the_settings_node_puts_data_on_its_wire(qt_app):
     try:
         out = node.compute({"routing": "never", "device": "gpu", "formula_dpi": 300})
         assert out["settings"]["routing"] == "never"
-        assert out["settings"]["device"] == "gpu"
+        assert out["settings"]["device"] == "cuda", "the old word reads as the new"
         assert BOBINE_SETTINGS_TYPE.validator(out["settings"])
     finally:
         node.cleanup()
@@ -261,12 +261,18 @@ def test_the_excel_and_jats_nodes(qt_app, tmp_path):
 def test_a_saved_settings_scene_migrates_to_the_stack_words(qt_app):
     from silk.nodes.document_nodes import SilkConverterSettingsNode
     state = SilkConverterSettingsNode.migrate_state(
-        {"widget_data": {"device": "gpu", "precision": "fp32",
+        {"widget_data": {"device": "cpu", "precision": "fp32",
                          "quantization": "int8"}}, 1)
     widgets = state["widget_data"]
-    assert widgets["device"] == "cuda"
     assert widgets["precision"] == "int8"
     assert "quantization" not in widgets, "the row folded into precision"
+    gpu = SilkConverterSettingsNode.migrate_state(
+        {"widget_data": {"device": "gpu", "precision": "fp32",
+                         "quantization": "int8"}}, 1)["widget_data"]
+    assert gpu["device"] == "cuda"
+    assert gpu["precision"] == "fp32", \
+        "the old worker ran fp32 weights on the GPU; int8 on CUDA is advised against"
+    assert "quantization" not in gpu
     kept = SilkConverterSettingsNode.migrate_state(
         {"widget_data": {"device": "cpu", "precision": "fp16",
                          "quantization": "int8"}}, 1)

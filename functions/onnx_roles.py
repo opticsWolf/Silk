@@ -24,14 +24,15 @@ from typing import Any, Dict, List, Optional, Sequence
 
 from .okf_graph import (
     DEVICES, EMBED_PRECISIONS, IMAGE_PRECISIONS, KNOWN_MODELS,
-    KNOWN_RERANK_MODELS, RERANK_MODEL_MAX_TOKENS, RERANK_PRECISIONS,
-    VISION_MODELS, precisions_for,
+    KNOWN_RERANK_MODELS, MODEL_LADDERS, RERANK_MODEL_MAX_TOKENS,
+    RERANK_PRECISIONS, VISION_MODELS, precisions_for,
 )
 
 __all__ = [
     "DEVICES", "NATIVE", "ROLE_KINDS", "ROLE_MODELS", "ROLE_PRECISIONS",
     "ROLE_NOUNS", "DECIDE_MODELS", "DECIDE_PRECISIONS", "kind_for",
-    "shipped", "handle_for", "serve_args", "onnx_family",
+    "shipped", "handle_for", "serve_args", "onnx_family", "width_ladder",
+    "opened_width", "landing_precision",
 ]
 
 #: The Width row's first entry: the model's own width.
@@ -101,6 +102,49 @@ def shipped(role: str, model_id: str) -> Sequence[str]:
     return ROLE_PRECISIONS.get(role, ("auto",))
 
 
+def width_ladder(role: str, model_id: str) -> Sequence[int]:
+    """The widths *model_id* can be opened at in *role*, native last.
+
+    A vision model shares its text partner's space, and with it the
+    partner's Matryoshka ladder (embroider's registry lists the same one),
+    so a vision host can be opened at the graph's width. Empty for a
+    model Silk has no table for, and for the roles without a width.
+    """
+    if role == "embedding":
+        return MODEL_LADDERS.get(model_id.strip(), ())
+    if role == "vision":
+        return MODEL_LADDERS.get(VISION_MODELS.get(model_id.strip(), ""), ())
+    return ()
+
+
+def opened_width(role: str, model_id: str, dim: int) -> int:
+    """The width the host will serve: *dim*, or the model's native width
+    when *dim* is 0 (``native``). 0 only for a model Silk has no table for."""
+    if dim:
+        return int(dim)
+    ladder = width_ladder(role, model_id)
+    return int(ladder[-1]) if ladder else 0
+
+
+def landing_precision(model_id: str, device: str, precision: str) -> str:
+    """The precision an embedding host will land on, or ``""`` when that
+    cannot be told before it opens.
+
+    An explicit precision is what it says. ``auto`` is FP32 on the CPU and
+    FP16 on CUDA where the model ships FP16 weights. ``auto`` on the
+    ``auto`` device depends on whether a GPU answers, so it is unknown.
+    """
+    precision = (precision or "auto").strip().lower()
+    if precision != "auto":
+        return precision
+    device = (device or "cpu").strip().lower()
+    if device == "cpu":
+        return "fp32"
+    if device == "cuda":
+        return "fp16" if "fp16" in precisions_for(model_id) else "fp32"
+    return ""
+
+
 def handle_for(role: str, model_id: str, pool: Any,
                settings: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """The wire handle for a running (or lazy) embroider pool.
@@ -121,7 +165,8 @@ def handle_for(role: str, model_id: str, pool: Any,
                 "model_id": model_id,
                 "device": str(settings.get("device") or "cpu"),
                 "precision": str(settings.get("precision") or "auto"),
-                "dim": int(settings.get("dim") or 0)}
+                "dim": opened_width(role, model_id,
+                                    int(settings.get("dim") or 0))}
     if role == "reranker":
         return {"role": "rerank", "runtime": "onnx", "pool": pool,
                 "model_id": f"onnx/{model_id}", "family": onnx_family(model_id),
@@ -133,7 +178,8 @@ def handle_for(role: str, model_id: str, pool: Any,
                 "model_id": model_id,
                 "text_partner": VISION_MODELS.get(model_id, ""),
                 "precision": str(settings.get("precision") or "auto"),
-                "dim": int(settings.get("dim") or 0)}
+                "dim": opened_width(role, model_id,
+                                    int(settings.get("dim") or 0))}
     return {"backend": "systemone", "role": "decision", "pool": pool,
             "model": model_id}
 
