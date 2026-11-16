@@ -472,9 +472,10 @@ count, or the host pins threads to okf's setting.
     (`4eaf1e2`), so graphs built through the host lane are pinned like
     any other tier.
   - Remaining EG2 work is quality/release, not host unification: the
-    labelled text-retrieval gate, the vision cross-modal gate, the
-    mixed-pair product rule and the audio slot. The audio q8 graph is
-    mirrored but has no role/route yet.
+    vision cross-modal gate, the mixed-pair product rule and the audio
+    slot. The labelled text-retrieval gate passed on 2026-11-16
+    (`OKFgraph/docs/eg2-int8-gates.md`). The audio q8 graph is mirrored
+    but has no role/route yet.
   - The **GGUF image lane** is a separate path, not this ONNX host:
     `OKFgraph/docs/plan-declared-image-identity.md` (shape decided, no
     code; C++ `llama-server` + `--mmproj`, probe/model choice still
@@ -495,7 +496,7 @@ count, or the host pins threads to okf's setting.
   - The spec nodes still load an old scene and warn.
   - A live end-to-end test, skipped unless the model is cached: an unwired KG builds a graph in-process, then the same graph is reopened through an ONNX Loader with the same model, and search works with no re-embed. Landed as `test_an_unwired_graph_reopens_on_the_onnx_host_without_reembedding`; it checks the same space pin, counts and first hit, and no re-embed.
   - GGUF rerank seam: the KG's declared rows (`rerank_family`, `rerank_max_tokens`, `rerank_count=server-tokenize`) match what the Reranker Loader's server reports.
-- **S8 Reranker Loader wording** (small, any time): its tooltip and status call `max_tokens = n_ctx` the context window, a safe advisory cap, not the model's trained pair limit.
+- **S8 Reranker Loader wording** (done 2026-11-16): the tooltip now describes `max_tokens = n_ctx` as the pair ceiling — a safe advisory cap, not the model's trained pair limit. The status line does not call it a context window; verified in `nodes/reranker_loader.py`.
 
 ### 4.5 EG2 int8, vision and audio through the unified host
 
@@ -503,7 +504,7 @@ EG2 adds precision tiers, not a new host shape.
 
 | EG2 lane | Unified path | Status |
 |---|---|---|
-| text int8 | ONNX Loader **Embedding** role, `precision=int8`; okf pin 8 | landed (`95ff50c`, `4eaf1e2`, `d455bc2`) |
+| text int8 | ONNX Loader **Embedding** role, `precision=int8`; okf pin 8 | landed; labelled retrieval gate passed 2026-11-16 (`95ff50c`, `4eaf1e2`, `d455bc2`) |
 | vision int8 | ONNX Loader **Vision** role, `image_precision=int8`; okf image pin 8 | artifact/rows/pins landed; **live e2e + cross-modal gate open** |
 | audio q8 | future audio role/route | artifact mirrored only |
 | mixed precision | text/vision pins per lane; `(text fusion, tower)` pair | W3 pin work open |
@@ -520,8 +521,8 @@ Rules that follow from this plan:
 - The Vision role keeps the same host/port shape; the additions are the
   `image_precision` row and the partner/width checks that already exist.
 
-The remaining EG2 gates — labelled retrieval, vision cross-modal,
-mixed-pair decision, audio slot — are tracked in
+The remaining EG2 gates — vision cross-modal, mixed-pair decision,
+audio slot — are tracked in
 `embroider/docs/plan-eg2-rollout.md` §4. This plan's S1/S2 wiring is the
 path they run on; no new Silk host is needed.
 
@@ -649,8 +650,9 @@ the wrong problem.** Findings, so nobody has to redo them:
   (~0.5 d); rerank for `target="images"` plus `asset_id → data-URI`
   resolution with `rerank_image_limit` / `rerank_image_max_bytes` caps
   (~0.5 d); tests, docs, gate (~0.5 d); the Silk loader row, KG pass-through
-  and the S7 declared-rows seam test (~0.5 d) — **~2 days**. Without the
-  pool, **~4–5.5**, because the binary and pool work is most of it.
+  and the deferred multimodal declared-rows seam test (~0.5 d) —
+  **~2 days**. Without the pool, **~4–5.5**, because the binary and pool
+  work is most of it.
 - **Shape if it is picked up.** `cross_score` stays the host's logit; only
   the Jina/llama.cpp shape carries images, and a host that answered in the
   TEI text shape is refused at open rather than silently dropping pixels; a
