@@ -344,8 +344,9 @@ Silk KG Embedder (ONNX)'s **Precision** offers only what the chosen model ships:
 int8 is offered by jina nano and gemma-2 text (and gemma-2 vision for the
 image lane). Asked for one it lacks, the node turns red instead of okf
 failing at start. Text int8 passed the labelled scifact/nfcorpus
-retrieval gate at 768/512 (2026-11-16); the vision int8 cross-modal gate
-is still open.
+retrieval gate at 768/512, and vision int8 passed the COCO cross-modal
+gate (2026-11-16). Gemma text and image precision must match; the KG
+refuses a mixed pair before it starts the image host.
 
 **Images** and **Image prec.** choose how okf embeds images for
 image-content search (`OKFGRAPH_IMAGE_MODEL_ID`, `OKFGRAPH_IMAGE_PRECISION`).
@@ -361,10 +362,11 @@ text model has at most one:
 `auto` is okf's own pairing (the table). A partner that does not match is
 greyed out, and wiring one anyway turns the node red. Image weights come
 in fp32 and fp16, plus int8 for the gemma-2 vision slot; image search
-needs a vector width of 768 or less. The vision int8 artifact is
-registered, but its cross-modal gate has not passed yet. okf pins the
-image model on the first image it embeds; the Knowledge Graph's Info
-says which one embeds images.
+needs a vector width of 768 or less. Gemma fuses image vectors through
+the partner text tower at the image precision, so text and image
+precision must match; a mixed pair is refused. okf pins the image model
+and the fusion text space on the first image it embeds; the Knowledge
+Graph's Info says which one embeds images.
 
 ### ONNX Loader — `nodes/onnx_model_loader.py` (`OnnxLoaderNode`) *(Silk AI / Loaders)*
 An embroider model as a real model: it runs in its own process

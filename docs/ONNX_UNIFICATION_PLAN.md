@@ -471,11 +471,12 @@ count, or the host pins threads to okf's setting.
   - okf's pin codec, image pin path, reembed and `pin_info` handle int8
     (`4eaf1e2`), so graphs built through the host lane are pinned like
     any other tier.
-  - Remaining EG2 work is quality/release, not host unification: the
-    vision cross-modal gate, the mixed-pair product rule and the audio
-    slot. The labelled text-retrieval gate passed on 2026-11-16
-    (`OKFgraph/docs/eg2-int8-gates.md`). The audio q8 graph is mirrored
-    but has no role/route yet.
+  - The text and vision gates both passed on 2026-11-16: text on
+    scifact + nfcorpus, vision on a 199-image COCO subset, all deltas
+    within 0.40 pt (`OKFgraph/docs/eg2-int8-gates.md`). The mixed rule
+    is decided: Gemma text/vision precision must match. The remaining
+    EG2 work is the audio slot and release; audio q8 is mirrored but has
+    no role/route yet.
   - The **GGUF image lane** is a separate path, not this ONNX host:
     `OKFgraph/docs/plan-declared-image-identity.md` (shape decided, no
     code; C++ `llama-server` + `--mmproj`, probe/model choice still
@@ -505,9 +506,9 @@ EG2 adds precision tiers, not a new host shape.
 | EG2 lane | Unified path | Status |
 |---|---|---|
 | text int8 | ONNX Loader **Embedding** role, `precision=int8`; okf pin 8 | landed; labelled retrieval gate passed 2026-11-16 (`95ff50c`, `4eaf1e2`, `d455bc2`) |
-| vision int8 | ONNX Loader **Vision** role, `image_precision=int8`; okf image pin 8 | artifact/rows/pins landed; **live e2e + cross-modal gate open** |
+| vision int8 | ONNX Loader **Vision** role, `image_precision=int8`; okf image pin 8 | landed; cross-modal gate passed 2026-11-16 |
 | audio q8 | future audio role/route | artifact mirrored only |
-| mixed precision | text/vision pins per lane; `(text fusion, tower)` pair | W3 pin work open |
+| mixed precision | text/vision pins per lane; `(text fusion, tower)` pair | W3 fusion pin landed; Gemma mixed precision refused (host fuses at image precision) |
 | reembed | text-only; image graphs fresh DB + re-encode | text path landed; image refusal stays |
 | GGUF image | declared identity on a C++ `llama-server`, not this host | shape decided; no code (`plan-declared-image-identity.md`) |
 
@@ -521,8 +522,7 @@ Rules that follow from this plan:
 - The Vision role keeps the same host/port shape; the additions are the
   `image_precision` row and the partner/width checks that already exist.
 
-The remaining EG2 gates — vision cross-modal, mixed-pair decision,
-audio slot — are tracked in
+The remaining EG2 gate — the audio slot — is tracked in
 `embroider/docs/plan-eg2-rollout.md` §4. This plan's S1/S2 wiring is the
 path they run on; no new Silk host is needed.
 

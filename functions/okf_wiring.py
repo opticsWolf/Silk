@@ -165,12 +165,15 @@ def _with_image(spec: OkfSpec, image: Any) -> OkfSpec:
     )
 
 
-def _image_problem(image: Any, text: str, graph_dim: int) -> str:
+def _image_problem(image: Any, text: str, graph_dim: int,
+                   graph_precision: str = "") -> str:
     """Why the wired image model cannot serve a graph whose text model is
-    *text* at *graph_dim*, or ``""``. Read off the handle: nothing starts.
+    *text* at *graph_dim* /*graph_precision*, or ``""``. Read off the
+    handle: nothing starts.
 
-    okf checks the same rules at boot on the host's own ``text_partner``;
-    saying it here turns the node red instead of the server.
+    okf checks the same rules at boot on the host's own ``text_partner``
+    and fusion space; saying it here turns the node red instead of the
+    server.
     """
     if not (isinstance(image, dict) and image.get("role") == "vision"
             and image.get("pool") is not None):
@@ -193,6 +196,15 @@ def _image_problem(image: Any, text: str, graph_dim: int) -> str:
     if dim and dim != graph_dim:
         return (f"The vision host would open at {dim} dims but the graph is "
                 f"{graph_dim}: set the loader's Width to {graph_dim}.")
+    if model.startswith("google/embeddinggemma-2-vision") and graph_precision:
+        device = str(image.get("device") or "cpu")
+        image_precision = str(image.get("precision") or "auto")
+        lands = landing_precision(model, device, image_precision)
+        if lands and lands != graph_precision:
+            return (f"The graph's text vectors are {graph_precision}; "
+                    f"{model} would fuse image vectors at {lands} on {device}. "
+                    f"Set the image loader's Precision to {graph_precision}, "
+                    f"or rebuild the graph at {lands} with a fresh database.")
     return ""
 
 
@@ -334,7 +346,14 @@ def wiring_problem(inputs: Dict[str, Any],
         # between two wires; alone, the GGUF wire would be ignored silently.
         return ("A GGUF embedder is wired on embedder, but the Embedder row "
                 "is onnx: set the row to gguf to embed with it, or unwire it.")
-    problem = _image_problem(image, _text_model(inputs, applied), dim)
+    graph_precision = str(applied.get("pinned_precision") or "")
+    if not graph_precision and _is_onnx_embedder(handle):
+        graph_precision = landing_precision(
+            str(handle.get("model_id") or ""),
+            str(handle.get("device") or "cpu"),
+            str(handle.get("precision") or "auto"))
+    problem = _image_problem(image, _text_model(inputs, applied), dim,
+                             graph_precision)
     if problem:
         return problem
 

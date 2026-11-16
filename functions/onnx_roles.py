@@ -177,6 +177,7 @@ def handle_for(role: str, model_id: str, pool: Any,
         return {"role": "vision", "runtime": "onnx", "pool": pool,
                 "model_id": model_id,
                 "text_partner": VISION_MODELS.get(model_id, ""),
+                "device": str(settings.get("device") or "cpu"),
                 "precision": str(settings.get("precision") or "auto"),
                 "dim": opened_width(role, model_id,
                                     int(settings.get("dim") or 0))}

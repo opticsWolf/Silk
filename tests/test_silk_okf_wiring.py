@@ -265,6 +265,24 @@ def test_the_pinned_precision_is_predicted_before_the_host_starts():
         "auto on auto cannot be told before it opens"
 
 
+def test_the_gemma_image_lane_must_fuse_at_the_text_precision():
+    """Gemma images run through the partner text tower at the image
+    loader's precision, so a text-int8 graph + fp16 image host would make
+    vectors from two spaces. Silk refuses before starting the image host.
+    """
+    applied = {"db_path": "kb.db", "model_id": TEXT,
+               "pinned_precision": "int8"}
+    text = onnx_embedder(precision="int8")
+    fp16_image = vision_handle(precision="fp16", device="cuda")
+    problem = wiring_problem(
+        {**RRF, "embedder": text, "image_model": fp16_image}, applied)
+    assert "fuse image vectors at fp16" in problem
+    assert "Precision to int8" in problem
+    int8_image = vision_handle(precision="int8", device="cuda")
+    assert wiring_problem(
+        {**RRF, "embedder": text, "image_model": int8_image}, applied) == ""
+
+
 def test_a_chat_handle_is_not_an_embedder():
     chat = {"backend": "gguf", "role": "chat", "pool": Pool()}
     problem = wiring_problem({**RRF, "embedder": chat})
