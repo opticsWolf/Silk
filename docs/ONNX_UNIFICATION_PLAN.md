@@ -1,6 +1,8 @@
 # ONNX unification plan: embroider, bobine, okfgraph, Silk
 
-Status: plan, 2026-11-10. Branches `dev_silk` in embroider, bobine and
+Status: plan, 2026-11-10; amended 2026-11-15 with the EmbeddingGemma 2
+int8/vision/audio plans and the declared GGUF image-identity note.
+Branches `dev_silk` in embroider, bobine and
 OKFgraph were cut from `origin/main` (embroider 0.14.1, bobine 0.8.0,
 okfgraph 0.12.1) and have since merged back for the releases below.
 
@@ -457,16 +459,71 @@ count, or the host pins threads to okf's setting.
   tooltip; the spec nodes report what the session already knows (they never
   spawn a child of their own). `forget()` re-asks.
 - **S6 Pins and floors** (done 2026-11-13): Weave's pyproject raises the floors (`embroider>=0.15`, `okfgraph>=0.14.2`, `bobine>=0.9.1`). Weave owns the floors; Silk and Veil don't.
+- **EG2 int8, vision q8 and audio q8 (2026-11-15, after S1–S6).**
+  These use the unified host; they add precision tiers, not a new wire.
+  - Text and vision int8 artifacts are registered on the self-hosted
+    mirror (`opticsWolf/embeddinggemma-2-onnx-int8` @ `52614d7`;
+    embroider `95ff50c`); `auto` still never selects int8.
+  - Silk's precision rows include gemma-2 text and vision int8
+    (`d455bc2`); the ONNX Loader's Embedding and Vision roles expose
+    them, and the KG's Q5 `landing_precision` check accepts an explicit
+    int8 pin.
+  - okf's pin codec, image pin path, reembed and `pin_info` handle int8
+    (`4eaf1e2`), so graphs built through the host lane are pinned like
+    any other tier.
+  - Remaining EG2 work is quality/release, not host unification: the
+    labelled text-retrieval gate, the vision cross-modal gate, the
+    mixed-pair product rule and the audio slot. The audio q8 graph is
+    mirrored but has no role/route yet.
+  - The **GGUF image lane** is a separate path, not this ONNX host:
+    `OKFgraph/docs/plan-declared-image-identity.md` (shape decided, no
+    code; C++ `llama-server` + `--mmproj`, probe/model choice still
+    open). Until it lands, GGUF graphs keep captions; the ONNX Vision
+    role is unchanged.
+  - Source of truth: `embroider/docs/plan-eg2-rollout.md` and
+    `plan-eg2-int8-audio.md`; measurements in
+    `eg2-int8-audio-results.md` and
+    `OKFgraph/docs/bench-eg2-precision-width.md`.
 - **S7 Tests**:
   - The KG maps each of the 3.3 rows onto okf env.
   - The KG's declared rerank rows (family, ceiling, count mode) match what
     the reranker's own `/v1/models` and `/tokenize` report — a seam test, so
     a loader rename or a ceiling change cannot drift silently.
   - The ONNX Loader runs each role against a fake host.
+  - The precision rows include gemma-2 text and vision int8 (the row
+    test in `tests/test_silk_onnx_host.py`).
   - The spec nodes still load an old scene and warn.
   - A live end-to-end test, skipped unless the model is cached: an unwired KG builds a graph in-process, then the same graph is reopened through an ONNX Loader with the same model, and search works with no re-embed.
   - GGUF rerank seam: the KG's declared rows (`rerank_family`, `rerank_max_tokens`, `rerank_count=server-tokenize`) match what the Reranker Loader's server reports.
 - **S8 Reranker Loader wording** (small, any time): its tooltip and status call `max_tokens = n_ctx` the context window, a safe advisory cap, not the model's trained pair limit.
+
+### 4.5 EG2 int8, vision and audio through the unified host
+
+EG2 adds precision tiers, not a new host shape.
+
+| EG2 lane | Unified path | Status |
+|---|---|---|
+| text int8 | ONNX Loader **Embedding** role, `precision=int8`; okf pin 8 | landed (`95ff50c`, `4eaf1e2`, `d455bc2`) |
+| vision int8 | ONNX Loader **Vision** role, `image_precision=int8`; okf image pin 8 | artifact/rows/pins landed; **live e2e + cross-modal gate open** |
+| audio q8 | future audio role/route | artifact mirrored only |
+| mixed precision | text/vision pins per lane; `(text fusion, tower)` pair | W3 pin work open |
+| reembed | text-only; image graphs fresh DB + re-encode | text path landed; image refusal stays |
+| GGUF image | declared identity on a C++ `llama-server`, not this host | shape decided; no code (`plan-declared-image-identity.md`) |
+
+Rules that follow from this plan:
+
+- int8 is explicit-only; `auto` never resolves there.
+- The host's identity (`describe().precision`, `space`) is what okf pins;
+  the loader's requested precision is not evidence of what landed.
+- `landing_precision` must cover int8 so Q5 refuses a graph pinned int8
+  when the loader would land fp32/fp16.
+- The Vision role keeps the same host/port shape; the additions are the
+  `image_precision` row and the partner/width checks that already exist.
+
+The remaining EG2 gates — labelled retrieval, vision cross-modal,
+mixed-pair decision, audio slot — are tracked in
+`embroider/docs/plan-eg2-rollout.md` §4. This plan's S1/S2 wiring is the
+path they run on; no new Silk host is needed.
 
 ## 5. Sequence
 
@@ -474,7 +531,7 @@ count, or the host pins threads to okf's setting.
 2. **embroider 0.15**: E1 → E2 → E3 → E5 → E4 → E7 → E6 → E8. E7 can start once E1 lands; E6 is only needed for vision.
 3. **okfgraph 0.13**: O5 → O4 → O1 → O2 → O7, then O3 (vision) and O6 (after bobine 0.9).
 4. **bobine 0.9**: B2 → B3 → B4 → B5. B6 (CLI, skill) follows in a later release.
-5. **Silk**: S1 (embed and rerank on `embroider.serve`) → S2 embedder and reranker → S5 → S3 → S2 images and S1 Vision → S1 Decider → S4.
+5. **Silk**: S1 (embed and rerank on `embroider.serve`) → S2 embedder and reranker → S5 → S3 → S2 images and S1 Vision → S1 Decider → S4. EG2 int8 rides S1/S2; its quality gates are in the EG2 rollout plan, not a new sequence step.
 6. **Weave**: S6 floors (done 2026-11-13, ahead of step 5) and the `node_deprecated` flag, together with S3.
 
 Each step ends green on its own: embroider `cargo test` + pytest, okf's suite, bobine's suite, and Silk's suite plus Weave's seam tests.
@@ -493,6 +550,10 @@ Each step ends green on its own: embroider `cargo test` + pytest, okf's suite, b
    **Decided: the KG checks and suggests; the loader keeps the user's device.** The loader can't know which graph it serves (it may feed several), and VRAM is the user's call, so it stays on its `cpu` default. The KG already reads the graph's pins (`pin_info`) and the loader's settings, and the loader starts lazily, so before anything starts the KG predicts the precision the loader would land on. On a mismatch it refuses with the fix instead of starting a host okf would reject: "graph pinned fp16; this loader would land fp32 on CPU — set its Device to cuda, or rebuild the graph." Part of S2; an unwired KG is unaffected (okf adopts the graph's pins in-process).
 
 ## 7. Images on a GGUF graph (after this plan)
+
+Status: **shape decided, no code.** This is a separate path from the
+ONNX Vision role — it runs on a C++ `llama-server` with `--mmproj`, not on
+`python -m embroider.serve`.
 
 A graph whose text lane is a GGUF Embedder Loader (llama.cpp) has no image
 lane today: okfgraph refuses a declared image identity and falls back to
