@@ -256,7 +256,7 @@ def test_the_embedder_names_its_image_model_and_refuses_a_mismatch(qt_app):
     assert "Images: google/embeddinggemma-2-vision (named" in node._sync_status
     auto = node.compute(dict(gemma, image_model_id="auto", image_precision="int8"))
     assert auto["embedder_spec"]["image_model_id"] == "", "auto is okf's pairing"
-    assert auto["embedder_spec"]["image_precision"] == "auto", "no int8 image weights"
+    assert auto["embedder_spec"]["image_precision"] == "int8", "vision q8 ships"
     with pytest.raises(ValueError, match="embeds images for google/embeddinggemma-2"):
         node.compute(dict(gemma, model_id="jinaai/jina-embeddings-v5-text-nano-retrieval"))
     small = node.compute({"model_id": "jinaai/jina-embeddings-v5-text-small-retrieval"})
@@ -267,8 +267,8 @@ def test_the_embedder_names_its_image_model_and_refuses_a_mismatch(qt_app):
 def test_the_embedder_offers_only_the_precisions_a_model_ships(qt_app):
     from silk.nodes.onnx_loader import SilkOnnxEmbedderNode
     node = SilkOnnxEmbedderNode()
-    with pytest.raises(ValueError, match="ships no int8"):
-        node.compute({"model_id": "google/embeddinggemma-2", "precision": "int8"})
+    assert node.compute({"model_id": "google/embeddinggemma-2", "precision": "int8"})[
+        "embedder_spec"]["precision"] == "int8"
     nano = "jinaai/jina-embeddings-v5-text-nano-retrieval"
     assert node.compute({"model_id": nano, "precision": "int8"})[
         "embedder_spec"]["precision"] == "int8"
@@ -280,9 +280,9 @@ def test_the_embedder_offers_only_the_precisions_a_model_ships(qt_app):
     node._precision.setCurrentText("int8")
     node._image.setCurrentText("jina-v5-omni-nano-retrieval-vision")
     node._model.setCurrentText("google/embeddinggemma-2")
-    assert enabled(node._precision) == ["auto", "fp32", "fp16"]
+    assert enabled(node._precision) == ["auto", "fp32", "fp16", "int8"]
     assert enabled(node._image) == ["auto", "google/embeddinggemma-2-vision"]
-    assert node._precision.currentText() == "auto", "int8 went grey"
+    assert node._precision.currentText() == "int8", "int8 keeps its selection"
     assert node._image.currentText() == "auto", "the jina image model went grey"
 
 

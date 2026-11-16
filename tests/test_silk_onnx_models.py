@@ -184,8 +184,8 @@ def test_the_loader_as_embedder_hands_out_a_model_that_starts_on_use(qt_app, fak
     assert same["model_obj"]["pool"] is handle["pool"], "unchanged settings keep it"
     node.compute({"model_id": "google/embeddinggemma-2", "dim": "native"})
     assert fake_host[-1] == "stopped", "new settings: the old process stops"
-    with pytest.raises(ValueError, match="ships no int8"):
-        node.compute({"model_id": "google/embeddinggemma-2", "precision": "int8"})
+    int8 = node.compute({"model_id": "google/embeddinggemma-2", "precision": "int8"})
+    assert int8["model_obj"]["precision"] == "int8"
 
 
 def test_the_loader_offers_the_models_widths(qt_app, fake_host):

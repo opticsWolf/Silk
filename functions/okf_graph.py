@@ -95,14 +95,14 @@ RERANK_COUNTS = ("heuristic", "server-tokenize")
 #: (FP32 on CPU, FP16 on a GPU); an explicit one is part of the pin.
 EMBED_PRECISIONS = ("auto", "fp32", "fp16", "int8")
 RERANK_PRECISIONS = ("auto", "fp32", "q8")
-#: Image weights: no int8 artifact ships, and explicit fp16 on the CPU
+#: Image weights: the vision q8 artifact exists; explicit fp16 on the CPU
 #: fails fast in okf.
-IMAGE_PRECISIONS = ("auto", "fp32", "fp16")
+IMAGE_PRECISIONS = ("auto", "fp32", "fp16", "int8")
 
 #: The explicit precisions each text model ships (embroider's registry);
 #: a model not listed here may be asked for any of EMBED_PRECISIONS.
 MODEL_PRECISIONS = {
-    "google/embeddinggemma-2": ("fp32", "fp16"),
+    "google/embeddinggemma-2": ("fp32", "fp16", "int8"),
     "jinaai/jina-embeddings-v5-text-small-retrieval": ("fp32", "fp16"),
     "jinaai/jina-embeddings-v5-text-nano-retrieval": ("fp32", "fp16", "int8"),
 }

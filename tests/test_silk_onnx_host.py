@@ -100,8 +100,9 @@ def test_the_roles_map_to_embroiders_kinds():
 
 def test_the_precision_rows_match_what_each_kind_ships():
     assert shipped("embedding", "google/embeddinggemma-2") == (
-        "auto", "fp32", "fp16"), "only what the registry ships"
-    assert shipped("vision", "google/embeddinggemma-2-vision")[0] == "auto"
+        "auto", "fp32", "fp16", "int8"), "only what the registry ships"
+    assert shipped("vision", "google/embeddinggemma-2-vision") == (
+        "auto", "fp32", "fp16", "int8"), "vision q8 ships too"
     assert shipped(DECISION, "convaiinnovations/laya") == (
         "auto", "fp32", "q8")
     for role, precisions in ROLE_PRECISIONS.items():
