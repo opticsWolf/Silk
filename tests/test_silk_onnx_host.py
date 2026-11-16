@@ -211,3 +211,81 @@ def test_the_real_host_serves_identity_counts_and_reranks():
     finally:
         pool.cleanup()
     assert not pool.started
+
+
+@pytest.mark.skipif(
+    not (Path.home() / ".cache" / "huggingface" / "hub"
+         / "models--onnx-community--embeddinggemma-2-ONNX").is_dir(),
+    reason="the embeddinggemma-2 text model is not cached")
+def test_an_unwired_graph_reopens_on_the_onnx_host_without_reembedding(tmp_path):
+    """S7's live half: build with okf's own embedder, then serve the same
+    graph through ``embroider.serve`` at the pinned model and precision.
+
+    The graph must keep its vectors: same space pin, same counts, same
+    search hit.  This is the one seam the fake-host tests cannot prove.
+    """
+    from silk.functions.embroider_pool import EmbroiderPool
+    from silk.functions.model_pool import LazyGGUFPool
+    from silk.functions.okf_graph import OkfGraph, OkfSpec, default_executable
+    from silk.functions.okf_wiring import spec_from
+
+    if not default_executable():
+        pytest.skip("okf serve is not installed beside this interpreter")
+    model = "google/embeddinggemma-2"
+    db = str(tmp_path / "kb.db")
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+
+    # 1. Unwired: okf embeds in its own process with the pinned model.
+    graph = OkfGraph.open(OkfSpec(
+        db_path=db, bundle_root=str(bundle), model_id=model,
+        embedding_dim=768, device="cpu", precision="fp32"), timeout=180)
+    try:
+        target = graph.call(
+            "ingest", kind="thoughts", topic="e2e",
+            thoughts="The quick brown fox jumps over the lazy dog. "
+                     "This sentence is the end-to-end search target.",
+        )["concept_id"]
+        graph.call(
+            "ingest", kind="thoughts", topic="e2e",
+            thoughts="Paris is the capital of France and sits on the Seine.",
+        )
+        before = graph.call("search", query="quick brown fox",
+                            target="concepts", limit=2)
+        assert before and before[0]["id"] == target
+        pins_before = graph.pins()
+        assert pins_before["pinned"]["precision"] == "fp32"
+        assert pins_before["pinned"]["embedding_dim"] == 768
+        assert pins_before["pinned"]["space"]
+    finally:
+        graph.close()
+
+    # 2. Wired: the exactly matching host supplies embeddings for the same graph.
+    pool = LazyGGUFPool(model, pool_class=EmbroiderPool, kind="embed",
+                        device="cpu", precision="fp32", dim=768)
+    try:
+        handle = {"backend": "onnx", "role": "embedding", "pool": pool,
+                  "model_id": model, "dim": 768, "precision": "fp32",
+                  "device": "cpu"}
+        spec = spec_from({"db_path": db, "bundle_root": str(bundle),
+                          "embedding_dim": "768", "embed_source": "onnx",
+                          "embedder": handle})
+        assert spec.backend == "external", "the loader's host lane"
+        assert spec.model_id == model
+        graph = OkfGraph.open(spec, timeout=180)
+        try:
+            after = graph.call("search", query="quick brown fox",
+                               target="concepts", limit=2)
+            pins_after = graph.pins()
+        finally:
+            graph.close()
+    finally:
+        pool.cleanup()
+
+    assert after and after[0]["id"] == target, "same graph, same hit"
+    assert pins_after["mismatch"] == []
+    assert pins_after["pinned"]["space"] == pins_before["pinned"]["space"]
+    assert pins_after["pinned"]["precision"] == "fp32"
+    assert pins_after["concepts"] == pins_before["concepts"] == 2
+    assert pins_after["chunks"] == pins_before["chunks"], "no re-embed"
+    assert not pool.started

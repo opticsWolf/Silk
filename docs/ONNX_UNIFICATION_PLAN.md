@@ -484,7 +484,7 @@ count, or the host pins threads to okf's setting.
     `plan-eg2-int8-audio.md`; measurements in
     `eg2-int8-audio-results.md` and
     `OKFgraph/docs/bench-eg2-precision-width.md`.
-- **S7 Tests**:
+- **S7 Tests** (done 2026-11-16):
   - The KG maps each of the 3.3 rows onto okf env.
   - The KG's declared rerank rows (family, ceiling, count mode) match what
     the reranker's own `/v1/models` and `/tokenize` report — a seam test, so
@@ -493,7 +493,7 @@ count, or the host pins threads to okf's setting.
   - The precision rows include gemma-2 text and vision int8 (the row
     test in `tests/test_silk_onnx_host.py`).
   - The spec nodes still load an old scene and warn.
-  - A live end-to-end test, skipped unless the model is cached: an unwired KG builds a graph in-process, then the same graph is reopened through an ONNX Loader with the same model, and search works with no re-embed.
+  - A live end-to-end test, skipped unless the model is cached: an unwired KG builds a graph in-process, then the same graph is reopened through an ONNX Loader with the same model, and search works with no re-embed. Landed as `test_an_unwired_graph_reopens_on_the_onnx_host_without_reembedding`; it checks the same space pin, counts and first hit, and no re-embed.
   - GGUF rerank seam: the KG's declared rows (`rerank_family`, `rerank_max_tokens`, `rerank_count=server-tokenize`) match what the Reranker Loader's server reports.
 - **S8 Reranker Loader wording** (small, any time): its tooltip and status call `max_tokens = n_ctx` the context window, a safe advisory cap, not the model's trained pair limit.
 
