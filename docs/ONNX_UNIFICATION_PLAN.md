@@ -1,7 +1,10 @@
 # ONNX unification plan: embroider, bobine, okfgraph, Silk
 
-Status: plan, 2026-11-10; amended 2026-11-15 with the EmbeddingGemma 2
-int8/vision/audio plans and the declared GGUF image-identity note.
+Status: S1–S8 done; EG2 text/vision int8 released (embroider 0.15.1,
+okfgraph 0.15.0, 2026-11-16). Open: the audio slot and the GGUF image
+lane (section 7). Plan of 2026-11-10; amended 2026-11-15 with the
+EmbeddingGemma 2 int8/vision/audio plans and the declared GGUF
+image-identity note.
 Branches `dev_silk` in embroider, bobine and
 OKFgraph were cut from `origin/main` (embroider 0.14.1, bobine 0.8.0,
 okfgraph 0.12.1) and have since merged back for the releases below.
@@ -57,10 +60,12 @@ deferred, and Silk needs nothing from it.
   `db_created`); `--pdf-path` takes folders and `*`/`?` patterns. Design
   note for GGUF images: see section 7.
 - **Floors (S6) set in Weave's pyproject** (Weave owns them): extras
-  `knowledge-cpu` / `knowledge-gpu` = `okfgraph[cpu|gpu]>=0.14.2` +
-  `embroider>=0.15`, and `documents` = `bobine>=0.9.1`. The floor is 0.14.2,
-  not the 0.13 that S6 first named: S2's image input needs 0.14.0, S4's
-  converter device needs 0.14.1. Silk's own extras still read
+  `knowledge-cpu` / `knowledge-gpu` = `okfgraph[cpu|gpu]>=0.15.0` +
+  `embroider>=0.15.1`, and `documents` = `bobine>=0.9.1`. First set to
+  0.14.2 / 0.15 (S2's image input needs 0.14.0, S4's converter device
+  0.14.1); raised 2026-11-16 because Silk's EG2 int8 rows need okfgraph
+  0.15.0's int8 pin and embroider 0.15.1's int8 artifacts and fused
+  vision identity. Silk's own extras still read
   `okfgraph>=0.12` / `bobine>=0.8`; they are names, not Weave's floors.
 - **S1 done** (`7e970ff`): `EmbroiderPool` runs
   `python -m embroider.serve` (child command in
@@ -458,7 +463,7 @@ count, or the host pins threads to okf's setting.
   instead of a later okf failure, and appends the quiet line to the Device
   tooltip; the spec nodes report what the session already knows (they never
   spawn a child of their own). `forget()` re-asks.
-- **S6 Pins and floors** (done 2026-11-13): Weave's pyproject raises the floors (`embroider>=0.15`, `okfgraph>=0.14.2`, `bobine>=0.9.1`). Weave owns the floors; Silk and Veil don't.
+- **S6 Pins and floors** (done 2026-11-13; raised 2026-11-16): Weave's pyproject sets the floors (`embroider>=0.15.1`, `okfgraph>=0.15.0`, `bobine>=0.9.1`; first `0.15` / `0.14.2`, raised for EG2 int8). Weave owns the floors; Silk and Veil don't.
 - **EG2 int8, vision q8 and audio q8 (2026-11-15, after S1–S6).**
   These use the unified host; they add precision tiers, not a new wire.
   - Text and vision int8 artifacts are registered on the self-hosted
@@ -474,9 +479,13 @@ count, or the host pins threads to okf's setting.
   - The text and vision gates both passed on 2026-11-16: text on
     scifact + nfcorpus, vision on a 199-image COCO subset, all deltas
     within 0.40 pt (`OKFgraph/docs/eg2-int8-gates.md`). The mixed rule
-    is decided: Gemma text/vision precision must match. The remaining
-    EG2 work is the audio slot and release; audio q8 is mirrored but has
-    no role/route yet.
+    is decided: Gemma text/vision precision must match, and the KG
+    refuses a mismatch before the image host starts. It compares the
+    image loader with where the text loader lands, or with this graph's
+    own pin (same database and text model, not during Re-embed); a pin
+    remembered from another graph is never used. Released as embroider
+    0.15.1 and okfgraph 0.15.0 (2026-11-16). The remaining EG2 work is
+    the audio slot; audio q8 is mirrored but has no role/route yet.
   - The **GGUF image lane** is a separate path, not this ONNX host:
     `OKFgraph/docs/plan-declared-image-identity.md` (shape decided, no
     code; C++ `llama-server` + `--mmproj`, probe/model choice still

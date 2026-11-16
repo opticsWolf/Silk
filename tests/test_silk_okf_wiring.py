@@ -283,6 +283,39 @@ def test_the_gemma_image_lane_must_fuse_at_the_text_precision():
         {**RRF, "embedder": text, "image_model": int8_image}, applied) == ""
 
 
+def test_the_fusion_check_reads_only_this_graphs_pin():
+    """A pin remembered from another database or text model, or one that
+    Re-embed is rebuilding away from, says nothing about these vectors."""
+    text = onnx_embedder(precision="fp32")
+    image = vision_handle(precision="fp32", device="cpu")
+    inputs = {**RRF, "embedder": text, "image_model": image}
+    for applied in (
+            {"db_path": "old.db", "model_id": TEXT, "pinned_precision": "fp16"},
+            {"db_path": "kb.db", "model_id": "jinaai/x", "pinned_precision": "fp16"}):
+        assert wiring_problem(inputs, applied) == "", applied
+    this = {"db_path": "kb.db", "model_id": TEXT, "pinned_precision": "fp16"}
+    assert wiring_problem(inputs, this, reembedding=True) == "", \
+        "Re-embed rebuilds the text at fp32, which the image matches"
+
+
+def test_the_fusion_fix_names_a_way_out_that_works():
+    # Text loader on fp32, image on int8: either side can move.
+    problem = wiring_problem({**RRF, "embedder": onnx_embedder(precision="fp32"),
+                              "image_model": vision_handle(precision="int8",
+                                                           device="cpu")})
+    assert "Precision to fp32" in problem
+    assert "text loader's Precision to int8" in problem
+    # An unwired text lane on a graph pinned fp16: the image cannot run
+    # fp16 on the CPU, so the fix is the device; the other way is a rebuild.
+    pinned = {"db_path": "kb.db", "model_id": TEXT, "pinned_precision": "fp16"}
+    problem = wiring_problem(
+        {"db_path": "kb.db", "image_model": vision_handle(precision="auto",
+                                                          device="cpu")},
+        pinned)
+    assert "Device to cuda" in problem
+    assert "fresh database" in problem
+
+
 def test_a_chat_handle_is_not_an_embedder():
     chat = {"backend": "gguf", "role": "chat", "pool": Pool()}
     problem = wiring_problem({**RRF, "embedder": chat})

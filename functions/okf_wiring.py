@@ -166,14 +166,16 @@ def _with_image(spec: OkfSpec, image: Any) -> OkfSpec:
 
 
 def _image_problem(image: Any, text: str, graph_dim: int,
-                   graph_precision: str = "") -> str:
+                   graph_precision: str = "", from_pin: bool = False) -> str:
     """Why the wired image model cannot serve a graph whose text model is
     *text* at *graph_dim* /*graph_precision*, or ``""``. Read off the
     handle: nothing starts.
 
     okf checks the same rules at boot on the host's own ``text_partner``
     and fusion space; saying it here turns the node red instead of the
-    server.
+    server. *from_pin* says the text precision is the graph's stored pin
+    (a fresh database is the other way out) rather than where the wired
+    text loader will land (its Precision row is).
     """
     if not (isinstance(image, dict) and image.get("role") == "vision"
             and image.get("pool") is not None):
@@ -201,11 +203,29 @@ def _image_problem(image: Any, text: str, graph_dim: int,
         image_precision = str(image.get("precision") or "auto")
         lands = landing_precision(model, device, image_precision)
         if lands and lands != graph_precision:
+            if graph_precision == "fp16" and device == "cpu":
+                fix = "set the image loader's Device to cuda"
+            else:
+                fix = f"set the image loader's Precision to {graph_precision}"
+            other = (f"rebuild the graph at {lands} with a fresh database"
+                     if from_pin else
+                     f"set the text loader's Precision to {lands}")
             return (f"The graph's text vectors are {graph_precision}; "
-                    f"{model} would fuse image vectors at {lands} on {device}. "
-                    f"Set the image loader's Precision to {graph_precision}, "
-                    f"or rebuild the graph at {lands} with a fresh database.")
+                    f"{model} would fuse image vectors at {lands} on {device} "
+                    f"(Gemma text and image precision must match): {fix}, "
+                    f"or {other}.")
     return ""
+
+
+def _trusted_pin(applied: Dict[str, str], db_path: str, model: str) -> str:
+    """The precision this node last served *db_path* with, when that graph
+    is this one and its text model is *model*; ``""`` otherwise (a graph
+    it has not served is okf's to check at boot)."""
+    pinned = str(applied.get("pinned_precision") or "").strip().lower()
+    if (not pinned or not db_path or applied.get("db_path") != db_path
+            or applied.get("model_id") != model):
+        return ""
+    return pinned
 
 
 def _precision_problem(handle: Dict[str, Any], db_path: str,
@@ -217,10 +237,9 @@ def _precision_problem(handle: Dict[str, Any], db_path: str,
     a graph it has not served yet is okf's to check at boot. The loader's
     Device is the user's call, so the fix names both ways out.
     """
-    pinned = str(applied.get("pinned_precision") or "").strip().lower()
     model = str(handle.get("model_id") or "")
-    if (not pinned or not db_path or applied.get("db_path") != db_path
-            or applied.get("model_id") != model):
+    pinned = _trusted_pin(applied, db_path, model)
+    if not pinned:
         return ""
     device = str(handle.get("device") or "cpu")
     lands = landing_precision(model, device, str(handle.get("precision") or "auto"))
@@ -346,14 +365,22 @@ def wiring_problem(inputs: Dict[str, Any],
         # between two wires; alone, the GGUF wire would be ignored silently.
         return ("A GGUF embedder is wired on embedder, but the Embedder row "
                 "is onnx: set the row to gguf to embed with it, or unwire it.")
-    graph_precision = str(applied.get("pinned_precision") or "")
-    if not graph_precision and _is_onnx_embedder(handle):
+    # The text precision the image vectors must match: where the wired text
+    # loader lands (the Q5 check above has already held it to the pin,
+    # unless Re-embed is rebuilding at it), else the pin of this very
+    # graph -- never one remembered from another graph or model.
+    text_model = _text_model(inputs, applied)
+    graph_precision, from_pin = "", False
+    if _is_onnx_embedder(handle):
         graph_precision = landing_precision(
             str(handle.get("model_id") or ""),
             str(handle.get("device") or "cpu"),
             str(handle.get("precision") or "auto"))
-    problem = _image_problem(image, _text_model(inputs, applied), dim,
-                             graph_precision)
+    if not graph_precision and not reembedding:
+        graph_precision = _trusted_pin(
+            applied, text_input(inputs, "db_path"), text_model)
+        from_pin = bool(graph_precision)
+    problem = _image_problem(image, text_model, dim, graph_precision, from_pin)
     if problem:
         return problem
 
