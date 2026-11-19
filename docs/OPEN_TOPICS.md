@@ -1272,6 +1272,23 @@ itself needs to ask for a reset. Stub kept for inbound links; the
 implementation checklist and the interim `UsageLimits.input_tokens`
 invariant live in **G14**.
 
+### T11. A verbatim transcript: rewind, fork and resume from the record
+
+**Design written 2026-11-17, not built**:
+[TRANSCRIPT_LEDGER_PLAN.md](TRANSCRIPT_LEDGER_PLAN.md). No durable,
+complete record of the context exists: the Agent node's history loses its
+head on compaction (`GraphEngine.replace_history_prefix`), the event sink
+is metadata only (T7), and `history.macrame` keeps filtered turn text
+without tool arguments or results (`functions/remember.py`). The plan
+records the engine's three history mutations verbatim as a tree in
+`<root>/transcript.macrame` (messages with `PARENT` edges, a superseded
+head pointer, compaction and branch-summary entries, large content as
+hashed blobs), and rebuilds the Agent node's history from it for resume,
+rewind and fork. Opt-in per node, under the sandbox root. Open: the
+ledger thread hang (`test_only_one_agent_wins_a_contested_claim`) must be
+understood before a per-message writer runs on worker threads; small
+inline secrets cannot be removed from a ledger file.
+
 ## Deliberately not planned
 
 Machinery a much larger harness (pi — ~149k lines of TypeScript) needs but

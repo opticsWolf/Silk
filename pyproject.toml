@@ -44,8 +44,11 @@ mcp = ["mcp>=1.2"]
 # SqliteTaskStore stays the task store and history stays in the node.
 # Floor raised 2026-09-09: 0.13.2 split the traversal `as_of` kwarg into the
 # bitemporal pair (`as_of_valid`/`as_of_recorded`, macrame W7.1/D-174) —
-# `ledger.py` names both halves; tested against 0.16.0.
-ledger = ["macrame-db>=0.16"]
+# `ledger.py` names both halves. Raised again 2026-11-16 to 0.22, matching
+# Weave's `ledger` extra: `ledger.py` closes a concept's open interval
+# before writing the next (one open interval per concept, D-291, 0.19.2+);
+# tested against 0.22.0.
+ledger = ["macrame-db>=0.22"]
 # The knowledge graph (Knowledge Graph node, okf_* tools). OKFgraph runs as
 # its own `okf serve` process, so its ONNX Runtime and Ladybug never load
 # into Weave's; the extra only puts `okf` beside this interpreter. One of
